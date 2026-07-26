@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>汉诺塔</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title';
+let discCount = 5;
+let pegs = [[], [], []];
+let moves = 0;
+let selected = -1;
+let msg = '';
+
+const PEG_X = [150, 400, 650];
+const BASE_Y = 400;
+const DISC_H = 28;
+const MAX_W = 180;
+const MIN_W = 50;
+
+function optimal() { return Math.pow(2, discCount) - 1; }
+
+function initGame() {
+  pegs = [[], [], []];
+  for (let i = discCount; i >= 1; i--) pegs[0].push(i);
+  moves = 0; score = 0; selected = -1; msg = '';
+}
+
+function discWidth(size) {
+  return MIN_W + (MAX_W - MIN_W) * (size - 1) / (discCount - 1 || 1);
+}
+
+function canMove(from, to) {
+  if (pegs[from].length === 0) return false;
+  const disc = pegs[from][pegs[from].length - 1];
+  if (pegs[to].length === 0) return true;
+  return disc < pegs[to][pegs[to].length - 1];
+}
+
+function doMove(from, to) {
+  pegs[to].push(pegs[from].pop());
+  moves++; score = moves;
+  if (pegs[2].length === discCount) state = 'win';
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') {
+    // Disc count buttons
+    if (my > 250 && my < 300) {
+      if (mx > 250 && mx < 330) { discCount = 5; }
+      else if (mx > 360 && mx < 440) { discCount = 6; }
+      else if (mx > 470 && mx < 550) { discCount = 7; }
+    }
+    if (mx > 300 && mx < 500 && my > 330 && my < 390) { initGame(); state = 'playing'; }
+    return;
+  }
+  if (state === 'win') {
+    if (mx > 300 && mx < 500 && my > 340 && my < 400) state = 'title';
+    return;
+  }
+  // Reset button
+  if (mx > 680 && mx < 770 && my > 15 && my < 47) { initGame(); return; }
+  // Playing: select peg
+  let clicked = -1;
+  for (let i = 0; i < 3; i++) {
+    if (mx > PEG_X[i] - 100 && mx < PEG_X[i] + 100) clicked = i;
+  }
+  if (clicked === -1) return;
+  if (selected === -1) {
+    if (pegs[clicked].length > 0) { selected = clicked; msg = ''; }
+  } else {
+    if (clicked === selected) { selected = -1; return; }
+    if (canMove(selected, clicked)) { doMove(selected, clicked); selected = -1; msg = ''; }
+    else { msg = '不能将大盘放在小盘上！'; selected = -1; }
+  }
+});
+
+function drawPeg(i) {
+  const x = PEG_X[i];
+  // Pole
+  ctx.fillStyle = selected === i ? '#8d6e63' : '#5d4037';
+  ctx.fillRect(x - 6, BASE_Y - discCount * DISC_H - 20, 12, discCount * DISC_H + 20);
+  // Base
+  ctx.fillStyle = '#4e342e';
+  ctx.fillRect(x - 90, BASE_Y, 180, 12);
+  // Discs
+  for (let d = 0; d < pegs[i].length; d++) {
+    const size = pegs[i][d];
+    const w = discWidth(size);
+    const y = BASE_Y - (d + 1) * DISC_H;
+    const hue = (size * 45) % 360;
+    ctx.fillStyle = `hsl(${hue}, 65%, 45%)`;
+    ctx.beginPath();
+    ctx.roundRect(x - w/2, y, w, DISC_H - 3, 5);
+    ctx.fill();
+    ctx.strokeStyle = `hsl(${hue}, 70%, 60%)`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  // Label
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(['A', 'B', 'C'][i], x, BASE_Y + 35);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ff8a65';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('汉诺塔', 400, 120);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('将所有圆盘从 A 移到 C，大盘不能在小盘上', 400, 180);
+  ctx.fillText('选择圆盘数量：', 400, 235);
+  // Buttons
+  [5, 6, 7].forEach((n, i) => {
+    const bx = 250 + i * 110;
+    ctx.fillStyle = discCount === n ? '#ff5722' : '#333';
+    ctx.fillRect(bx, 250, 80, 45);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText(n + ' 个', bx + 40, 275);
+  });
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(300, 330, 200, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText('开始游戏', 400, 360);
+}
+
+function drawWin() {
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = 'bold 44px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('恭喜完成！', 400, 160);
+  ctx.fillStyle = '#fff';
+  ctx.font = '26px sans-serif';
+  ctx.fillText(`步数: ${moves}  最优: ${optimal()}`, 400, 220);
+  const ratio = moves / optimal();
+  ctx.fillStyle = ratio <= 1 ? '#76ff03' : ratio < 1.5 ? '#ffeb3b' : '#ff5252';
+  ctx.fillText(ratio <= 1 ? '完美！' : ratio < 1.5 ? '不错！' : '继续练习！', 400, 270);
+  ctx.fillStyle = '#1565c0';
+  ctx.fillRect(300, 340, 200, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 370);
+}
+
+function drawPlaying() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  for (let i = 0; i < 3; i++) drawPeg(i);
+
+  // Selection indicator arrow
+  if (selected >= 0) {
+    const ax = PEG_X[selected];
+    const ay = BASE_Y - discCount * DISC_H - 40;
+    ctx.fillStyle = '#ffeb3b';
+    ctx.beginPath();
+    ctx.moveTo(ax, ay + 15);
+    ctx.lineTo(ax - 10, ay);
+    ctx.lineTo(ax + 10, ay);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // HUD
+  ctx.fillStyle = '#ff8a65';
+  ctx.font = '22px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`步数: ${moves} / 最优: ${optimal()}`, 20, 30);
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('点击柱子选择起点，再点击目标柱', 20, 455);
+
+  // Error message
+  if (msg) {
+    ctx.fillStyle = '#ff5252';
+    ctx.font = '20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(msg, 400, 430);
+  }
+
+  // Reset button
+  ctx.fillStyle = '#333';
+  ctx.fillRect(680, 15, 90, 32);
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(680, 15, 90, 32);
+  ctx.fillStyle = '#ddd';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('重置', 725, 31);
+}
+
+function render() {
+  if (state === 'title') drawTitle();
+  else if (state === 'playing') drawPlaying();
+  else { drawPlaying(); drawWin(); }
+  requestAnimationFrame(render);
+}
+render();
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>叠叠乐 Stacking</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+
+const BLOCK_H = 26;
+const BASE_W = 220;
+const MIN_W = 10;
+let state = 'start';
+let stack = [];          // settled blocks {x, w, color}
+let moving = null;       // current moving block {x, w, dir, speed, color}
+let falling = [];        // chopped pieces {x,y,w,vy,color}
+let camY = 0;            // camera offset (world scrolls down as we build)
+let combo = 0;
+let msg = '', msgT = 0, msgColor = '#ffd54a';
+
+function colorFor(i) {
+  const hue = (i * 22 + 200) % 360;
+  return 'hsl(' + hue + ',65%,55%)';
+}
+
+function startGame() {
+  score = 0; combo = 0; camY = 0; falling = [];
+  stack = [{ x: (W - BASE_W) / 2, w: BASE_W, color: colorFor(0) }];
+  spawnMoving();
+  state = 'play';
+}
+
+function spawnMoving() {
+  const top = stack[stack.length - 1];
+  const speed = Math.min(3 + stack.length * 0.18, 8);
+  const fromLeft = Math.random() < 0.5;
+  moving = {
+    x: fromLeft ? -top.w : W,
+    w: top.w,
+    dir: fromLeft ? 1 : -1,
+    speed,
+    color: colorFor(stack.length)
+  };
+}
+
+function topY() {
+  // world y of the top surface of the stack (in screen coords after camera)
+  return H - 40 - stack.length * BLOCK_H + camY;
+}
+
+function drop() {
+  if (state !== 'play' || !moving) return;
+  const top = stack[stack.length - 1];
+  const left = Math.max(moving.x, top.x);
+  const right = Math.min(moving.x + moving.w, top.x + top.w);
+  const overlap = right - left;
+
+  if (overlap <= 0) {
+    // missed entirely -> game over
+    falling.push({ x: moving.x, y: topY(), w: moving.w, vy: 0, color: moving.color });
+    moving = null;
+    gameOver();
+    return;
+  }
+
+  const diff = Math.abs(moving.x - top.x);
+  let newX = left, newW = overlap;
+
+  if (diff < 6) {
+    // perfect alignment bonus
+    combo++;
+    newW = Math.min(top.w + 6, BASE_W); // grow back slightly
+    newX = top.x - (newW - top.w) / 2;
+    score += 5 + combo;
+    msg = combo > 1 ? '完美 x' + combo + '! +' + (5 + combo) : '完美! +5';
+    msgColor = '#4caf50'; msgT = 60;
+  } else {
+    combo = 0;
+    score += 1;
+    // chopped off piece falls
+    if (moving.x < top.x) {
+      falling.push({ x: moving.x, y: topY(), w: top.x - moving.x, vy: 0, color: moving.color });
+    }
+    if (moving.x + moving.w > top.x + top.w) {
+      falling.push({ x: top.x + top.w, y: topY(), w: moving.x + moving.w - (top.x + top.w), vy: 0, color: moving.color });
+    }
+  }
+
+  stack.push({ x: newX, w: newW, color: moving.color });
+  moving = null;
+
+  if (newW < MIN_W) { gameOver(); return; }
+
+  // scroll camera up when stack gets tall
+  if (stack.length * BLOCK_H > H - 160) camY += BLOCK_H;
+
+  spawnMoving();
+}
+
+function gameOver() {
+  state = 'over';
+}
+
+function update() {
+  if (state === 'play' && moving) {
+    moving.x += moving.dir * moving.speed;
+    if (moving.x > W) moving.dir = -1;
+    if (moving.x + moving.w < 0) moving.dir = 1;
+  }
+  falling.forEach(f => { f.vy += 0.5; f.y += f.vy; });
+  falling = falling.filter(f => f.y < H + 100);
+  if (msgT > 0) msgT--;
+}
+
+function draw() {
+  // background gradient
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#1a1a2e'); g.addColorStop(1, '#0f0f1a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  if (state === 'start') {
+    ctx.fillStyle = '#7ec8ff'; ctx.font = 'bold 54px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('叠 叠 乐 STACKING', W / 2, 150);
+    ctx.fillStyle = '#ccc'; ctx.font = '20px Arial';
+    ctx.fillText('方块左右移动，点击或按空格放下', W / 2, 200);
+    ctx.fillText('对齐越准越好 · 完美对齐有奖励', W / 2, 235);
+    ctx.fillText('方块小于 10px 时游戏结束', W / 2, 268);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(W / 2 - 100, 300, 200, 60);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 26px Arial';
+    ctx.fillText('开始游戏', W / 2, 340);
+    ctx.fillStyle = '#777'; ctx.font = '14px Arial';
+    ctx.fillText('按 ESC 退出', W / 2, 430);
+    return;
+  }
+
+  // base platform
+  ctx.fillStyle = '#333';
+  ctx.fillRect(0, H - 40 + camY, W, 40);
+
+  // settled stack
+  stack.forEach((b, i) => {
+    const y = H - 40 - (i + 1) * BLOCK_H + camY;
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x, y, b.w, BLOCK_H - 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(b.x, y, b.w, 4);
+  });
+
+  // moving block
+  if (moving && state === 'play') {
+    const y = topY() - BLOCK_H;
+    ctx.fillStyle = moving.color;
+    ctx.fillRect(moving.x, y, moving.w, BLOCK_H - 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect(moving.x, y, moving.w, 4);
+  }
+
+  // falling pieces
+  falling.forEach(f => {
+    ctx.fillStyle = f.color;
+    ctx.globalAlpha = 0.8;
+    ctx.fillRect(f.x, f.y, f.w, BLOCK_H - 1);
+    ctx.globalAlpha = 1;
+  });
+
+  // HUD
+  ctx.textAlign = 'left'; ctx.font = 'bold 26px Arial';
+  ctx.fillStyle = '#ffd54a';
+  ctx.fillText('高度: ' + Math.max(0, stack.length - 1), 20, 38);
+  ctx.fillStyle = '#7ec8ff'; ctx.font = '20px Arial';
+  ctx.fillText('得分: ' + score, 20, 68);
+  if (combo > 1) {
+    ctx.fillStyle = '#4caf50'; ctx.font = 'bold 20px Arial';
+    ctx.fillText('连击 x' + combo, 20, 96);
+  }
+
+  if (msgT > 0) {
+    ctx.fillStyle = msgColor; ctx.font = 'bold 34px Arial'; ctx.textAlign = 'center';
+    ctx.globalAlpha = Math.min(1, msgT / 25);
+    ctx.fillText(msg, W / 2, 130);
+    ctx.globalAlpha = 1;
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ff5555'; ctx.font = 'bold 50px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('游戏结束!', W / 2, 160);
+    ctx.fillStyle = '#fff'; ctx.font = '28px Arial';
+    ctx.fillText('最终高度: ' + Math.max(0, stack.length - 1), W / 2, 215);
+    ctx.fillStyle = '#ffd54a'; ctx.font = '24px Arial';
+    ctx.fillText('得分: ' + score, W / 2, 255);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(W / 2 - 100, 300, 200, 60);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 24px Arial';
+    ctx.fillText('再来一次', W / 2, 338);
+  }
+}
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+cv.addEventListener('click', e => {
+  const rect = cv.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+  if (state === 'start') {
+    if (mx > W / 2 - 100 && mx < W / 2 + 100 && my > 300 && my < 360) startGame();
+    return;
+  }
+  if (state === 'over') {
+    if (mx > W / 2 - 100 && mx < W / 2 + 100 && my > 300 && my < 360) startGame();
+    return;
+  }
+  if (state === 'play') drop();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state === 'start' || state === 'over') startGame();
+    else if (state === 'play') drop();
+  }
+  if (e.code === 'Enter' && (state === 'start' || state === 'over')) startGame();
+});
+
+loop();
+</script>
+</body>
+</html>

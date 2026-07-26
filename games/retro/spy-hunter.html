@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>间谍猎人</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0, lives = 3, distance = 0, speed = 3, highScore = 0;
+let keys = {};
+let player, enemies, bullets, obstacles, powerups, particles;
+let roadOffset = 0, spawnTimer = 0, obstacleTimer = 0, powerupTimer = 0;
+let shieldTimer = 0, missileMode = false, missileTimer = 0;
+let difficulty = 1, enemiesKilled = 0, frameCount = 0;
+
+document.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault(); });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+const ROAD_LEFT = 150, ROAD_RIGHT = 650, LANE_W = (ROAD_RIGHT - ROAD_LEFT) / 4;
+
+function initGame() {
+  player = { x: W / 2 - 15, y: H - 80, w: 30, h: 50, vx: 0, shootCd: 0 };
+  enemies = []; bullets = []; obstacles = []; powerups = []; particles = [];
+  score = 0; lives = 3; distance = 0; speed = 3; difficulty = 1;
+  shieldTimer = 0; missileMode = false; missileTimer = 0;
+  spawnTimer = 0; obstacleTimer = 0; powerupTimer = 0;
+  enemiesKilled = 0; frameCount = 0;
+}
+
+function spawnEnemy() {
+  let lane = Math.floor(Math.random() * 4);
+  let x = ROAD_LEFT + lane * LANE_W + LANE_W / 2 - 15;
+  let type = Math.random() < 0.3 ? 'shooter' : 'rammer';
+  enemies.push({
+    x: x, y: -60, w: 30, h: 50, type: type,
+    vy: speed * 0.5 + Math.random() * 1.5,
+    vx: 0, hp: type === 'shooter' ? 2 : 1,
+    shootTimer: 60 + Math.random() * 60,
+    swerve: Math.random() < 0.4
+  });
+}
+
+function spawnObstacle() {
+  let type = Math.random() < 0.5 ? 'oil' : 'barrier';
+  let x = ROAD_LEFT + Math.random() * (ROAD_RIGHT - ROAD_LEFT - 40);
+  obstacles.push({ x: x, y: -40, w: type === 'oil' ? 35 : 50, h: type === 'oil' ? 35 : 20, type: type });
+}
+
+function spawnPowerup() {
+  let type = Math.random() < 0.5 ? 'shield' : 'missile';
+  let x = ROAD_LEFT + Math.random() * (ROAD_RIGHT - ROAD_LEFT - 30);
+  powerups.push({ x: x, y: -30, w: 25, h: 25, type: type });
+}
+
+function addParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x: x, y: y, vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6,
+      life: 20 + Math.random() * 20, color: color, size: 2 + Math.random() * 4
+    });
+  }
+}
+
+function update() {
+  if (state !== 'playing') return;
+
+  distance += speed;
+  score += Math.floor(speed / 3);
+  difficulty = 1 + Math.floor(distance / 3000) * 0.3;
+  speed = 3 + distance / 5000;
+  roadOffset = (roadOffset + speed) % 40;
+
+  // Player movement
+  if (keys['ArrowLeft']) player.vx = -5;
+  else if (keys['ArrowRight']) player.vx = 5;
+  else player.vx *= 0.8;
+  player.x += player.vx;
+  player.x = Math.max(ROAD_LEFT + 5, Math.min(ROAD_RIGHT - player.w - 5, player.x));
+  if (player.shootCd > 0) player.shootCd--;
+
+  // Shooting
+  if (keys['Space'] && player.shootCd <= 0) {
+    if (missileMode) {
+      bullets.push({ x: player.x + player.w/2 - 4, y: player.y - 10, w: 8, h: 16, vy: -10, missile: true });
+      player.shootCd = 20;
+    } else {
+      bullets.push({ x: player.x + player.w/2 - 2, y: player.y - 8, w: 4, h: 12, vy: -9, missile: false });
+      player.shootCd = 10;
+    }
+  }
+
+  // Timers
+  if (shieldTimer > 0) shieldTimer--;
+  if (missileTimer > 0) { missileTimer--; if (missileTimer <= 0) missileMode = false; }
+
+  // Spawn logic
+  spawnTimer--;
+  if (spawnTimer <= 0) { spawnEnemy(); spawnTimer = Math.max(30, 80 - difficulty * 10); }
+  obstacleTimer--;
+  if (obstacleTimer <= 0) { spawnObstacle(); obstacleTimer = 100 + Math.random() * 80; }
+  powerupTimer--;
+  if (powerupTimer <= 0) { spawnPowerup(); powerupTimer = 400 + Math.random() * 300; }
+
+  // Update bullets
+  bullets = bullets.filter(b => { b.y += b.vy; return b.y > -20; });
+
+  // Update enemies
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    let e = enemies[i];
+    e.y += e.vy + speed * 0.3;
+    if (e.swerve) { e.x += Math.sin(e.y * 0.03) * 2; }
+    e.x = Math.max(ROAD_LEFT, Math.min(ROAD_RIGHT - e.w, e.x));
+
+    if (e.type === 'shooter') {
+      e.shootTimer--;
+      if (e.shootTimer <= 0 && e.y > 0 && e.y < H - 100) {
+        bullets.push({ x: e.x + e.w/2 - 2, y: e.y + e.h, w: 4, h: 10, vy: 5, enemy: true });
+        e.shootTimer = 80 + Math.random() * 60;
+      }
+    }
+
+    // Off screen
+    if (e.y > H + 60) { enemies.splice(i, 1); continue; }
+
+    // Bullet collision
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      let b = bullets[j];
+      if (b.enemy) continue;
+      if (b.x < e.x + e.w && b.x + b.w > e.x && b.y < e.y + e.h && b.y + b.h > e.y) {
+        e.hp -= b.missile ? 3 : 1;
+        bullets.splice(j, 1);
+        addParticles(e.x + e.w/2, e.y + e.h/2, '#fa0', 5);
+        if (e.hp <= 0) {
+          addParticles(e.x + e.w/2, e.y + e.h/2, '#f50', 15);
+          score += e.type === 'shooter' ? 200 : 100;
+          enemiesKilled++;
+          enemies.splice(i, 1);
+        }
+        break;
+      }
+    }
+
+    // Player collision
+    if (i < enemies.length && player.x < e.x + e.w && player.x + player.w > e.x &&
+        player.y < e.y + e.h && player.y + player.h > e.y) {
+      if (shieldTimer > 0) {
+        addParticles(e.x + e.w/2, e.y + e.h/2, '#0ff', 10);
+        enemies.splice(i, 1); score += 50;
+      } else {
+        loseLife();
+      }
+    }
+  }
+
+  // Enemy bullets hit player
+  for (let j = bullets.length - 1; j >= 0; j--) {
+    let b = bullets[j];
+    if (!b.enemy) continue;
+    if (b.x < player.x + player.w && b.x + b.w > player.x && b.y < player.y + player.h && b.y + b.h > player.y) {
+      bullets.splice(j, 1);
+      if (shieldTimer <= 0) loseLife();
+    }
+    if (b.y > H + 20) bullets.splice(j, 1);
+  }
+
+  // Update obstacles
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    let o = obstacles[i];
+    o.y += speed;
+    if (o.y > H + 50) { obstacles.splice(i, 1); continue; }
+    if (player.x < o.x + o.w && player.x + player.w > o.x && player.y < o.y + o.h && player.y + player.h > o.y) {
+      if (o.type === 'oil') { player.vx = (Math.random() - 0.5) * 12; }
+      else { if (shieldTimer <= 0) loseLife(); }
+      obstacles.splice(i, 1);
+    }
+  }
+
+  // Update powerups
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    let p = powerups[i];
+    p.y += speed;
+    if (p.y > H + 30) { powerups.splice(i, 1); continue; }
+    if (player.x < p.x + p.w && player.x + player.w > p.x && player.y < p.y + p.h && player.y + player.h > p.y) {
+      if (p.type === 'shield') shieldTimer = 300;
+      else { missileMode = true; missileTimer = 400; }
+      powerups.splice(i, 1);
+      addParticles(player.x + player.w/2, player.y, '#0f0', 8);
+    }
+  }
+
+  // Update particles
+  particles = particles.filter(p => { p.x += p.vx; p.y += p.vy; p.life--; return p.life > 0; });
+}
+
+function loseLife() {
+  lives--;
+  addParticles(player.x + player.w/2, player.y + player.h/2, '#f00', 20);
+  if (lives <= 0) {
+    if (score > highScore) highScore = score;
+    state = 'gameover';
+    return;
+  }
+  shieldTimer = 90;
+  player.x = W / 2 - 15;
+}
+
+function draw() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'gameover') { drawGameOver(); return; }
+
+  // Road
+  ctx.fillStyle = '#333';
+  ctx.fillRect(ROAD_LEFT, 0, ROAD_RIGHT - ROAD_LEFT, H);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(0, 0, ROAD_LEFT, H);
+  ctx.fillRect(ROAD_RIGHT, 0, W - ROAD_RIGHT, H);
+
+  // Lane markings
+  ctx.strokeStyle = '#666';
+  ctx.setLineDash([20, 20]);
+  ctx.lineWidth = 2;
+  for (let i = 1; i < 4; i++) {
+    let x = ROAD_LEFT + i * LANE_W;
+    ctx.beginPath();
+    ctx.moveTo(x, -40 + roadOffset);
+    for (let y = -40 + roadOffset; y < H; y += 40) {
+      ctx.moveTo(x, y); ctx.lineTo(x, y + 20);
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Road edges
+  ctx.fillStyle = '#f00';
+  for (let y = -40 + roadOffset; y < H; y += 40) {
+    ctx.fillRect(ROAD_LEFT - 5, y, 5, 20);
+    ctx.fillRect(ROAD_RIGHT, y, 5, 20);
+  }
+
+  // Obstacles
+  for (let o of obstacles) {
+    if (o.type === 'oil') {
+      ctx.fillStyle = '#222';
+      ctx.beginPath();
+      ctx.ellipse(o.x + o.w/2, o.y + o.h/2, o.w/2, o.h/2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#444';
+      ctx.beginPath();
+      ctx.ellipse(o.x + o.w/3, o.y + o.h/3, 5, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = '#f80';
+      ctx.fillRect(o.x, o.y, o.w, o.h);
+      ctx.fillStyle = '#000';
+      for (let sx = o.x; sx < o.x + o.w; sx += 12) ctx.fillRect(sx, o.y, 6, o.h);
+    }
+  }
+
+  // Powerups
+  for (let p of powerups) {
+    ctx.fillStyle = p.type === 'shield' ? '#0af' : '#f50';
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px monospace';
+    ctx.fillText(p.type === 'shield' ? 'S' : 'M', p.x + 8, p.y + 17);
+  }
+
+  // Enemies
+  for (let e of enemies) {
+    ctx.fillStyle = e.type === 'shooter' ? '#c44' : '#a66';
+    ctx.fillRect(e.x, e.y, e.w, e.h);
+    ctx.fillStyle = '#800';
+    ctx.fillRect(e.x + 3, e.y + 3, e.w - 6, 12);
+    ctx.fillStyle = '#ff0';
+    ctx.fillRect(e.x + 5, e.y + e.h - 8, 6, 6);
+    ctx.fillRect(e.x + e.w - 11, e.y + e.h - 8, 6, 6);
+  }
+
+  // Player
+  if (shieldTimer > 0 && shieldTimer % 6 < 3) {
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(player.x - 4, player.y - 4, player.w + 8, player.h + 8);
+  }
+  ctx.fillStyle = '#4af';
+  ctx.fillRect(player.x, player.y, player.w, player.h);
+  ctx.fillStyle = '#28d';
+  ctx.fillRect(player.x + 3, player.y + 3, player.w - 6, 15);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(player.x + 5, player.y + player.h - 10, 6, 8);
+  ctx.fillRect(player.x + player.w - 11, player.y + player.h - 10, 6, 8);
+
+  // Bullets
+  for (let b of bullets) {
+    if (b.enemy) { ctx.fillStyle = '#f44'; }
+    else if (b.missile) { ctx.fillStyle = '#f80'; }
+    else { ctx.fillStyle = '#ff0'; }
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+  }
+
+  // Particles
+  for (let p of particles) {
+    ctx.globalAlpha = p.life / 40;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+
+  // HUD
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, 32);
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px monospace';
+  ctx.fillText('分数: ' + score, 10, 22);
+  ctx.fillText('生命: ' + '♥'.repeat(lives), 160, 22);
+  ctx.fillText('距离: ' + Math.floor(distance / 100) + 'm', 300, 22);
+  if (shieldTimer > 0) { ctx.fillStyle = '#0ff'; ctx.fillText('护盾: ' + Math.ceil(shieldTimer/60) + 's', 450, 22); }
+  if (missileMode) { ctx.fillStyle = '#f80'; ctx.fillText('导弹: ' + Math.ceil(missileTimer/60) + 's', 570, 22); }
+}
+
+function drawTitle() {
+  // Animated road background
+  ctx.fillStyle = '#333';
+  ctx.fillRect(ROAD_LEFT, 0, ROAD_RIGHT - ROAD_LEFT, H);
+  ctx.strokeStyle = '#555';
+  ctx.setLineDash([20, 20]);
+  let animOffset = (Date.now() / 20) % 40;
+  for (let i = 1; i < 4; i++) {
+    let x = ROAD_LEFT + i * LANE_W;
+    ctx.beginPath();
+    ctx.moveTo(x, -40 + animOffset);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // Title text
+  ctx.fillStyle = '#f44';
+  ctx.font = 'bold 48px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('间谍猎人', W/2, 120);
+  ctx.fillStyle = '#888';
+  ctx.font = '18px monospace';
+  ctx.fillText('SPY HUNTER', W/2, 155);
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px monospace';
+  ctx.fillText('驾驶间谍车在高速公路上消灭敌人', W/2, 210);
+  ctx.fillText('← → 转向 | 空格 射击', W/2, 245);
+  ctx.fillText('躲避障碍物，收集强化道具', W/2, 275);
+  ctx.fillStyle = '#0af'; ctx.fillText('S = 护盾 (无敌5秒)', W/2 - 100, 315);
+  ctx.fillStyle = '#f80'; ctx.fillText('M = 导弹 (高伤害)', W/2 + 100, 315);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '14px monospace';
+  ctx.fillText('敌人类型: 红色=射击型 | 暗红=冲撞型', W/2, 355);
+  if (highScore > 0) {
+    ctx.fillStyle = '#fa0';
+    ctx.fillText('最高分: ' + highScore, W/2, 385);
+  }
+  ctx.fillStyle = '#ff0';
+  ctx.font = '20px monospace';
+  ctx.fillText('按 ENTER 开始游戏', W/2, 430);
+  ctx.textAlign = 'left';
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#f33';
+  ctx.font = 'bold 48px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('任务失败', W/2, 140);
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px monospace';
+  ctx.fillText('最终分数: ' + score, W/2, 210);
+  ctx.font = '18px monospace';
+  ctx.fillText('行驶距离: ' + Math.floor(distance / 100) + 'm', W/2, 250);
+  ctx.fillText('击毁敌人: ' + enemiesKilled + ' 辆', W/2, 285);
+  ctx.fillText('最高难度: ' + difficulty.toFixed(1), W/2, 320);
+  if (score >= highScore && score > 0) {
+    ctx.fillStyle = '#fa0';
+    ctx.fillText('★ 新纪录! ★', W/2, 355);
+  }
+  ctx.fillStyle = '#ff0';
+  ctx.font = '18px monospace';
+  ctx.fillText('按 ENTER 重新开始', W/2, 410);
+  ctx.textAlign = 'left';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Enter') {
+    if (state === 'title' || state === 'gameover') { initGame(); state = 'playing'; }
+  }
+});
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

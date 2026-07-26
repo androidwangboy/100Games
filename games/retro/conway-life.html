@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>生命游戏</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title';
+const COLS = 40, ROWS = 24;
+const CELL = 18;
+const OX = 40, OY = 50;
+let grid = [], next = [];
+let running = false;
+let generation = 0;
+let speed = 200;
+let lastTick = 0;
+let painting = false;
+let paintVal = 1;
+
+function makeGrid() { return Array(COLS * ROWS).fill(0); }
+
+function initGame() {
+  grid = makeGrid(); next = makeGrid();
+  generation = 0; score = 0; running = false;
+}
+
+function randomize() {
+  for (let i = 0; i < COLS * ROWS; i++) grid[i] = Math.random() < 0.3 ? 1 : 0;
+  generation = 0; score = 0;
+}
+
+function getPopulation() {
+  let count = 0;
+  for (let i = 0; i < COLS * ROWS; i++) count += grid[i];
+  return count;
+}
+
+function countNeighbors(idx) {
+  const r = Math.floor(idx / COLS), c = idx % COLS;
+  let count = 0;
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = (r + dr + ROWS) % ROWS;
+      const nc = (c + dc + COLS) % COLS;
+      count += grid[nr * COLS + nc];
+    }
+  }
+  return count;
+}
+
+function step() {
+  for (let i = 0; i < COLS * ROWS; i++) {
+    const n = countNeighbors(i);
+    if (grid[i]) next[i] = (n === 2 || n === 3) ? 1 : 0;
+    else next[i] = (n === 3) ? 1 : 0;
+  }
+  [grid, next] = [next, grid];
+  generation++; score = generation;
+}
+
+// Toolbar buttons
+const buttons = [
+  { label: '播放', x: 40, w: 65, action: () => { running = true; } },
+  { label: '暂停', x: 112, w: 65, action: () => { running = false; } },
+  { label: '单步', x: 184, w: 65, action: () => { step(); } },
+  { label: '清空', x: 256, w: 65, action: () => { grid = makeGrid(); generation = 0; score = 0; running = false; } },
+  { label: '随机', x: 328, w: 65, action: () => { randomize(); } },
+  { label: '加速', x: 480, w: 65, action: () => { speed = Math.max(50, speed - 50); } },
+  { label: '减速', x: 552, w: 65, action: () => { speed = Math.min(500, speed + 50); } },
+];
+
+function cellFromMouse(mx, my) {
+  const col = Math.floor((mx - OX) / CELL);
+  const row = Math.floor((my - OY) / CELL);
+  if (col >= 0 && col < COLS && row >= 0 && row < ROWS) return row * COLS + col;
+  return -1;
+}
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') {
+    if (mx > 300 && mx < 500 && my > 330 && my < 390) { initGame(); state = 'playing'; }
+    return;
+  }
+  // Buttons (top bar y: 8-38)
+  if (my > 8 && my < 38) {
+    for (const b of buttons) {
+      if (mx > b.x && mx < b.x + b.w) { b.action(); return; }
+    }
+  }
+  // Start painting cells
+  const idx = cellFromMouse(mx, my);
+  if (idx >= 0) {
+    painting = true;
+    paintVal = grid[idx] ? 0 : 1;
+    grid[idx] = paintVal;
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!painting || state !== 'playing') return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  const idx = cellFromMouse(mx, my);
+  if (idx >= 0) grid[idx] = paintVal;
+});
+
+canvas.addEventListener('mouseup', () => { painting = false; });
+canvas.addEventListener('mouseleave', () => { painting = false; });
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#69f0ae';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('生命游戏', 400, 110);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText("Conway's Game of Life (B3/S23)", 400, 160);
+  ctx.fillStyle = '#999';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('点击或拖拽网格放置/擦除细胞', 400, 210);
+  ctx.fillText('存活规则：周围有 2-3 个邻居时继续存活', 400, 242);
+  ctx.fillText('诞生规则：死细胞周围恰好 3 个邻居时复活', 400, 274);
+  ctx.fillText('空格键可快速播放/暂停', 400, 306);
+  // Start button
+  ctx.fillStyle = '#1b5e20';
+  ctx.fillRect(300, 340, 200, 55);
+  ctx.strokeStyle = '#69f0ae';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(300, 340, 200, 55);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('开始', 400, 368);
+}
+
+function drawPlaying(ts) {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+
+  // Toolbar buttons
+  for (const b of buttons) {
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(b.x, 8, b.w, 30);
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(b.x, 8, b.w, 30);
+    ctx.fillStyle = '#ddd';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w / 2, 23);
+  }
+
+  // Status line
+  const pop = getPopulation();
+  ctx.fillStyle = '#69f0ae';
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const statusText = `世代:${generation} 人口:${pop} 速度:${speed}ms ${running ? '▶' : '⏸'}`;
+  ctx.fillText(statusText, 780, 23);
+
+  // Draw grid cells
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x = OX + c * CELL, y = OY + r * CELL;
+      if (grid[r * COLS + c]) {
+        ctx.fillStyle = '#69f0ae';
+        ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+      } else {
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+      }
+    }
+  }
+
+  // Grid border
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(OX, OY, COLS * CELL, ROWS * CELL);
+
+  // Footer hint
+  ctx.fillStyle = '#555';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('拖拽绘制 | 空格=播放/暂停 | ESC=退出', OX, 478);
+
+  // Auto step when running
+  if (running && ts - lastTick > speed) {
+    step();
+    lastTick = ts;
+  }
+}
+
+function render(ts) {
+  if (state === 'title') drawTitle();
+  else drawPlaying(ts || 0);
+  requestAnimationFrame(render);
+}
+render();
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (state === 'playing' && e.code === 'Space') { e.preventDefault(); running = !running; }
+});
+</script>
+</body>
+</html>

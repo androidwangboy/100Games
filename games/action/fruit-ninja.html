@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>水果忍者</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0, combo = 0, comboTimer = 0, missed = 0, maxMissed = 3;
+let fruits = [], particles = [], bladeTrail = [], sliceHalves = [];
+let splashes = [];
+let mouseDown = false, mouseX = 0, mouseY = 0;
+let spawnTimer = 0, spawnInterval = 90, difficulty = 0;
+let bestScore = 0, frameCount = 0;
+let screenShake = 0, flashAlpha = 0;
+let totalSliced = 0, maxCombo = 0;
+
+const FRUIT_TYPES = [
+  { name: '西瓜', color: '#2ecc71', inner: '#e74c3c', radius: 32, seeds: true },
+  { name: '橙子', color: '#f39c12', inner: '#f1c40f', radius: 24, seeds: false },
+  { name: '苹果', color: '#e74c3c', inner: '#ecf0f1', radius: 22, seeds: true },
+  { name: '猕猴桃', color: '#795548', inner: '#8bc34a', radius: 20, seeds: true },
+  { name: '蓝莓', color: '#3f51b5', inner: '#7986cb', radius: 16, seeds: false },
+  { name: '柠檬', color: '#ffeb3b', inner: '#fff9c4', radius: 21, seeds: false },
+  { name: '桃子', color: '#ff8a80', inner: '#ffe0b2', radius: 23, seeds: true },
+  { name: '葡萄', color: '#7b1fa2', inner: '#ce93d8', radius: 18, seeds: false },
+];
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space' || e.code === 'Enter') {
+    if (state === 'title') startGame();
+    else if (state === 'gameover') startGame();
+  }
+});
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) * (W / rect.width);
+  mouseY = (e.clientY - rect.top) * (H / rect.height);
+  mouseDown = true;
+  bladeTrail = [{ x: mouseX, y: mouseY, t: Date.now() }];
+  if (state === 'title') startGame();
+  else if (state === 'gameover') startGame();
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) * (W / rect.width);
+  mouseY = (e.clientY - rect.top) * (H / rect.height);
+  if (mouseDown && state === 'playing') {
+    bladeTrail.push({ x: mouseX, y: mouseY, t: Date.now() });
+    if (bladeTrail.length > 25) bladeTrail.shift();
+    checkSlice();
+  }
+});
+
+canvas.addEventListener('mouseup', () => { mouseDown = false; });
+canvas.addEventListener('mouseleave', () => { mouseDown = false; });
+
+function startGame() {
+  state = 'playing';
+  score = 0; combo = 0; comboTimer = 0; missed = 0;
+  fruits = []; particles = []; bladeTrail = []; sliceHalves = []; splashes = [];
+  spawnTimer = 0; spawnInterval = 80; difficulty = 0; frameCount = 0;
+  screenShake = 0; flashAlpha = 0; totalSliced = 0; maxCombo = 0;
+}
+
+function spawnFruit() {
+  const isBomb = Math.random() < 0.12 + difficulty * 0.02;
+  const type = FRUIT_TYPES[Math.floor(Math.random() * FRUIT_TYPES.length)];
+  const x = 80 + Math.random() * (W - 160);
+  const targetX = W / 2 + (Math.random() - 0.5) * 300;
+  const vx = (targetX - x) / 60 + (Math.random() - 0.5) * 2;
+  const vy = -(11 + Math.random() * 4 + difficulty * 0.5);
+  fruits.push({
+    x, y: H + 40, vx, vy,
+    radius: isBomb ? 26 : type.radius,
+    color: type.color, inner: type.inner, name: type.name,
+    isBomb, rotation: Math.random() * Math.PI * 2,
+    rotSpeed: (Math.random() - 0.5) * 0.12, sliced: false,
+    seeds: type.seeds
+  });
+}
+
+function checkSlice() {
+  if (bladeTrail.length < 2) return;
+  const p1 = bladeTrail[bladeTrail.length - 2];
+  const p2 = bladeTrail[bladeTrail.length - 1];
+  const speed = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  if (speed < 3) return;
+  let slicedThisFrame = 0;
+
+  for (let i = fruits.length - 1; i >= 0; i--) {
+    const f = fruits[i];
+    if (f.sliced) continue;
+    if (lineCircleIntersect(p1.x, p1.y, p2.x, p2.y, f.x, f.y, f.radius + 5)) {
+      f.sliced = true;
+      if (f.isBomb) {
+        explodeBomb(f);
+        screenShake = 20;
+        flashAlpha = 0.8;
+        gameOver();
+        return;
+      }
+      slicedThisFrame++;
+      totalSliced++;
+      createSliceHalves(f, p1, p2);
+      createJuice(f);
+      createSplash(f);
+      fruits.splice(i, 1);
+    }
+  }
+
+  if (slicedThisFrame > 0) {
+    combo += slicedThisFrame;
+    comboTimer = 35;
+    if (combo > maxCombo) maxCombo = combo;
+    const bonus = combo >= 3 ? combo * 2 : slicedThisFrame;
+    score += bonus * 10;
+    if (combo >= 3) {
+      particles.push({
+        x: W / 2, y: 80, vx: 0, vy: -0.5,
+        radius: 0, color: '#f1c40f', alpha: 1, life: 50,
+        text: `连击 x${combo}! +${bonus * 10}`, isText: true
+      });
+    }
+  }
+}
+
+function lineCircleIntersect(x1, y1, x2, y2, cx, cy, r) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const fx = x1 - cx, fy = y1 - cy;
+  const a = dx * dx + dy * dy;
+  if (a === 0) return Math.hypot(fx, fy) <= r;
+  const b = 2 * (fx * dx + fy * dy);
+  const c = fx * fx + fy * fy - r * r;
+  let disc = b * b - 4 * a * c;
+  if (disc < 0) return false;
+  disc = Math.sqrt(disc);
+  const t1 = (-b - disc) / (2 * a);
+  const t2 = (-b + disc) / (2 * a);
+  return (t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1) || (t1 < 0 && t2 > 1);
+}
+
+function createSliceHalves(f, p1, p2) {
+  const sliceAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+  const perpAngle = sliceAngle + Math.PI / 2;
+  for (let side = -1; side <= 1; side += 2) {
+    sliceHalves.push({
+      x: f.x, y: f.y,
+      vx: Math.cos(perpAngle) * side * (2 + Math.random() * 2) + f.vx * 0.5,
+      vy: Math.sin(perpAngle) * side * (1 + Math.random()) - 2,
+      radius: f.radius, color: f.color, inner: f.inner,
+      angle: sliceAngle, rotSpeed: side * 0.06, alpha: 1, side,
+      seeds: f.seeds
+    });
+  }
+}
+
+function createJuice(f) {
+  const count = 10 + Math.floor(f.radius / 3);
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 5;
+    particles.push({
+      x: f.x + (Math.random() - 0.5) * f.radius,
+      y: f.y + (Math.random() - 0.5) * f.radius,
+      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 2,
+      radius: 2 + Math.random() * 4, color: f.inner,
+      alpha: 1, life: 35 + Math.random() * 25
+    });
+  }
+}
+
+function createSplash(f) {
+  splashes.push({ x: f.x, y: f.y, radius: f.radius * 0.5, maxRadius: f.radius * 2.5, color: f.inner, alpha: 0.4 });
+}
+
+function explodeBomb(f) {
+  for (let i = 0; i < 35; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 3 + Math.random() * 8;
+    particles.push({
+      x: f.x, y: f.y,
+      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+      radius: 3 + Math.random() * 6,
+      color: ['#ff6600', '#ffcc00', '#ff3300', '#fff'][Math.floor(Math.random() * 4)],
+      alpha: 1, life: 30 + Math.random() * 25
+    });
+  }
+}
+
+function gameOver() {
+  state = 'gameover';
+  if (score > bestScore) bestScore = score;
+}
+
+function update() {
+  frameCount++;
+  if (screenShake > 0) screenShake *= 0.85;
+  if (flashAlpha > 0) flashAlpha -= 0.05;
+
+  if (state !== 'playing') return;
+
+  difficulty = Math.min(frameCount / 2500, 3.5);
+  spawnInterval = Math.max(30, 80 - difficulty * 14);
+
+  spawnTimer++;
+  if (spawnTimer >= spawnInterval) {
+    spawnTimer = 0;
+    const count = 1 + Math.floor(Math.random() * (1 + difficulty * 0.8));
+    for (let i = 0; i < count; i++) {
+      setTimeout(() => { if (state === 'playing') spawnFruit(); }, i * 120);
+    }
+  }
+
+  for (let i = fruits.length - 1; i >= 0; i--) {
+    const f = fruits[i];
+    f.x += f.vx; f.y += f.vy; f.vy += 0.22;
+    f.rotation += f.rotSpeed;
+    if (f.y > H + 60 && f.vy > 0) {
+      if (!f.isBomb && !f.sliced) {
+        missed++;
+        screenShake = 8;
+        if (missed >= maxMissed) gameOver();
+      }
+      fruits.splice(i, 1);
+    }
+  }
+
+  for (let i = sliceHalves.length - 1; i >= 0; i--) {
+    const h = sliceHalves[i];
+    h.x += h.vx; h.y += h.vy; h.vy += 0.35;
+    h.angle += h.rotSpeed; h.alpha -= 0.01;
+    if (h.alpha <= 0 || h.y > H + 80) sliceHalves.splice(i, 1);
+  }
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx || 0; p.y += p.vy || 0;
+    if (!p.isText) p.vy += 0.15;
+    p.life--; p.alpha = Math.max(0, p.life / 40);
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  for (let i = splashes.length - 1; i >= 0; i--) {
+    const s = splashes[i];
+    s.radius += (s.maxRadius - s.radius) * 0.1;
+    s.alpha -= 0.015;
+    if (s.alpha <= 0) splashes.splice(i, 1);
+  }
+
+  if (comboTimer > 0) { comboTimer--; if (comboTimer === 0) combo = 0; }
+
+  const now = Date.now();
+  bladeTrail = bladeTrail.filter(p => now - p.t < 120);
+}
+
+function drawFruit(f) {
+  ctx.save();
+  ctx.translate(f.x, f.y);
+  ctx.rotate(f.rotation);
+  if (f.isBomb) {
+    ctx.fillStyle = '#1a1a2e';
+    ctx.beginPath(); ctx.arc(0, 0, f.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, 0, f.radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#e74c3c';
+    ctx.beginPath(); ctx.arc(0, 0, f.radius * 0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#95a5a6'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0, -f.radius);
+    ctx.quadraticCurveTo(10, -f.radius - 14, 5, -f.radius - 20); ctx.stroke();
+    const sparkSize = 3 + Math.sin(frameCount * 0.3) * 2;
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath(); ctx.arc(5, -f.radius - 20, sparkSize, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('✖', 0, 4);
+  } else {
+    ctx.fillStyle = f.color;
+    ctx.beginPath(); ctx.arc(0, 0, f.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = f.inner;
+    ctx.beginPath(); ctx.arc(0, 0, f.radius * 0.7, 0, Math.PI * 2); ctx.fill();
+    if (f.seeds) {
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      for (let s = 0; s < 5; s++) {
+        const sa = (s / 5) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.ellipse(Math.cos(sa) * f.radius * 0.35, Math.sin(sa) * f.radius * 0.35, 2, 3, sa, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath(); ctx.arc(-f.radius * 0.3, -f.radius * 0.3, f.radius * 0.2, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawHalf(h) {
+  ctx.save();
+  ctx.globalAlpha = h.alpha;
+  ctx.translate(h.x, h.y);
+  ctx.rotate(h.angle);
+  ctx.beginPath();
+  ctx.arc(0, 0, h.radius, h.side > 0 ? -Math.PI / 2 : Math.PI / 2, h.side > 0 ? Math.PI / 2 : Math.PI * 1.5);
+  ctx.closePath();
+  ctx.fillStyle = h.color; ctx.fill();
+  ctx.beginPath();
+  ctx.arc(0, 0, h.radius * 0.7, h.side > 0 ? -Math.PI / 2 : Math.PI / 2, h.side > 0 ? Math.PI / 2 : Math.PI * 1.5);
+  ctx.closePath();
+  ctx.fillStyle = h.inner; ctx.fill();
+  ctx.restore();
+}
+
+function drawBlade() {
+  if (bladeTrail.length < 2) return;
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (let i = 1; i < bladeTrail.length; i++) {
+    const alpha = i / bladeTrail.length;
+    const width = alpha * 6;
+    ctx.strokeStyle = `rgba(200, 230, 255, ${alpha * 0.9})`;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(bladeTrail[i - 1].x, bladeTrail[i - 1].y);
+    ctx.lineTo(bladeTrail[i].x, bladeTrail[i].y);
+    ctx.stroke();
+  }
+  if (bladeTrail.length > 2) {
+    ctx.strokeStyle = 'rgba(100, 180, 255, 0.3)';
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    ctx.moveTo(bladeTrail[0].x, bladeTrail[0].y);
+    for (let i = 1; i < bladeTrail.length; i++) ctx.lineTo(bladeTrail[i].x, bladeTrail[i].y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawBackground() {
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#1a1a2e');
+  grad.addColorStop(0.5, '#16213e');
+  grad.addColorStop(1, '#0f3460');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,0.015)';
+  for (let i = 0; i < 6; i++) {
+    const bx = 100 + i * 130;
+    const by = 80 + Math.sin(frameCount * 0.008 + i * 1.2) * 30;
+    ctx.beginPath(); ctx.arc(bx, by, 50 + i * 10, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawHUD() {
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(`${score}`, 20, 38);
+  ctx.font = '13px sans-serif'; ctx.fillStyle = '#aaa';
+  ctx.fillText('分数', 20, 55);
+  ctx.textAlign = 'right';
+  for (let i = 0; i < maxMissed; i++) {
+    const isLost = i < missed;
+    ctx.font = '24px sans-serif';
+    ctx.fillStyle = isLost ? '#555' : '#e74c3c';
+    ctx.fillText(isLost ? '✕' : '❤', W - 20 - i * 32, 36);
+  }
+  if (combo >= 3 && comboTimer > 0) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = `bold ${26 + combo}px sans-serif`;
+    ctx.globalAlpha = comboTimer / 35;
+    ctx.fillText(`连击 x${combo}!`, W / 2, 70);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawTitle() {
+  drawBackground();
+  ctx.textAlign = 'center';
+  const pulse = Math.sin(frameCount * 0.05) * 3;
+  ctx.fillStyle = '#e74c3c'; ctx.font = `bold ${50 + pulse}px sans-serif`;
+  ctx.fillText('水果忍者', W / 2, H / 2 - 70);
+  ctx.fillStyle = '#f39c12'; ctx.font = '28px sans-serif';
+  ctx.fillText('🍉 🍊 🍋 🍇 🍎', W / 2, H / 2 - 25);
+  ctx.fillStyle = '#ecf0f1'; ctx.font = '19px sans-serif';
+  ctx.fillText('用鼠标滑动切割水果，避开炸弹！', W / 2, H / 2 + 20);
+  ctx.fillText('漏掉3个水果游戏结束，连续切割获得连击加分', W / 2, H / 2 + 52);
+  ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 22px sans-serif';
+  const blink = Math.sin(frameCount * 0.06) > 0;
+  if (blink) ctx.fillText('点击或按空格开始', W / 2, H / 2 + 105);
+  if (bestScore > 0) {
+    ctx.fillStyle = '#95a5a6'; ctx.font = '17px sans-serif';
+    ctx.fillText(`最高分: ${bestScore}`, W / 2, H / 2 + 145);
+  }
+}
+
+function drawGameOver() {
+  drawBackground();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e74c3c'; ctx.font = 'bold 48px sans-serif';
+  ctx.fillText('游戏结束', W / 2, H / 2 - 70);
+  ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif';
+  ctx.fillText(`最终分数: ${score}`, W / 2, H / 2 - 15);
+  ctx.fillStyle = '#bbb'; ctx.font = '18px sans-serif';
+  ctx.fillText(`切割水果: ${totalSliced}  最高连击: ${maxCombo}`, W / 2, H / 2 + 25);
+  ctx.fillStyle = '#f1c40f'; ctx.font = '20px sans-serif';
+  ctx.fillText(`最高分: ${bestScore}`, W / 2, H / 2 + 65);
+  ctx.fillStyle = '#95a5a6'; ctx.font = '18px sans-serif';
+  ctx.fillText('点击或按空格重新开始', W / 2, H / 2 + 115);
+}
+
+function render() {
+  ctx.save();
+  if (screenShake > 0.5) {
+    ctx.translate((Math.random() - 0.5) * screenShake, (Math.random() - 0.5) * screenShake);
+  }
+  if (state === 'title') { drawTitle(); ctx.restore(); return; }
+  if (state === 'gameover') { drawGameOver(); ctx.restore(); return; }
+
+  drawBackground();
+
+  for (const s of splashes) {
+    ctx.globalAlpha = s.alpha;
+    ctx.fillStyle = s.color;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  for (const p of particles) {
+    ctx.globalAlpha = p.alpha;
+    if (p.isText) {
+      ctx.fillStyle = p.color; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(p.text, p.x, p.y);
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  sliceHalves.forEach(drawHalf);
+  fruits.forEach(drawFruit);
+  drawBlade();
+  drawHUD();
+
+  if (flashAlpha > 0) {
+    ctx.fillStyle = `rgba(255, 50, 0, ${flashAlpha})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

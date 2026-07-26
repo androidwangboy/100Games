@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>乒乓球</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const PADDLE_W = 12, PADDLE_H = 80, BALL_R = 8;
+const WIN_SCORE = 7;
+
+let state = 'start';
+let score = 0;
+let player, ai, ball, playerScore, aiScore, rally, particles, serveTimer;
+
+function init() {
+  player = {x: 30, y: H/2 - PADDLE_H/2, vy: 0};
+  ai = {x: W - 30 - PADDLE_W, y: H/2 - PADDLE_H/2, vy: 0};
+  playerScore = 0; aiScore = 0; rally = 0;
+  score = 0;
+  particles = [];
+  serveBall(1);
+}
+
+function serveBall(dir) {
+  ball = {x: W/2, y: H/2, vx: 5*dir, vy: (Math.random()-0.5)*6, speed: 5};
+  rally = 0;
+  serveTimer = 60;
+}
+
+function spawnParticles(x, y, color) {
+  for (let i = 0; i < 6; i++) {
+    particles.push({x, y, vx:(Math.random()-0.5)*8, vy:(Math.random()-0.5)*8, life:1, color});
+  }
+}
+
+function update() {
+  if (serveTimer > 0) { serveTimer--; return; }
+
+  // Player movement
+  player.y += player.vy;
+  player.y = Math.max(0, Math.min(H - PADDLE_H, player.y));
+
+  // AI movement
+  const aiCenter = ai.y + PADDLE_H/2;
+  const aiSpeed = 3.5 + rally * 0.15;
+  if (ball.vx > 0) {
+    if (aiCenter < ball.y - 15) ai.y += aiSpeed;
+    else if (aiCenter > ball.y + 15) ai.y -= aiSpeed;
+  } else {
+    if (aiCenter < H/2 - 10) ai.y += 2;
+    else if (aiCenter > H/2 + 10) ai.y -= 2;
+  }
+  ai.y = Math.max(0, Math.min(H - PADDLE_H, ai.y));
+
+  // Ball movement
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+
+  // Top/bottom bounce
+  if (ball.y - BALL_R <= 0 || ball.y + BALL_R >= H) {
+    ball.vy *= -1;
+    ball.y = ball.y - BALL_R <= 0 ? BALL_R : H - BALL_R;
+    spawnParticles(ball.x, ball.y, '#88f');
+  }
+
+  // Player paddle collision
+  if (ball.vx < 0 && ball.x - BALL_R <= player.x + PADDLE_W &&
+      ball.y >= player.y && ball.y <= player.y + PADDLE_H) {
+    const hit = (ball.y - player.y) / PADDLE_H - 0.5;
+    ball.speed = Math.min(12, ball.speed + 0.3);
+    ball.vx = ball.speed;
+    ball.vy = hit * 8;
+    rally++;
+    spawnParticles(ball.x, ball.y, '#0ff');
+  }
+
+  // AI paddle collision
+  if (ball.vx > 0 && ball.x + BALL_R >= ai.x &&
+      ball.y >= ai.y && ball.y <= ai.y + PADDLE_H) {
+    const hit = (ball.y - ai.y) / PADDLE_H - 0.5;
+    ball.speed = Math.min(12, ball.speed + 0.3);
+    ball.vx = -ball.speed;
+    ball.vy = hit * 8;
+    rally++;
+    spawnParticles(ball.x, ball.y, '#f80');
+  }
+
+  // Scoring
+  if (ball.x < -20) {
+    aiScore++;
+    spawnParticles(0, ball.y, '#f44');
+    if (aiScore >= WIN_SCORE) { state = 'over'; score = playerScore; }
+    else serveBall(1);
+  }
+  if (ball.x > W + 20) {
+    playerScore++;
+    score = playerScore;
+    spawnParticles(W, ball.y, '#4f4');
+    if (playerScore >= WIN_SCORE) { state = 'over'; }
+    else serveBall(-1);
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(0, 0, W, H);
+
+  // Center line
+  ctx.setLineDash([10, 10]);
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H); ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (state === 'start') {
+    ctx.fillStyle = '#0ff';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('乒乓球', 400, 150);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px monospace';
+    ctx.fillText('W/S 或 上/下方向键 移动球拍', 400, 230);
+    ctx.fillText(`先得 ${WIN_SCORE} 分获胜`, 400, 270);
+    ctx.fillStyle = '#ff0';
+    ctx.font = '24px monospace';
+    ctx.fillText('按 空格键 开始', 400, 350);
+    ctx.fillStyle = '#666';
+    ctx.font = '16px monospace';
+    ctx.fillText('ESC 退出游戏', 400, 420);
+    return;
+  }
+
+  if (state === 'over') {
+    const won = playerScore >= WIN_SCORE;
+    ctx.fillStyle = won ? '#4f4' : '#f44';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(won ? '你赢了!' : '你输了!', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '32px monospace';
+    ctx.fillText(`${playerScore} : ${aiScore}`, 400, 240);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '22px monospace';
+    ctx.fillText('按 空格键 重新开始', 400, 340);
+    return;
+  }
+
+  // Paddles
+  ctx.shadowColor = '#0ff';
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = '#0ff';
+  ctx.fillRect(player.x, player.y, PADDLE_W, PADDLE_H);
+  ctx.shadowColor = '#f80';
+  ctx.fillStyle = '#f80';
+  ctx.fillRect(ai.x, ai.y, PADDLE_W, PADDLE_H);
+  ctx.shadowBlur = 0;
+
+  // Ball with trail
+  ctx.shadowColor = '#fff';
+  ctx.shadowBlur = 15;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI*2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-3, p.y-3, 6, 6);
+  });
+  ctx.globalAlpha = 1;
+
+  // Score
+  ctx.fillStyle = '#0ff';
+  ctx.font = 'bold 36px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(playerScore, W/4, 50);
+  ctx.fillStyle = '#f80';
+  ctx.fillText(aiScore, 3*W/4, 50);
+
+  // Rally counter
+  if (rally > 3) {
+    ctx.fillStyle = '#ff0';
+    ctx.font = '16px monospace';
+    ctx.fillText(`连续 ${rally} 次!`, W/2, 30);
+  }
+}
+
+const keys = {};
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space') {
+    if (state === 'start' || state === 'over') { init(); state = 'play'; }
+    e.preventDefault();
+  }
+  keys[e.code] = true;
+  e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function loop() {
+  player.vy = 0;
+  if (keys['ArrowUp'] || keys['KeyW']) player.vy = -6;
+  if (keys['ArrowDown'] || keys['KeyS']) player.vy = 6;
+
+  if (state === 'play') update();
+
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life -= 0.04; });
+  particles = particles.filter(p => p.life > 0);
+
+  draw();
+  requestAnimationFrame(loop);
+}
+
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

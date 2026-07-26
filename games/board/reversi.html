@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>黑白棋 - Reversi</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const CELL = 52;
+const BOARD_X = (W - CELL * 8) / 2;
+const BOARD_Y = (H - CELL * 8) / 2;
+const EMPTY = 0, BLACK = 1, WHITE = 2;
+const DIRS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+
+const WEIGHTS = [
+  [120,-20,20,5,5,20,-20,120],
+  [-20,-40,-5,-5,-5,-5,-40,-20],
+  [20,-5,15,3,3,15,-5,20],
+  [5,-5,3,3,3,3,-5,5],
+  [5,-5,3,3,3,3,-5,5],
+  [20,-5,15,3,3,15,-5,20],
+  [-20,-40,-5,-5,-5,-5,-40,-20],
+  [120,-20,20,5,5,20,-20,120]
+];
+
+let gameState = 'title';
+let board = [];
+let currentTurn = BLACK;
+let score = 0;
+let message = '';
+let validCells = [];
+let flipAnims = [];
+let animTimer = 0;
+let winner = '';
+let passCount = 0;
+let moveCount = 0;
+let lastMove = null;
+let hoverCell = null;
+let gameStartTime = 0;
+
+function initBoard() {
+  board = Array.from({length: 8}, () => Array(8).fill(EMPTY));
+  board[3][3] = WHITE; board[3][4] = BLACK;
+  board[4][3] = BLACK; board[4][4] = WHITE;
+  currentTurn = BLACK;
+  score = 0;
+  passCount = 0;
+  winner = '';
+  flipAnims = [];
+  moveCount = 0;
+  lastMove = null;
+  hoverCell = null;
+  gameStartTime = Date.now();
+  message = '你的回合（黑棋）';
+  validCells = getValidMoves(board, BLACK);
+}
+
+function opponent(color) { return color === BLACK ? WHITE : BLACK; }
+
+function getFlips(brd, r, c, color) {
+  if (brd[r][c] !== EMPTY) return [];
+  const opp = opponent(color);
+  let allFlips = [];
+  for (const [dr, dc] of DIRS) {
+    let flips = [];
+    let nr = r + dr, nc = c + dc;
+    while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && brd[nr][nc] === opp) {
+      flips.push([nr, nc]);
+      nr += dr; nc += dc;
+    }
+    if (flips.length > 0 && nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && brd[nr][nc] === color) {
+      allFlips.push(...flips);
+    }
+  }
+  return allFlips;
+}
+
+function getValidMoves(brd, color) {
+  const moves = [];
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++) {
+      if (getFlips(brd, r, c, color).length > 0) moves.push([r, c]);
+    }
+  return moves;
+}
+
+function applyMove(brd, r, c, color) {
+  const nb = brd.map(row => [...row]);
+  const flips = getFlips(nb, r, c, color);
+  nb[r][c] = color;
+  for (const [fr, fc] of flips) nb[fr][fc] = color;
+  return nb;
+}
+
+function countPieces(brd) {
+  let b = 0, w = 0;
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++) {
+      if (brd[r][c] === BLACK) b++;
+      else if (brd[r][c] === WHITE) w++;
+    }
+  return { black: b, white: w };
+}
+
+function evaluate(brd) {
+  let val = 0;
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++) {
+      if (brd[r][c] === WHITE) val += WEIGHTS[r][c];
+      else if (brd[r][c] === BLACK) val -= WEIGHTS[r][c];
+    }
+  const wm = getValidMoves(brd, WHITE).length;
+  const bm = getValidMoves(brd, BLACK).length;
+  val += (wm - bm) * 5;
+  return val;
+}
+
+function minimax(brd, depth, alpha, beta, isMax) {
+  const color = isMax ? WHITE : BLACK;
+  const moves = getValidMoves(brd, color);
+  if (depth === 0) return evaluate(brd);
+  if (moves.length === 0) {
+    const oppMoves = getValidMoves(brd, opponent(color));
+    if (oppMoves.length === 0) {
+      const cnt = countPieces(brd);
+      if (cnt.white > cnt.black) return 10000;
+      if (cnt.black > cnt.white) return -10000;
+      return 0;
+    }
+    return minimax(brd, depth - 1, alpha, beta, !isMax);
+  }
+  if (isMax) {
+    let best = -Infinity;
+    for (const [r, c] of moves) {
+      const nb = applyMove(brd, r, c, WHITE);
+      best = Math.max(best, minimax(nb, depth - 1, alpha, beta, false));
+      alpha = Math.max(alpha, best);
+      if (beta <= alpha) break;
+    }
+    return best;
+  } else {
+    let best = Infinity;
+    for (const [r, c] of moves) {
+      const nb = applyMove(brd, r, c, BLACK);
+      best = Math.min(best, minimax(nb, depth - 1, alpha, beta, true));
+      beta = Math.min(beta, best);
+      if (beta <= alpha) break;
+    }
+    return best;
+  }
+}
+
+function aiMove() {
+  const moves = getValidMoves(board, WHITE);
+  if (moves.length === 0) {
+    passCount++;
+    if (passCount >= 2) { endGame(); return; }
+    message = 'AI无子可下，跳过';
+    currentTurn = BLACK;
+    validCells = getValidMoves(board, BLACK);
+    if (validCells.length === 0) { passCount++; if (passCount >= 2) endGame(); else setTimeout(aiMove, 800); }
+    return;
+  }
+  passCount = 0;
+  let bestMove = moves[0], bestVal = -Infinity;
+  for (const [r, c] of moves) {
+    const nb = applyMove(board, r, c, WHITE);
+    const val = minimax(nb, 3, -Infinity, Infinity, false);
+    if (val > bestVal) { bestVal = val; bestMove = [r, c]; }
+  }
+  const flips = getFlips(board, bestMove[0], bestMove[1], WHITE);
+  board[bestMove[0]][bestMove[1]] = WHITE;
+  flipAnims = flips.map(([fr, fc]) => ({ r: fr, c: fc, t: 0 }));
+  for (const [fr, fc] of flips) board[fr][fc] = WHITE;
+  currentTurn = BLACK;
+  validCells = getValidMoves(board, BLACK);
+  if (validCells.length === 0) {
+    passCount++;
+    if (passCount >= 2) { endGame(); return; }
+    message = '你无子可下，跳过';
+    setTimeout(() => { currentTurn = WHITE; aiMove(); }, 1000);
+  } else {
+    message = '你的回合（黑棋）';
+  }
+}
+
+function endGame() {
+  const cnt = countPieces(board);
+  score = cnt.black;
+  gameState = 'gameover';
+  if (cnt.black > cnt.white) { winner = 'player'; message = '你赢了！'; }
+  else if (cnt.white > cnt.black) { winner = 'ai'; message = 'AI赢了！'; }
+  else { winner = 'draw'; message = '平局！'; }
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+  if (gameState !== 'playing') { hoverCell = null; return; }
+  const c = Math.floor((mx - BOARD_X) / CELL);
+  const r = Math.floor((my - BOARD_Y) / CELL);
+  if (r >= 0 && r < 8 && c >= 0 && c < 8) hoverCell = [r, c];
+  else hoverCell = null;
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 330 && my < 380) {
+      gameState = 'playing'; initBoard();
+    }
+    return;
+  }
+  if (gameState === 'gameover') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 350 && my < 400) {
+      gameState = 'playing'; initBoard();
+    }
+    return;
+  }
+  if (gameState !== 'playing' || currentTurn !== BLACK) return;
+
+  const c = Math.floor((mx - BOARD_X) / CELL);
+  const r = Math.floor((my - BOARD_Y) / CELL);
+  if (r < 0 || r >= 8 || c < 0 || c >= 8) return;
+
+  if (!validCells.some(([vr, vc]) => vr === r && vc === c)) return;
+
+  const flips = getFlips(board, r, c, BLACK);
+  board[r][c] = BLACK;
+  flipAnims = flips.map(([fr, fc]) => ({ r: fr, c: fc, t: 0 }));
+  for (const [fr, fc] of flips) board[fr][fc] = BLACK;
+  passCount = 0;
+  moveCount++;
+  lastMove = [r, c];
+  score = countPieces(board).black;
+  currentTurn = WHITE;
+  validCells = [];
+  message = 'AI思考中...';
+  setTimeout(aiMove, 600);
+});
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  // Decorative pieces
+  ctx.beginPath();
+  ctx.arc(W/2 - 100, 80, 25, 0, Math.PI * 2);
+  ctx.fillStyle = '#222';
+  ctx.fill();
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(W/2 + 100, 80, 25, 0, Math.PI * 2);
+  ctx.fillStyle = '#f5f5f5';
+  ctx.fill();
+  ctx.strokeStyle = '#ccc';
+  ctx.stroke();
+  ctx.fillStyle = '#4ecdc4';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('黑 白 棋', W/2, 150);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('Reversi / Othello - 人机对战', W/2, 195);
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('你执黑先行，点击有效位置（白点提示）落子', W/2, 235);
+  ctx.fillText('在横、竖、斜方向夹住对方棋子即可翻转', W/2, 260);
+  ctx.fillText('无子可下时自动跳过，棋盘满或双方均无子可下时结束', W/2, 285);
+  ctx.fillText('最终棋子多者获胜', W/2, 310);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 330, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('开始游戏', W/2, 362);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, W, H);
+  const cnt = countPieces(board);
+  const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  ctx.fillStyle = winner === 'player' ? '#4ecdc4' : (winner === 'ai' ? '#e94560' : '#ffd700');
+  ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W/2, 160);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '22px sans-serif';
+  ctx.fillText(`黑棋: ${cnt.black}  白棋: ${cnt.white}`, W/2, 220);
+  ctx.font = '17px sans-serif';
+  ctx.fillStyle = '#999';
+  ctx.fillText(`总手数: ${moveCount}  用时: ${mins}分${secs}秒`, W/2, 260);
+  // Score bar visualization
+  const barW = 300, barH = 20;
+  const barX = W/2 - barW/2, barY = 285;
+  const total = cnt.black + cnt.white;
+  const blackW = total > 0 ? (cnt.black / total) * barW : barW/2;
+  ctx.fillStyle = '#333';
+  ctx.fillRect(barX, barY, barW, barH);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(barX, barY, blackW, barH);
+  ctx.fillStyle = '#f5f5f5';
+  ctx.fillRect(barX + blackW, barY, barW - blackW, barH);
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(barX, barY, barW, barH);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 350, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('再来一局', W/2, 382);
+}
+
+function drawGame() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  // Board background with border
+  ctx.fillStyle = '#145214';
+  ctx.fillRect(BOARD_X - 8, BOARD_Y - 8, CELL*8 + 16, CELL*8 + 16);
+  ctx.strokeStyle = '#0a3a0a';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(BOARD_X - 8, BOARD_Y - 8, CELL*8 + 16, CELL*8 + 16);
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const x = BOARD_X + c * CELL, y = BOARD_Y + r * CELL;
+      ctx.fillStyle = '#2e7d32';
+      ctx.fillRect(x, y, CELL, CELL);
+      ctx.strokeStyle = '#1b5e20';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, CELL, CELL);
+    }
+  }
+  // Coordinate labels
+  ctx.fillStyle = '#666';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  for (let c = 0; c < 8; c++) {
+    ctx.fillText(String.fromCharCode(65 + c), BOARD_X + c * CELL + CELL/2, BOARD_Y - 12);
+  }
+  ctx.textAlign = 'right';
+  for (let r = 0; r < 8; r++) {
+    ctx.fillText(`${r + 1}`, BOARD_X - 12, BOARD_Y + r * CELL + CELL/2 + 4);
+  }
+  // Hover highlight
+  if (hoverCell && currentTurn === BLACK) {
+    const [hr, hc] = hoverCell;
+    const isValid = validCells.some(([vr, vc]) => vr === hr && vc === hc);
+    const x = BOARD_X + hc * CELL, y = BOARD_Y + hr * CELL;
+    ctx.fillStyle = isValid ? 'rgba(78,205,196,0.25)' : 'rgba(255,255,255,0.08)';
+    ctx.fillRect(x, y, CELL, CELL);
+  }
+  // Valid move hints
+  for (const [vr, vc] of validCells) {
+    const x = BOARD_X + vc * CELL + CELL/2;
+    const y = BOARD_Y + vr * CELL + CELL/2;
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fill();
+  }
+  // Last move marker
+  if (lastMove) {
+    const x = BOARD_X + lastMove[1] * CELL;
+    const y = BOARD_Y + lastMove[0] * CELL;
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 3, y + 3, CELL - 6, CELL - 6);
+  }
+  // Pieces
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (board[r][c] !== EMPTY) {
+        const x = BOARD_X + c * CELL + CELL/2;
+        const y = BOARD_Y + r * CELL + CELL/2;
+        const isFlipping = flipAnims.find(a => a.r === r && a.c === c);
+        let scaleX = 1;
+        if (isFlipping) {
+          scaleX = Math.abs(Math.cos(isFlipping.t * Math.PI));
+          if (isFlipping.t < 0.5) scaleX = Math.max(0.1, 1 - isFlipping.t * 2);
+        }
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(scaleX, 1);
+        ctx.beginPath();
+        ctx.arc(0, 0, CELL * 0.38, 0, Math.PI * 2);
+        if (board[r][c] === BLACK) {
+          ctx.fillStyle = '#1a1a1a';
+          ctx.fill();
+          ctx.strokeStyle = '#444';
+        } else {
+          ctx.fillStyle = '#f5f5f5';
+          ctx.fill();
+          ctx.strokeStyle = '#bbb';
+        }
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Inner highlight for 3D effect
+        ctx.beginPath();
+        ctx.arc(-3, -3, CELL * 0.15, 0, Math.PI * 2);
+        ctx.fillStyle = board[r][c] === BLACK ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.5)';
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+  // Update flip anims
+  flipAnims = flipAnims.filter(a => { a.t += 0.05; return a.t < 1; });
+  // HUD
+  const cnt = countPieces(board);
+  const totalPieces = cnt.black + cnt.white;
+  ctx.fillStyle = '#ccc';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`● 黑棋(你): ${cnt.black}`, 10, 25);
+  ctx.fillText(`○ 白棋(AI): ${cnt.white}`, 10, 50);
+  ctx.fillStyle = '#888';
+  ctx.font = '13px sans-serif';
+  ctx.fillText(`手数: ${moveCount}  棋盘: ${totalPieces}/64`, 10, 75);
+  // Turn indicator
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(message, W/2, H - 12);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#888';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('ESC 退出', W - 10, 25);
+}
+
+function gameLoop() {
+  if (gameState === 'title') drawTitle();
+  else if (gameState === 'playing') drawGame();
+  else if (gameState === 'gameover') { drawGame(); drawGameOver(); }
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

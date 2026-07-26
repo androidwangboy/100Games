@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>老虎机 (Slot Machine)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 100; // credits
+let state = 'title'; // title, idle, spinning, result
+let bet = 10;
+let reels = [0, 0, 0];
+let reelTargets = [0, 0, 0];
+let reelSpeeds = [0, 0, 0];
+let reelStopped = [true, true, true];
+let spinPhase = 0;
+let message = '';
+let lastWin = 0;
+let particles = [];
+let flashTimer = 0;
+
+const SYMBOLS = ['🍒','🍋','🔔','💎','7️⃣','⭐'];
+const SYM_SIZE = 64;
+const REEL_W = 120, REEL_H = 180;
+const REEL_X = [200, 340, 480];
+const REEL_Y = 140;
+
+// Payouts: [symbol_index] = multiplier for 3 match
+const JACKPOT = { 0:10, 1:15, 2:20, 3:50, 4:100, 5:30 };
+const PAIR_PAY = 3; // 2 matching = 3x bet
+
+function spin() {
+  if (score < bet) { message = '积分不足!'; return; }
+  score -= bet;
+  state = 'spinning';
+  lastWin = 0;
+  message = '';
+  reelStopped = [false, false, false];
+  reelSpeeds = [18, 22, 26];
+  reelTargets = [
+    Math.floor(Math.random() * 6),
+    Math.floor(Math.random() * 6),
+    Math.floor(Math.random() * 6)
+  ];
+  spinPhase = 0;
+}
+
+function checkWin() {
+  const [a, b, c] = reels;
+  if (a === b && b === c) {
+    lastWin = bet * JACKPOT[a];
+    message = `🎰 大奖! ${SYMBOLS[a]}x3 = +${lastWin}`;
+    for (let i = 0; i < 30; i++) particles.push({x:400,y:240,vx:(Math.random()-0.5)*12,vy:-Math.random()*10-3,life:60,color:['#f1c40f','#e74c3c','#2ecc71'][i%3]});
+  } else if (a === b || b === c || a === c) {
+    lastWin = bet * PAIR_PAY;
+    message = `✨ 一对! +${lastWin}`;
+    for (let i = 0; i < 10; i++) particles.push({x:400,y:240,vx:(Math.random()-0.5)*8,vy:-Math.random()*6-2,life:40,color:'#f39c12'});
+  } else {
+    message = '未中奖, 再试试!';
+  }
+  score += lastWin;
+  state = 'result';
+  flashTimer = 0;
+}
+
+function drawReel(x, symIdx, spinning) {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.strokeStyle = '#f39c12';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(x, REEL_Y, REEL_W, REEL_H, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  // Window
+  ctx.fillStyle = '#0d0d1a';
+  ctx.beginPath();
+  ctx.roundRect(x + 10, REEL_Y + 10, REEL_W - 20, REEL_H - 20, 6);
+  ctx.fill();
+
+  // Symbol
+  ctx.font = `${SYM_SIZE}px serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (spinning) {
+    // Show blurred random symbols
+    const blur = Math.floor(Math.random() * 6);
+    ctx.globalAlpha = 0.6;
+    ctx.fillText(SYMBOLS[blur], x + REEL_W/2, REEL_Y + REEL_H/2 - 30);
+    ctx.fillText(SYMBOLS[(blur+1)%6], x + REEL_W/2, REEL_Y + REEL_H/2 + 30);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.fillText(SYMBOLS[symIdx], x + REEL_W/2, REEL_Y + REEL_H/2);
+  }
+}
+
+function drawButton(x, y, w, h, text, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x+w/2, y+h/2);
+}
+
+function draw() {
+  // Dark purple casino bg
+  ctx.fillStyle = '#16082e';
+  ctx.fillRect(0, 0, 800, 480);
+  // Ambient glow
+  const grd = ctx.createRadialGradient(400, 240, 50, 400, 240, 400);
+  grd.addColorStop(0, 'rgba(128,0,255,0.06)');
+  grd.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, 800, 480);
+
+  if (state === 'title') {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = 'bold 50px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🎰 老虎机', 400, 120);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('三个相同 = 大奖 (最高100倍!)', 400, 190);
+    ctx.fillText('两个相同 = 小奖 (3倍)', 400, 225);
+    ctx.fillStyle = '#bdc3c7';
+    ctx.font = '15px sans-serif';
+    ctx.fillText('符号: 🍒x10 🍋x15 🔔x20 💎x50 7️⃣x100 ⭐x30', 400, 280);
+    ctx.fillText('初始积分: 100 | 投注: 5-25', 400, 315);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('[ 点击开始 ]', 400, 400);
+    return;
+  }
+
+  // Machine frame
+  ctx.fillStyle = '#2d1b4e';
+  ctx.beginPath();
+  ctx.roundRect(160, 60, 480, 300, 20);
+  ctx.fill();
+  ctx.strokeStyle = '#f39c12';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  // Title on machine
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('★ LUCKY SLOTS ★', 400, 95);
+
+  // Reels
+  for (let i = 0; i < 3; i++) {
+    drawReel(REEL_X[i], reels[i], !reelStopped[i]);
+  }
+
+  // Payline
+  ctx.strokeStyle = 'rgba(241,196,15,0.5)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(180, REEL_Y + REEL_H/2);
+  ctx.lineTo(620, REEL_Y + REEL_H/2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // HUD
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`积分: ${score}`, 20, 30);
+  ctx.textAlign = 'right';
+  ctx.fillText(`投注: ${bet}`, 780, 30);
+
+  // Message
+  if (message) {
+    ctx.fillStyle = lastWin > 0 ? '#2ecc71' : '#e74c3c';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.textAlign = 'center';
+    if (lastWin > 0 && flashTimer % 20 < 10) ctx.fillStyle = '#f1c40f';
+    ctx.fillText(message, 400, 390);
+  }
+
+  // Controls
+  if (state === 'idle' || state === 'result') {
+    drawButton(180, 415, 100, 45, '-5', '#555');
+    drawButton(300, 415, 200, 45, '🎰 旋转!', '#c0392b');
+    drawButton(520, 415, 100, 45, '+5', '#555');
+    if (score < bet) {
+      ctx.fillStyle = '#e74c3c';
+      ctx.font = '16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('积分不足! 点击任意处重新开始', 400, 475);
+    }
+  }
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / 60;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function update() {
+  if (state === 'spinning') {
+    for (let i = 0; i < 3; i++) {
+      if (!reelStopped[i]) {
+        reels[i] = (reels[i] + 1) % 6;
+        reelSpeeds[i] -= 0.15;
+        if (reelSpeeds[i] <= 2 + i * 0.5) {
+          reelStopped[i] = true;
+          reels[i] = reelTargets[i];
+        }
+      }
+    }
+    if (reelStopped[0] && reelStopped[1] && reelStopped[2]) {
+      checkWin();
+    }
+  }
+  if (state === 'result') flashTimer++;
+  particles = particles.filter(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; return p.life > 0; });
+}
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') { score = 100; state = 'idle'; message = '点击旋转开始!'; return; }
+  if ((state === 'idle' || state === 'result') && score < bet) { state = 'title'; return; }
+  if (state === 'idle' || state === 'result') {
+    if (mx >= 180 && mx <= 280 && my >= 415 && my <= 460) { bet = Math.max(5, bet - 5); return; }
+    if (mx >= 300 && mx <= 500 && my >= 415 && my <= 460) { spin(); return; }
+    if (mx >= 520 && mx <= 620 && my >= 415 && my <= 460) { bet = Math.min(25, bet + 5); return; }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

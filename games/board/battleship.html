@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>战舰 - Battleship</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'KeyR' && gameState === 'placing') { placingHorizontal = !placingHorizontal; }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const GRID = 10;
+const CELL = 32;
+const SHIPS = [
+  { name: '航母', size: 5 },
+  { name: '战舰', size: 4 },
+  { name: '巡洋舰', size: 3 },
+  { name: '潜艇', size: 3 },
+  { name: '驱逐舰', size: 2 }
+];
+
+let gameState = 'title'; // title, placing, battle, gameover
+let playerGrid = [], enemyGrid = [];
+let playerShips = [], enemyShips = [];
+let placingIndex = 0;
+let placingHorizontal = true;
+let hoverCell = null;
+let currentTurn = 'player';
+let score = 0;
+let message = '';
+let winner = '';
+let gameLog = [];
+// AI hunt/target
+let aiMode = 'hunt';
+let aiTargetQueue = [];
+let aiHits = [];
+let aiFired = [];
+
+function createGrid() {
+  return Array.from({length: GRID}, () => Array(GRID).fill(0));
+}
+
+function initGame() {
+  playerGrid = createGrid();
+  enemyGrid = createGrid();
+  playerShips = [];
+  enemyShips = [];
+  placingIndex = 0;
+  placingHorizontal = true;
+  currentTurn = 'player';
+  score = 0;
+  winner = '';
+  gameLog = [];
+  aiMode = 'hunt';
+  aiTargetQueue = [];
+  aiHits = [];
+  aiFired = createGrid();
+  message = '放置你的舰队 - R键旋转';
+  placeEnemyShips();
+}
+
+function canPlace(grid, r, c, size, horizontal) {
+  for (let i = 0; i < size; i++) {
+    const nr = horizontal ? r : r + i;
+    const nc = horizontal ? c + i : c;
+    if (nr < 0 || nr >= GRID || nc < 0 || nc >= GRID) return false;
+    if (grid[nr][nc] !== 0) return false;
+  }
+  return true;
+}
+
+function placeShip(grid, ships, r, c, size, horizontal, shipName) {
+  const cells = [];
+  for (let i = 0; i < size; i++) {
+    const nr = horizontal ? r : r + i;
+    const nc = horizontal ? c + i : c;
+    grid[nr][nc] = ships.length + 1;
+    cells.push([nr, nc]);
+  }
+  ships.push({ name: shipName, size, cells, hits: 0, sunk: false });
+}
+
+function placeEnemyShips() {
+  for (const ship of SHIPS) {
+    let placed = false;
+    while (!placed) {
+      const horiz = Math.random() > 0.5;
+      const r = Math.floor(Math.random() * GRID);
+      const c = Math.floor(Math.random() * GRID);
+      if (canPlace(enemyGrid, r, c, ship.size, horiz)) {
+        placeShip(enemyGrid, enemyShips, r, c, ship.size, horiz, ship.name);
+        placed = true;
+      }
+    }
+  }
+}
+
+function addLog(msg) {
+  gameLog.unshift(msg);
+  if (gameLog.length > 8) gameLog.pop();
+}
+
+function fireAt(grid, ships, r, c) {
+  if (grid[r][c] > 0) {
+    const shipIdx = grid[r][c] - 1;
+    ships[shipIdx].hits++;
+    grid[r][c] = -1; // hit
+    if (ships[shipIdx].hits === ships[shipIdx].size) {
+      ships[shipIdx].sunk = true;
+      return 'sunk';
+    }
+    return 'hit';
+  }
+  grid[r][c] = -2; // miss
+  return 'miss';
+}
+
+function aiTurn() {
+  if (gameState !== 'battle') return;
+  let r, c;
+  if (aiMode === 'target' && aiTargetQueue.length > 0) {
+    while (aiTargetQueue.length > 0) {
+      const t = aiTargetQueue.shift();
+      if (t[0] >= 0 && t[0] < GRID && t[1] >= 0 && t[1] < GRID && aiFired[t[0]][t[1]] === 0) {
+        r = t[0]; c = t[1]; break;
+      }
+    }
+  }
+  if (r === undefined) {
+    aiMode = 'hunt';
+    do {
+      r = Math.floor(Math.random() * GRID);
+      c = Math.floor(Math.random() * GRID);
+    } while (aiFired[r][c] !== 0);
+  }
+  aiFired[r][c] = 1;
+  const result = fireAt(playerGrid, playerShips, r, c);
+  if (result === 'hit' || result === 'sunk') {
+    aiHits.push([r, c]);
+    if (result === 'sunk') {
+      const sunkShip = playerShips.find(s => s.sunk && s.cells.some(([cr,cc]) => cr === r && cc === c));
+      addLog(`AI击沉了你的${sunkShip.name}！`);
+      aiMode = 'hunt';
+      aiTargetQueue = [];
+      aiHits = aiHits.filter(h => !(h[0] === r && h[1] === c));
+    } else {
+      aiMode = 'target';
+      const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+      for (const [dr, dc] of dirs) {
+        aiTargetQueue.push([r+dr, c+dc]);
+      }
+      addLog(`AI命中了你的舰船 (${r+1},${c+1})`);
+    }
+  } else {
+    addLog(`AI射击 (${r+1},${c+1}) 未命中`);
+  }
+  // Check player loss
+  if (playerShips.every(s => s.sunk)) {
+    winner = 'ai'; gameState = 'gameover'; message = 'AI赢了！你的舰队全灭';
+    return;
+  }
+  currentTurn = 'player';
+  message = '你的回合 - 点击敌方海域';
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+  if (gameState === 'placing') {
+    const ox = 40, oy = 60;
+    const c = Math.floor((mx - ox) / CELL);
+    const r = Math.floor((my - oy) / CELL);
+    if (r >= 0 && r < GRID && c >= 0 && c < GRID) hoverCell = [r, c];
+    else hoverCell = null;
+  }
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 320 && my < 370) {
+      gameState = 'placing'; initGame();
+    }
+    return;
+  }
+  if (gameState === 'gameover') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 330 && my < 380) {
+      gameState = 'placing'; initGame();
+    }
+    return;
+  }
+  if (gameState === 'placing') {
+    const ox = 40, oy = 60;
+    const c = Math.floor((mx - ox) / CELL);
+    const r = Math.floor((my - oy) / CELL);
+    if (r < 0 || r >= GRID || c < 0 || c >= GRID) return;
+    const ship = SHIPS[placingIndex];
+    if (canPlace(playerGrid, r, c, ship.size, placingHorizontal)) {
+      placeShip(playerGrid, playerShips, r, c, ship.size, placingHorizontal, ship.name);
+      placingIndex++;
+      if (placingIndex >= SHIPS.length) {
+        gameState = 'battle';
+        message = '战斗开始！点击敌方海域开火';
+        addLog('战斗开始！');
+      } else {
+        message = `放置: ${SHIPS[placingIndex].name} (${SHIPS[placingIndex].size}格) - R旋转`;
+      }
+    }
+    return;
+  }
+  if (gameState === 'battle' && currentTurn === 'player') {
+    const ox = 440, oy = 60;
+    const c = Math.floor((mx - ox) / CELL);
+    const r = Math.floor((my - oy) / CELL);
+    if (r < 0 || r >= GRID || c < 0 || c >= GRID) return;
+    if (enemyGrid[r][c] === -1 || enemyGrid[r][c] === -2) return; // already fired
+    const result = fireAt(enemyGrid, enemyShips, r, c);
+    if (result === 'hit') { score++; addLog(`你命中了敌舰 (${r+1},${c+1})！`); message = '命中！继续射击'; }
+    else if (result === 'sunk') {
+      score += 2;
+      const sunkShip = enemyShips.find(s => s.sunk && s.cells.some(([cr,cc]) => cr === r && cc === c));
+      addLog(`你击沉了敌方${sunkShip.name}！`);
+      message = `击沉敌方${sunkShip.name}！`;
+    }
+    else { addLog(`你射击 (${r+1},${c+1}) 未命中`); message = '未命中...'; }
+    if (enemyShips.every(s => s.sunk)) {
+      winner = 'player'; gameState = 'gameover'; message = '你赢了！敌方舰队全灭';
+      return;
+    }
+    if (result === 'miss') {
+      currentTurn = 'ai';
+      message = 'AI回合...';
+      setTimeout(aiTurn, 700);
+    }
+  }
+});
+
+function drawGrid(ox, oy, grid, showShips, isEnemy) {
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 1;
+  for (let r = 0; r <= GRID; r++) {
+    ctx.beginPath(); ctx.moveTo(ox, oy + r*CELL); ctx.lineTo(ox + GRID*CELL, oy + r*CELL); ctx.stroke();
+  }
+  for (let c = 0; c <= GRID; c++) {
+    ctx.beginPath(); ctx.moveTo(ox + c*CELL, oy); ctx.lineTo(ox + c*CELL, oy + GRID*CELL); ctx.stroke();
+  }
+  for (let r = 0; r < GRID; r++) {
+    for (let c = 0; c < GRID; c++) {
+      const x = ox + c*CELL, y = oy + r*CELL;
+      if (grid[r][c] === -1) { // hit
+        ctx.fillStyle = '#e94560';
+        ctx.fillRect(x+2, y+2, CELL-4, CELL-4);
+        ctx.fillStyle = '#fff';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('✕', x+CELL/2, y+CELL/2+5);
+      } else if (grid[r][c] === -2) { // miss
+        ctx.fillStyle = '#1a3a5c';
+        ctx.fillRect(x+2, y+2, CELL-4, CELL-4);
+        ctx.beginPath();
+        ctx.arc(x+CELL/2, y+CELL/2, 4, 0, Math.PI*2);
+        ctx.fillStyle = '#5588aa';
+        ctx.fill();
+      } else if (grid[r][c] > 0 && showShips) {
+        ctx.fillStyle = '#3a7a3a';
+        ctx.fillRect(x+2, y+2, CELL-4, CELL-4);
+      }
+    }
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#4a90d9';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('战 舰', W/2, 140);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('Battleship - 海战棋', W/2, 190);
+  ctx.fillText('放置5艘战舰，然后与AI对战', W/2, 230);
+  ctx.fillText('R键旋转 | 命中可继续射击 | 击沉全部敌舰获胜', W/2, 265);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 320, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('开始游戏', W/2, 352);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = winner === 'player' ? '#4ecdc4' : '#e94560';
+  ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W/2, 180);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '20px sans-serif';
+  ctx.fillText(`得分: ${score}`, W/2, 240);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 330, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('再来一局', W/2, 362);
+}
+
+function drawPlacing() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('我方海域 - 点击放置', 40, 40);
+  drawGrid(40, 60, playerGrid, true, false);
+  // Hover preview
+  if (hoverCell && placingIndex < SHIPS.length) {
+    const [hr, hc] = hoverCell;
+    const ship = SHIPS[placingIndex];
+    const valid = canPlace(playerGrid, hr, hc, ship.size, placingHorizontal);
+    for (let i = 0; i < ship.size; i++) {
+      const nr = placingHorizontal ? hr : hr + i;
+      const nc = placingHorizontal ? hc + i : hc;
+      if (nr < GRID && nc < GRID) {
+        ctx.fillStyle = valid ? 'rgba(78,205,196,0.5)' : 'rgba(233,69,96,0.5)';
+        ctx.fillRect(40 + nc*CELL+2, 60 + nr*CELL+2, CELL-4, CELL-4);
+      }
+    }
+  }
+  // Ship list
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`当前: ${SHIPS[placingIndex] ? SHIPS[placingIndex].name + ' (' + SHIPS[placingIndex].size + '格)' : '完成'}`, 420, 80);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText(`方向: ${placingHorizontal ? '水平' : '垂直'} (R旋转)`, 420, 110);
+  for (let i = 0; i < SHIPS.length; i++) {
+    ctx.fillStyle = i < placingIndex ? '#4ecdc4' : (i === placingIndex ? '#ffd700' : '#666');
+    ctx.fillText(`${i < placingIndex ? '✓' : '○'} ${SHIPS[i].name} (${SHIPS[i].size})`, 420, 150 + i * 28);
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText(message, W/2, H - 12);
+}
+
+function drawBattle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('我方海域', 40 + GRID*CELL/2, 48);
+  ctx.fillText('敌方海域 (点击开火)', 440 + GRID*CELL/2, 48);
+  drawGrid(40, 60, playerGrid, true, false);
+  // Draw AI shots on player grid
+  for (let r = 0; r < GRID; r++)
+    for (let c = 0; c < GRID; c++) {
+      if (aiFired[r][c] === 1) {
+        const x = 40 + c*CELL, y = 60 + r*CELL;
+        if (playerGrid[r][c] === -1) {
+          ctx.fillStyle = '#e94560'; ctx.fillRect(x+2,y+2,CELL-4,CELL-4);
+        } else {
+          ctx.beginPath(); ctx.arc(x+CELL/2,y+CELL/2,4,0,Math.PI*2);
+          ctx.fillStyle = '#5588aa'; ctx.fill();
+        }
+      }
+    }
+  drawGrid(440, 60, enemyGrid, false, true);
+  // Ship status
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('敌舰:', 440, 405);
+  for (let i = 0; i < enemyShips.length; i++) {
+    ctx.fillStyle = enemyShips[i].sunk ? '#e94560' : '#4a90d9';
+    ctx.fillText(`${enemyShips[i].sunk ? '✕' : '○'}${enemyShips[i].name}`, 440 + i*70, 425);
+  }
+  // Game log
+  ctx.fillStyle = '#888';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  for (let i = 0; i < Math.min(gameLog.length, 6); i++) {
+    ctx.fillText(gameLog[i], 40, 405 + i * 14);
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '15px sans-serif';
+  ctx.fillText(message, W/2, H - 8);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#888';
+  ctx.font = '12px sans-serif';
+  ctx.fillText(`得分:${score} ESC退出`, W-10, 20);
+}
+
+function gameLoop() {
+  if (gameState === 'title') drawTitle();
+  else if (gameState === 'placing') drawPlacing();
+  else if (gameState === 'battle') drawBattle();
+  else if (gameState === 'gameover') { drawBattle(); drawGameOver(); }
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

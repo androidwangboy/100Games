@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>疯狂八 (Crazy Eights)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let gameState = 'title';
+let deck = [], discardPile = [];
+let playerHand = [], ai1Hand = [], ai2Hand = [];
+let currentSuit = '', currentRank = '';
+let turn = 0; // 0=player, 1=ai1, 2=ai2
+let message = '';
+let choosingSuit = false;
+let roundOver = false;
+let roundScores = [0, 0, 0];
+let totalScores = [0, 0, 0];
+let roundNum = 1;
+let aiTimer = 0;
+let titlePulse = 0;
+let playableIndices = [];
+let passCount = 0;
+
+const SUITS = ['♠', '♥', '♦', '♣'];
+const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+const CARD_W = 55, CARD_H = 77;
+const NAMES = ['你', '电脑A', '电脑B'];
+
+function createDeck() {
+  deck = [];
+  for (let s of SUITS) for (let r of RANKS) deck.push({ suit: s, rank: r });
+  shuffle(deck);
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+
+function isRed(s) { return s === '♥' || s === '♦'; }
+
+function cardPoints(card) {
+  if (card.rank === '8') return 50;
+  if (['K', 'Q', 'J'].includes(card.rank)) return 10;
+  if (card.rank === 'A') return 1;
+  return parseInt(card.rank);
+}
+
+function canPlay(card) {
+  if (card.rank === '8') return true;
+  return card.suit === currentSuit || card.rank === currentRank;
+}
+
+function dealCards() {
+  createDeck();
+  playerHand = []; ai1Hand = []; ai2Hand = [];
+  discardPile = [];
+  for (let i = 0; i < 7; i++) {
+    playerHand.push(deck.pop());
+    ai1Hand.push(deck.pop());
+    ai2Hand.push(deck.pop());
+  }
+  let first = deck.pop();
+  while (first.rank === '8') { deck.unshift(first); shuffle(deck); first = deck.pop(); }
+  discardPile.push(first);
+  currentSuit = first.suit;
+  currentRank = first.rank;
+  turn = 0;
+  roundOver = false;
+  choosingSuit = false;
+  passCount = 0;
+  message = '你的回合 - 出牌或摸牌';
+  updatePlayable();
+}
+
+function updatePlayable() {
+  playableIndices = [];
+  for (let i = 0; i < playerHand.length; i++) {
+    if (canPlay(playerHand[i])) playableIndices.push(i);
+  }
+}
+
+function drawFromDeck() {
+  if (deck.length === 0) {
+    if (discardPile.length <= 1) return null;
+    let top = discardPile.pop();
+    deck = discardPile.splice(0);
+    shuffle(deck);
+    discardPile.push(top);
+  }
+  return deck.pop();
+}
+
+function playCard(hand, idx) {
+  let card = hand.splice(idx, 1)[0];
+  discardPile.push(card);
+  currentRank = card.rank;
+  if (card.rank !== '8') currentSuit = card.suit;
+  return card;
+}
+
+function checkWin(hand, playerIdx) {
+  if (hand.length === 0) {
+    roundOver = true;
+    let pts = 0;
+    let hands = [playerHand, ai1Hand, ai2Hand];
+    for (let i = 0; i < 3; i++) {
+      if (i !== playerIdx) {
+        for (let c of hands[i]) pts += cardPoints(c);
+      }
+    }
+    roundScores[playerIdx] = pts;
+    totalScores[playerIdx] += pts;
+    score = totalScores[0];
+    message = NAMES[playerIdx] + ' 赢了本轮! 得分 +' + pts;
+    return true;
+  }
+  return false;
+}
+
+function aiChooseSuit(hand) {
+  let counts = { '♠': 0, '♥': 0, '♦': 0, '♣': 0 };
+  for (let c of hand) if (c.rank !== '8') counts[c.suit]++;
+  let best = '♠', max = -1;
+  for (let s of SUITS) { if (counts[s] > max) { max = counts[s]; best = s; } }
+  return best;
+}
+
+function aiTurn(aiIdx) {
+  let hand = aiIdx === 1 ? ai1Hand : ai2Hand;
+  let playable = [];
+  for (let i = 0; i < hand.length; i++) {
+    if (canPlay(hand[i])) playable.push(i);
+  }
+  if (playable.length > 0) {
+    let nonEight = playable.filter(i => hand[i].rank !== '8');
+    let idx = nonEight.length > 0 ? nonEight[Math.floor(Math.random() * nonEight.length)] : playable[0];
+    let card = playCard(hand, idx);
+    if (card.rank === '8') {
+      currentSuit = aiChooseSuit(hand);
+      message = NAMES[aiIdx] + ' 出了8，选择 ' + currentSuit;
+    } else {
+      message = NAMES[aiIdx] + ' 出了 ' + card.rank + card.suit;
+    }
+    passCount = 0;
+    if (checkWin(hand, aiIdx)) return;
+  } else {
+    let drawn = drawFromDeck();
+    if (drawn) {
+      hand.push(drawn);
+      if (canPlay(drawn)) {
+        let idx = hand.length - 1;
+        let card = playCard(hand, idx);
+        if (card.rank === '8') currentSuit = aiChooseSuit(hand);
+        message = NAMES[aiIdx] + ' 摸牌并出了 ' + card.rank + card.suit;
+        passCount = 0;
+        if (checkWin(hand, aiIdx)) return;
+      } else {
+        message = NAMES[aiIdx] + ' 摸了一张牌';
+        passCount++;
+      }
+    }
+  }
+  if (!roundOver) {
+    turn = (aiIdx + 1) % 3;
+    if (turn === 0) { updatePlayable(); message = '你的回合'; }
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawCardShape(x, y, card, faceUp, highlight, small) {
+  let w = small ? 40 : CARD_W, h = small ? 56 : CARD_H;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = 4;
+  ctx.shadowOffsetY = 2;
+  ctx.fillStyle = faceUp ? '#fff' : '#1a4a2a';
+  ctx.strokeStyle = highlight ? '#ffd700' : '#555';
+  ctx.lineWidth = highlight ? 2.5 : 1;
+  roundRect(x, y, w, h, 5);
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+  if (!faceUp) {
+    ctx.fillStyle = '#2a6a3a';
+    roundRect(x + 3, y + 3, w - 6, h - 6, 3);
+    ctx.fill();
+    return;
+  }
+  let color = isRed(card.suit) ? '#d32f2f' : '#222';
+  ctx.fillStyle = color;
+  ctx.font = (small ? 'bold 11px' : 'bold 14px') + ' Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(card.rank, x + 4, y + (small ? 14 : 18));
+  ctx.font = (small ? '10px' : '12px') + ' Arial';
+  ctx.fillText(card.suit, x + 4, y + (small ? 26 : 32));
+  ctx.font = (small ? '18px' : '24px') + ' Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(card.suit, x + w / 2, y + h / 2 + (small ? 6 : 9));
+}
+
+function drawBackground() {
+  let grad = ctx.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, 420);
+  grad.addColorStop(0, '#1b5e20');
+  grad.addColorStop(1, '#0a2e10');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawTitle() {
+  drawBackground();
+  titlePulse += 0.03;
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 46px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('疯狂八', W / 2, 120);
+  ctx.fillStyle = '#aaffaa';
+  ctx.font = '20px Arial';
+  ctx.fillText('CRAZY EIGHTS', W / 2, 155);
+  let demo = [{ suit: '♠', rank: '8' }, { suit: '♥', rank: '8' }, { suit: '♦', rank: '8' }, { suit: '♣', rank: '8' }];
+  for (let i = 0; i < 4; i++) drawCardShape(W / 2 - 120 + i * 65, 190, demo[i], true, false, false);
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(titlePulse);
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px Arial';
+  ctx.fillText('点击开始游戏', W / 2, 330);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px Arial';
+  ctx.fillText('规则：出同花色或同点数的牌，8是万能牌', W / 2, 380);
+  ctx.fillText('先出完手牌者获胜 | 按 ESC 退出', W / 2, 405);
+}
+
+function drawGame() {
+  drawBackground();
+  // AI2 (top)
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(NAMES[2] + ' (' + ai2Hand.length + '张)', W / 2, 20);
+  let startX2 = W / 2 - (ai2Hand.length * 30) / 2;
+  for (let i = 0; i < ai2Hand.length; i++) drawCardShape(startX2 + i * 30, 28, ai2Hand[i], false, false, true);
+
+  // AI1 (left)
+  ctx.save();
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(NAMES[1] + ' (' + ai1Hand.length + '张)', 70, 150);
+  for (let i = 0; i < Math.min(ai1Hand.length, 10); i++) drawCardShape(20, 160 + i * 22, ai1Hand[i], false, false, true);
+  ctx.restore();
+
+  // Discard pile (center)
+  let topDiscard = discardPile[discardPile.length - 1];
+  ctx.fillStyle = '#aaa';
+  ctx.font = '12px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('弃牌堆', W / 2, 165);
+  if (topDiscard) drawCardShape(W / 2 - CARD_W / 2, 172, topDiscard, true, false, false);
+
+  // Current suit indicator
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText('当前: ' + currentRank + ' ' + currentSuit, W / 2 + 100, 200);
+  ctx.fillStyle = isRed(currentSuit) ? '#ff5555' : '#fff';
+  ctx.font = '36px Arial';
+  ctx.fillText(currentSuit, W / 2 + 100, 240);
+
+  // Deck (draw pile)
+  ctx.fillStyle = '#aaa';
+  ctx.font = '12px Arial';
+  ctx.fillText('牌堆 (' + deck.length + ')', W / 2 - 100, 165);
+  drawCardShape(W / 2 - 100 - CARD_W / 2, 172, { suit: '♠', rank: 'A' }, false, false, false);
+
+  // Player hand (bottom)
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.fillText('你的手牌 (' + playerHand.length + '张)', W / 2, H - 110);
+  let pStart = W / 2 - (playerHand.length * (CARD_W + 4)) / 2;
+  for (let i = 0; i < playerHand.length; i++) {
+    let hl = turn === 0 && !roundOver && playableIndices.includes(i);
+    drawCardShape(pStart + i * (CARD_W + 4), H - 100, playerHand[i], true, hl, false);
+  }
+
+  // Scores
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  roundRect(W - 160, 100, 150, 90, 6);
+  ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('总分 (第' + roundNum + '轮)', W - 150, 120);
+  ctx.font = '12px Arial';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(NAMES[0] + ': ' + totalScores[0], W - 150, 142);
+  ctx.fillText(NAMES[1] + ': ' + totalScores[1], W - 150, 160);
+  ctx.fillText(NAMES[2] + ': ' + totalScores[2], W - 150, 178);
+
+  // Message
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  roundRect(W / 2 - 200, H - 145, 400, 30, 6);
+  ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '14px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W / 2, H - 125);
+
+  // Turn indicator
+  if (!roundOver) {
+    ctx.fillStyle = turn === 0 ? '#4caf50' : '#ff9800';
+    ctx.font = 'bold 13px Arial';
+    ctx.fillText(turn === 0 ? '▶ 你的回合' : '▶ ' + NAMES[turn] + '思考中...', W / 2, 130);
+  }
+
+  // Suit chooser
+  if (choosingSuit) {
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 22px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('选择花色', W / 2, 180);
+    for (let i = 0; i < 4; i++) {
+      let sx = W / 2 - 150 + i * 100;
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      roundRect(sx - 30, 210, 60, 80, 8);
+      ctx.fill();
+      ctx.strokeStyle = '#ffd700';
+      ctx.lineWidth = 2;
+      roundRect(sx - 30, 210, 60, 80, 8);
+      ctx.stroke();
+      ctx.fillStyle = isRed(SUITS[i]) ? '#ff5555' : '#fff';
+      ctx.font = '36px Arial';
+      ctx.fillText(SUITS[i], sx, 262);
+    }
+  }
+
+  // Round over overlay
+  if (roundOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, W / 2, H / 2 - 20);
+    ctx.fillStyle = '#fff';
+    ctx.font = '18px Arial';
+    ctx.fillText('点击继续下一轮', W / 2, H / 2 + 30);
+  }
+}
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') { gameState = 'playing'; dealCards(); return; }
+
+  if (roundOver) {
+    roundNum++;
+    dealCards();
+    return;
+  }
+
+  if (choosingSuit) {
+    for (let i = 0; i < 4; i++) {
+      let sx = W / 2 - 150 + i * 100;
+      if (mx >= sx - 30 && mx <= sx + 30 && my >= 210 && my <= 290) {
+        currentSuit = SUITS[i];
+        choosingSuit = false;
+        message = '你选择了 ' + currentSuit;
+        if (checkWin(playerHand, 0)) return;
+        turn = 1;
+        aiTimer = Date.now() + 800;
+        return;
+      }
+    }
+    return;
+  }
+
+  if (turn !== 0) return;
+
+  // Check draw pile click
+  let deckX = W / 2 - 100 - CARD_W / 2;
+  if (mx >= deckX && mx <= deckX + CARD_W && my >= 172 && my <= 172 + CARD_H) {
+    let drawn = drawFromDeck();
+    if (drawn) {
+      playerHand.push(drawn);
+      passCount++;
+      if (canPlay(drawn)) {
+        message = '你摸到了 ' + drawn.rank + drawn.suit + '，可以出！';
+      } else {
+        message = '你摸了一张牌，无法出牌';
+        turn = 1;
+        aiTimer = Date.now() + 800;
+      }
+      updatePlayable();
+    }
+    return;
+  }
+
+  // Check player card click
+  let pStart = W / 2 - (playerHand.length * (CARD_W + 4)) / 2;
+  for (let i = 0; i < playerHand.length; i++) {
+    let cx = pStart + i * (CARD_W + 4);
+    if (mx >= cx && mx <= cx + CARD_W && my >= H - 100 && my <= H - 100 + CARD_H) {
+      if (playableIndices.includes(i)) {
+        let card = playCard(playerHand, i);
+        passCount = 0;
+        if (card.rank === '8') {
+          choosingSuit = true;
+          message = '出了8！选择花色';
+          updatePlayable();
+          return;
+        }
+        message = '你出了 ' + card.rank + card.suit;
+        if (checkWin(playerHand, 0)) return;
+        turn = 1;
+        aiTimer = Date.now() + 800;
+        updatePlayable();
+      } else {
+        message = '这张牌不能出！';
+      }
+      return;
+    }
+  }
+});
+
+function gameLoop() {
+  if (gameState === 'playing' && !roundOver && !choosingSuit) {
+    if (turn === 1 && Date.now() > aiTimer) {
+      aiTurn(1);
+      if (!roundOver && turn === 2) aiTimer = Date.now() + 800;
+      else if (!roundOver && turn === 0) updatePlayable();
+    }
+    if (turn === 2 && Date.now() > aiTimer) {
+      aiTurn(2);
+      if (!roundOver && turn === 0) updatePlayable();
+      else if (!roundOver && turn === 1) aiTimer = Date.now() + 800;
+    }
+  }
+  ctx.clearRect(0, 0, W, H);
+  if (gameState === 'title') drawTitle();
+  else drawGame();
+  requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({ type: 'EXIT_GAME', score: score }, '*'); }
+});
+
+gameLoop();
+</script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>骰子扑克 (Dice Poker)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title'; // title, roll1, select, roll2, scored, gameover
+let dice = [1,1,1,1,1];
+let kept = [false,false,false,false,false];
+let round = 1;
+const MAX_ROUNDS = 10;
+let message = '';
+let handName = '';
+let handScore = 0;
+let rollAnim = 0;
+let rolling = false;
+let roundScores = [];
+let particles = [];
+
+const HAND_NAMES = {
+  'five': '五同 (Yahtzee)',
+  'four': '四同',
+  'full': '葫芦 (满堂红)',
+  'three': '三条',
+  'two_pair': '两对',
+  'pair': '一对',
+  'straight_l': '大顺',
+  'straight_s': '小顺',
+  'high': '散牌'
+};
+
+function rollDice() {
+  for (let i = 0; i < 5; i++) {
+    if (!kept[i]) dice[i] = Math.floor(Math.random() * 6) + 1;
+  }
+}
+
+function startGame() {
+  score = 0;
+  round = 1;
+  roundScores = [];
+  startRound();
+}
+
+function startRound() {
+  dice = [1,1,1,1,1];
+  kept = [false,false,false,false,false];
+  handName = '';
+  handScore = 0;
+  state = 'roll1';
+  message = `第 ${round}/${MAX_ROUNDS} 轮 - 点击掷骰子`;
+  rolling = false;
+}
+
+function doRoll1() {
+  rolling = true;
+  rollAnim = 0;
+  state = 'rolling1';
+}
+
+function doRoll2() {
+  rolling = true;
+  rollAnim = 0;
+  state = 'rolling2';
+}
+
+function evaluate() {
+  const counts = [0,0,0,0,0,0,0];
+  dice.forEach(d => counts[d]++);
+  const sorted = [...dice].sort((a,b) => a-b);
+  const uniq = [...new Set(sorted)];
+  let name = 'high', pts = sorted[4];
+
+  // Five of a kind
+  if (counts.some(c => c === 5)) { name = 'five'; pts = 50; }
+  // Four of a kind
+  else if (counts.some(c => c === 4)) { name = 'four'; pts = 30; }
+  // Full house
+  else if (counts.some(c => c === 3) && counts.some(c => c === 2)) { name = 'full'; pts = 25; }
+  // Large straight
+  else if (sorted.join(',') === '1,2,3,4,5' || sorted.join(',') === '2,3,4,5,6') { name = 'straight_l'; pts = 40; }
+  // Small straight
+  else if (uniq.length >= 4) {
+    let isSeq = false;
+    for (let start = 1; start <= 3; start++) {
+      if (sorted.includes(start) && sorted.includes(start+1) && sorted.includes(start+2) && sorted.includes(start+3)) isSeq = true;
+    }
+    if (isSeq) { name = 'straight_s'; pts = 20; }
+    else { name = 'three'; pts = 15; }
+  }
+  // Three of a kind
+  else if (counts.some(c => c === 3)) { name = 'three'; pts = 15; }
+  // Two pair
+  else if (counts.filter(c => c === 2).length === 2) { name = 'two_pair'; pts = 10; }
+  // One pair
+  else if (counts.some(c => c === 2)) { name = 'pair'; pts = 5; }
+
+  handName = HAND_NAMES[name];
+  handScore = pts;
+  score += pts;
+  roundScores.push({ round, name: handName, pts });
+  state = 'scored';
+  message = `${handName} +${pts}分`;
+  if (pts >= 25) for (let i = 0; i < 15; i++) particles.push({x:400,y:200,vx:(Math.random()-0.5)*10,vy:-Math.random()*8-2,life:45,color:'#f1c40f'});
+}
+
+function nextRound() {
+  round++;
+  if (round > MAX_ROUNDS) { state = 'gameover'; message = ''; }
+  else startRound();
+}
+
+function drawDie(x, y, val, isKept, size) {
+  const s = size || 70;
+  ctx.fillStyle = isKept ? '#f39c12' : '#ecf0f1';
+  ctx.strokeStyle = isKept ? '#e67e22' : '#bdc3c7';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(x, y, s, s, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  // Pips
+  ctx.fillStyle = '#2c3e50';
+  const cx = x + s/2, cy = y + s/2;
+  const off = s * 0.22;
+  const r = s * 0.09;
+  const pips = {
+    1: [[0,0]],
+    2: [[-off,-off],[off,off]],
+    3: [[-off,-off],[0,0],[off,off]],
+    4: [[-off,-off],[off,-off],[-off,off],[off,off]],
+    5: [[-off,-off],[off,-off],[0,0],[-off,off],[off,off]],
+    6: [[-off,-off],[off,-off],[-off,0],[off,0],[-off,off],[off,off]]
+  };
+  (pips[val]||[]).forEach(([px,py]) => {
+    ctx.beginPath();
+    ctx.arc(cx+px, cy+py, r, 0, Math.PI*2);
+    ctx.fill();
+  });
+
+  if (isKept) {
+    ctx.fillStyle = '#e67e22';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('保留', x+s/2, y+s+16);
+  }
+}
+
+function drawButton(x, y, w, h, text, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x+w/2, y+h/2);
+}
+
+function draw() {
+  ctx.fillStyle = '#1a0a2e';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = 'rgba(80,0,160,0.04)';
+  for (let i = 0; i < 800; i += 6) ctx.fillRect(i, 0, 2, 480);
+
+  if (state === 'title') {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = 'bold 46px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🎲 骰子扑克', 400, 110);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('掷5颗骰子，选择保留，再掷一次', 400, 170);
+    ctx.fillText('根据牌型得分，共10轮', 400, 205);
+    ctx.fillStyle = '#bdc3c7';
+    ctx.font = '15px sans-serif';
+    const hands = ['五同=50','大顺=40','四同=30','葫芦=25','小顺=20','三条=15','两对=10','一对=5'];
+    hands.forEach((h, i) => ctx.fillText(h, 250 + (i%4)*100, 260 + Math.floor(i/4)*30));
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('[ 点击开始 ]', 400, 400);
+    return;
+  }
+
+  if (state === 'gameover') {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = 'bold 42px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('游戏结束!', 400, 80);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = 'bold 26px sans-serif';
+    ctx.fillText(`总分: ${score}`, 400, 130);
+    // Score summary
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'left';
+    roundScores.forEach((rs, i) => {
+      const col = i < 5 ? 0 : 1;
+      const row = i % 5;
+      ctx.fillStyle = '#bdc3c7';
+      ctx.fillText(`第${rs.round}轮: ${rs.name} +${rs.pts}`, 180 + col * 260, 175 + row * 28);
+    });
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText('[ 点击重新开始 ]', 400, 440);
+    return;
+  }
+
+  // HUD
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`第 ${round}/${MAX_ROUNDS} 轮`, 20, 30);
+  ctx.textAlign = 'right';
+  ctx.fillText(`总分: ${score}`, 780, 30);
+
+  // Dice
+  const diceY = 140;
+  const startX = 130;
+  for (let i = 0; i < 5; i++) {
+    const shaking = rolling && !kept[i];
+    const ox = shaking ? (Math.random()-0.5)*4 : 0;
+    const oy = shaking ? (Math.random()-0.5)*4 : 0;
+    drawDie(startX + i * 115 + ox, diceY + oy, dice[i], kept[i], 70);
+  }
+
+  // Message
+  ctx.fillStyle = handScore >= 25 ? '#2ecc71' : '#ecf0f1';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, 400, 270);
+
+  // Controls
+  if (state === 'roll1') {
+    drawButton(300, 310, 200, 50, '🎲 掷骰子', '#27ae60');
+  } else if (state === 'select') {
+    ctx.fillStyle = '#95a5a6';
+    ctx.font = '15px sans-serif';
+    ctx.fillText('点击骰子选择保留/取消，然后:', 400, 300);
+    drawButton(300, 320, 200, 50, '🎲 第二次掷', '#2980b9');
+  } else if (state === 'scored') {
+    drawButton(300, 320, 200, 50, round >= MAX_ROUNDS ? '查看结果' : '下一轮', '#8e44ad');
+  }
+
+  // Score history mini
+  if (roundScores.length > 0) {
+    ctx.fillStyle = '#7f8c8d';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    const recent = roundScores.slice(-3).map(r => `${r.name}+${r.pts}`).join(' | ');
+    ctx.fillText('最近: ' + recent, 400, 460);
+  }
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / 45;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function update() {
+  if (rolling) {
+    rollAnim++;
+    if (rollAnim % 4 === 0) rollDice();
+    if (rollAnim > 20) {
+      rolling = false;
+      if (state === 'rolling1') { state = 'select'; message = '选择要保留的骰子'; }
+      else if (state === 'rolling2') { evaluate(); }
+    }
+  }
+  particles = particles.filter(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--; return p.life > 0; });
+}
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') { startGame(); return; }
+  if (state === 'gameover') { state = 'title'; return; }
+
+  if (state === 'roll1') {
+    if (mx >= 300 && mx <= 500 && my >= 310 && my <= 360) { doRoll1(); return; }
+  }
+
+  if (state === 'select') {
+    // Click dice to toggle keep
+    const startX = 130, diceY = 140;
+    for (let i = 0; i < 5; i++) {
+      if (mx >= startX + i*115 && mx <= startX + i*115 + 70 && my >= diceY && my <= diceY + 70) {
+        kept[i] = !kept[i];
+        return;
+      }
+    }
+    if (mx >= 300 && mx <= 500 && my >= 320 && my <= 370) { doRoll2(); return; }
+  }
+
+  if (state === 'scored') {
+    if (mx >= 300 && mx <= 500 && my >= 320 && my <= 370) { nextRound(); return; }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

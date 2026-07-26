@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>忍者跳跃</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const WALL_W = 60;
+const LEFT_WALL = WALL_W, RIGHT_WALL = W - WALL_W;
+
+let state = 'start';
+let score = 0, highScore = 0;
+let ninja, obstacles, coins, scrollSpeed, scrollY, spawnTimer, particles, difficulty;
+
+function init() {
+  ninja = {side: 0, y: H * 0.6, jumping: false, jumpX: 0, jumpProgress: 0};
+  obstacles = [];
+  coins = [];
+  particles = [];
+  scrollSpeed = 2;
+  scrollY = 0;
+  score = 0;
+  spawnTimer = 0;
+  difficulty = 0;
+}
+
+function switchSide() {
+  if (ninja.jumping) return;
+  ninja.jumping = true;
+  ninja.jumpProgress = 0;
+  ninja.jumpFrom = ninja.side;
+  ninja.side = ninja.side === 0 ? 1 : 0;
+}
+
+function spawnObstacle() {
+  const side = Math.random() > 0.5 ? 0 : 1;
+  obstacles.push({side, y: -40, w: 30, h: 20});
+}
+
+function spawnCoin() {
+  const side = Math.random() > 0.5 ? 0 : 1;
+  coins.push({side, y: -30, collected: false});
+}
+
+function update() {
+  difficulty += 0.001;
+  scrollSpeed = 2 + difficulty * 2;
+  scrollY += scrollSpeed;
+  score = Math.floor(scrollY / 10);
+
+  // Jump animation
+  if (ninja.jumping) {
+    ninja.jumpProgress += 0.08;
+    if (ninja.jumpProgress >= 1) {
+      ninja.jumping = false;
+      ninja.jumpProgress = 0;
+    }
+  }
+
+  // Move ninja up (visual scroll)
+  ninja.y -= scrollSpeed * 0.1;
+  if (ninja.y < H * 0.3) ninja.y = H * 0.3;
+  if (ninja.y > H * 0.7) ninja.y = H * 0.7;
+
+  // Spawn
+  spawnTimer++;
+  const spawnRate = Math.max(30, 70 - difficulty * 20);
+  if (spawnTimer > spawnRate) {
+    spawnTimer = 0;
+    if (Math.random() < 0.6) spawnObstacle();
+    else spawnCoin();
+  }
+
+  // Move obstacles/coins down
+  obstacles.forEach(o => o.y += scrollSpeed);
+  coins.forEach(c => c.y += scrollSpeed);
+  obstacles = obstacles.filter(o => o.y < H + 50);
+  coins = coins.filter(c => c.y < H + 50 && !c.collected);
+
+  // Ninja position
+  const nx = getNinjaX();
+  const ny = ninja.y;
+
+  // Collision with obstacles
+  for (const o of obstacles) {
+    const ox = o.side === 0 ? LEFT_WALL : RIGHT_WALL - o.w;
+    if (Math.abs(o.y - ny) < 25 && getNinjaSide() === o.side) {
+      if (nx > ox - 15 && nx < ox + o.w + 15) {
+        gameOver();
+        return;
+      }
+    }
+  }
+
+  // Coin collection
+  for (const c of coins) {
+    if (c.collected) continue;
+    const cx = c.side === 0 ? LEFT_WALL + 20 : RIGHT_WALL - 20;
+    if (Math.abs(c.y - ny) < 25 && getNinjaSide() === c.side) {
+      c.collected = true;
+      score += 25;
+      for (let i = 0; i < 6; i++) {
+        particles.push({x: cx, y: c.y, vx:(Math.random()-0.5)*5, vy:(Math.random()-0.5)*5, life:1, color:'#fd0'});
+      }
+    }
+  }
+
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life -= 0.04; });
+  particles = particles.filter(p => p.life > 0);
+}
+
+function getNinjaSide() {
+  if (!ninja.jumping) return ninja.side;
+  return ninja.jumpProgress < 0.5 ? ninja.jumpFrom : ninja.side;
+}
+
+function getNinjaX() {
+  const lx = LEFT_WALL + 15, rx = RIGHT_WALL - 15;
+  if (!ninja.jumping) return ninja.side === 0 ? lx : rx;
+  const from = ninja.jumpFrom === 0 ? lx : rx;
+  const to = ninja.side === 0 ? lx : rx;
+  const t = ninja.jumpProgress;
+  const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+  return from + (to - from) * ease;
+}
+
+function gameOver() {
+  state = 'over';
+  if (score > highScore) highScore = score;
+  for (let i = 0; i < 12; i++) {
+    particles.push({x: getNinjaX(), y: ninja.y, vx:(Math.random()-0.5)*10, vy:(Math.random()-0.5)*10, life:1.5, color:'#f44'});
+  }
+}
+
+function drawNinja() {
+  const x = getNinjaX();
+  const y = ninja.y;
+  const side = getNinjaSide();
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Body
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-10, -15, 20, 30);
+  // Head
+  ctx.fillStyle = '#333';
+  ctx.beginPath();
+  ctx.arc(0, -18, 10, 0, Math.PI*2);
+  ctx.fill();
+  // Headband
+  ctx.fillStyle = '#f22';
+  ctx.fillRect(-10, -22, 20, 5);
+  // Headband tail
+  const tailDir = side === 0 ? 1 : -1;
+  ctx.fillRect(tailDir * 8, -22, tailDir * 12, 3);
+  ctx.fillRect(tailDir * 14, -20, tailDir * 8, 3);
+  // Eyes
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-6, -19, 4, 3);
+  ctx.fillRect(2, -19, 4, 3);
+  // Legs
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-8, 15, 6, 10);
+  ctx.fillRect(2, 15, 6, 10);
+
+  ctx.restore();
+}
+
+function draw() {
+  // Background
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Scrolling bg pattern
+  ctx.fillStyle = '#12122a';
+  for (let y = (scrollY % 60) - 60; y < H; y += 60) {
+    ctx.fillRect(WALL_W, y, W - WALL_W*2, 1);
+  }
+
+  // Walls
+  const wallGrad = ctx.createLinearGradient(0, 0, WALL_W, 0);
+  wallGrad.addColorStop(0, '#2a2a3a');
+  wallGrad.addColorStop(1, '#3a3a5a');
+  ctx.fillStyle = wallGrad;
+  ctx.fillRect(0, 0, LEFT_WALL, H);
+
+  const wallGrad2 = ctx.createLinearGradient(RIGHT_WALL, 0, W, 0);
+  wallGrad2.addColorStop(0, '#3a3a5a');
+  wallGrad2.addColorStop(1, '#2a2a3a');
+  ctx.fillStyle = wallGrad2;
+  ctx.fillRect(RIGHT_WALL, 0, WALL_W, H);
+
+  // Wall texture
+  ctx.strokeStyle = '#4a4a6a';
+  ctx.lineWidth = 1;
+  for (let y = (scrollY % 40) - 40; y < H; y += 40) {
+    ctx.strokeRect(5, y, WALL_W-10, 38);
+    ctx.strokeRect(RIGHT_WALL+5, y, WALL_W-10, 38);
+  }
+
+  if (state === 'start') {
+    ctx.fillStyle = '#f44';
+    ctx.font = 'bold 44px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('忍者跳跃', 400, 130);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px monospace';
+    ctx.fillText('左/右方向键 或 A/D 切换墙壁', 400, 220);
+    ctx.fillText('躲避尖刺，收集金币', 400, 260);
+    ctx.fillText('坚持越久分数越高!', 400, 300);
+    ctx.fillStyle = '#ff0';
+    ctx.font = '24px monospace';
+    ctx.fillText('按 空格键 开始', 400, 370);
+    ctx.fillStyle = '#666';
+    ctx.font = '16px monospace';
+    ctx.fillText('ESC 退出游戏', 400, 430);
+    drawNinja();
+    return;
+  }
+
+  // Obstacles (spikes)
+  obstacles.forEach(o => {
+    const ox = o.side === 0 ? LEFT_WALL : RIGHT_WALL - o.w;
+    ctx.fillStyle = '#f44';
+    ctx.beginPath();
+    if (o.side === 0) {
+      ctx.moveTo(ox, o.y - o.h/2);
+      ctx.lineTo(ox + o.w, o.y);
+      ctx.lineTo(ox, o.y + o.h/2);
+    } else {
+      ctx.moveTo(ox + o.w, o.y - o.h/2);
+      ctx.lineTo(ox, o.y);
+      ctx.moveTo(ox + o.w, o.y + o.h/2);
+      ctx.lineTo(ox, o.y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    // Glow
+    ctx.shadowColor = '#f44';
+    ctx.shadowBlur = 8;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+
+  // Coins
+  coins.forEach(c => {
+    if (c.collected) return;
+    const cx = c.side === 0 ? LEFT_WALL + 20 : RIGHT_WALL - 20;
+    ctx.fillStyle = '#fd0';
+    ctx.shadowColor = '#fd0';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(cx, c.y, 10, 0, Math.PI*2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#a80';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('$', cx, c.y + 4);
+  });
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = Math.min(1, p.life);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-3, p.y-3, 6, 6);
+  });
+  ctx.globalAlpha = 1;
+
+  drawNinja();
+
+  // HUD
+  if (state === 'play' || state === 'over') {
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 22px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`高度: ${score}`, 80, 30);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ff0';
+    ctx.fillText(`最高: ${highScore}`, 720, 30);
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#f44';
+    ctx.font = 'bold 44px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('游戏结束', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '28px monospace';
+    ctx.fillText(`高度: ${score}`, 400, 230);
+    ctx.fillStyle = '#ff0';
+    ctx.fillText(`最高纪录: ${highScore}`, 400, 275);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '22px monospace';
+    ctx.fillText('按 空格键 重新开始', 400, 360);
+  }
+}
+
+function loop() {
+  if (state === 'play') update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state === 'start' || state === 'over') { init(); state = 'play'; }
+    else if (state === 'play') switchSide();
+  }
+  if (state === 'play') {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') { if (ninja.side !== 0) switchSide(); }
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') { if (ninja.side !== 1) switchSide(); }
+  }
+  e.preventDefault();
+});
+
+canvas.addEventListener('click', e => {
+  if (state === 'start' || state === 'over') { init(); state = 'play'; return; }
+  if (state === 'play') {
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    if (mx < W/2 && ninja.side !== 0) switchSide();
+    else if (mx >= W/2 && ninja.side !== 1) switchSide();
+  }
+});
+
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>挖地虫 - Dig Dug</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const COLS = 20, ROWS = 14, CELL = 32;
+const OX = (800 - COLS * CELL) / 2, OY = 40;
+let state = 'title', score = 0, lives = 3, level = 1, hiScore = 0;
+let grid = [], player = null, enemies = [], rocks = [], pumpTarget = null, pumpLevel = 0;
+let keys = {}, lastTime = 0, moveTimer = 0, enemyTimer = 0, rockTimer = 0;
+let particles = [], flashTimer = 0, levelMsg = '', levelMsgTimer = 0;
+let screenShake = 0, comboCount = 0, comboTimer = 0;
+let bgStars = [];
+for (let i = 0; i < 40; i++) bgStars.push({ x: Math.random() * 800, y: Math.random() * 480, s: Math.random() * 2 + 1, b: Math.random() });
+
+function initLevel() {
+  grid = [];
+  for (let r = 0; r < ROWS; r++) {
+    grid[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      grid[r][c] = r < 2 ? 0 : 1;
+    }
+  }
+  // Carve some initial tunnels for visual interest
+  let tunnelY = 5 + Math.floor(Math.random() * 3);
+  for (let c = 3; c < COLS - 3; c++) grid[tunnelY][c] = 0;
+  let tunnelX = 5 + Math.floor(Math.random() * 10);
+  for (let r = 3; r < ROWS - 2; r++) grid[r][tunnelX] = 0;
+
+  player = { x: 10, y: 1, px: 10 * CELL + OX, py: 1 * CELL + OY, dir: 0, moving: false, alive: true, deathTimer: 0, animFrame: 0 };
+  grid[1][10] = 0; grid[1][9] = 0; grid[1][11] = 0;
+  enemies = [];
+  rocks = [];
+  pumpTarget = null; pumpLevel = 0;
+  comboCount = 0; comboTimer = 0;
+
+  let numEnemies = Math.min(3 + level, 8);
+  for (let i = 0; i < numEnemies; i++) {
+    let ex, ey, tries = 0;
+    do {
+      ex = 2 + Math.floor(Math.random() * (COLS - 4));
+      ey = 4 + Math.floor(Math.random() * (ROWS - 6));
+      tries++;
+    } while ((Math.abs(ex - player.x) < 4 && Math.abs(ey - player.y) < 3) && tries < 50);
+    grid[ey][ex] = 0;
+    if (ex > 0) grid[ey][ex - 1] = 0;
+    enemies.push({
+      x: ex, y: ey, px: ex * CELL + OX, py: ey * CELL + OY,
+      type: Math.random() < 0.6 ? 'pooka' : 'fygar',
+      dir: Math.floor(Math.random() * 4), moveTimer: 0, alive: true,
+      inflated: 0, inflateTimer: 0, ghostMode: false, ghostTimer: 0,
+      fireTimer: 0, firing: false, animFrame: Math.random() * 10,
+      speed: 1.0 + level * 0.12 + Math.random() * 0.3
+    });
+  }
+
+  let numRocks = 2 + Math.floor(level / 2);
+  for (let i = 0; i < Math.min(numRocks, 6); i++) {
+    let rx = 2 + Math.floor(Math.random() * (COLS - 4));
+    let ry = 3 + Math.floor(Math.random() * 4);
+    rocks.push({ x: rx, y: ry, px: rx * CELL + OX, py: ry * CELL + OY, falling: false, fallTimer: 0, wobble: 0, settled: true, fallSpeed: 0 });
+  }
+  levelMsg = '第 ' + level + ' 层';
+  levelMsgTimer = 120;
+}
+
+function dig(cx, cy) {
+  if (cy >= 0 && cy < ROWS && cx >= 0 && cx < COLS) grid[cy][cx] = 0;
+}
+
+function isDug(cx, cy) {
+  return cy >= 0 && cy < ROWS && cx >= 0 && cx < COLS && grid[cy][cx] === 0;
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 5,
+      vy: (Math.random() - 0.5) * 5 - 1,
+      life: 30 + Math.random() * 25,
+      color, size: 2 + Math.random() * 4
+    });
+  }
+}
+
+function addScore(pts, x, y) {
+  score += pts;
+  particles.push({ x, y, vx: 0, vy: -1.5, life: 50, color: '#ff0', size: 0, text: '+' + pts });
+}
+
+function update(dt) {
+  if (state !== 'play') return;
+  if (levelMsgTimer > 0) levelMsgTimer--;
+  if (screenShake > 0) screenShake -= dt;
+  if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) comboCount = 0; }
+  moveTimer += dt;
+  enemyTimer += dt;
+  player.animFrame += dt * 0.15;
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    let p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    if (!p.text) p.vy += 0.12;
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  if (!player.alive) {
+    player.deathTimer--;
+    if (player.deathTimer <= 0) {
+      lives--;
+      if (lives <= 0) {
+        state = 'over';
+        if (score > hiScore) hiScore = score;
+      } else {
+        player.alive = true;
+        player.x = 10; player.y = 1;
+        player.px = 10 * CELL + OX; player.py = 1 * CELL + OY;
+        grid[1][10] = 0;
+        pumpTarget = null; pumpLevel = 0;
+      }
+    }
+    return;
+  }
+
+  // Player movement
+  let speed = 2.5;
+  let dx = 0, dy = 0;
+  if (pumpTarget && keys[' ']) {
+    pumpLevel += dt * 0.035;
+    pumpTarget.inflated = Math.min(4, Math.floor(pumpLevel));
+    pumpTarget.inflateTimer = 80;
+    if (pumpTarget.inflated >= 4) {
+      pumpTarget.alive = false;
+      comboCount++;
+      comboTimer = 120;
+      let depthBonus = pumpTarget.y * 10;
+      let comboBonus = comboCount > 1 ? comboCount * 100 : 0;
+      let pts = (pumpTarget.type === 'fygar' ? 400 : 200) + depthBonus + comboBonus;
+      addScore(pts, pumpTarget.px + 16, pumpTarget.py);
+      spawnParticles(pumpTarget.px + 16, pumpTarget.py + 16, pumpTarget.type === 'fygar' ? '#4f4' : '#f84', 18);
+      screenShake = 8;
+      pumpTarget = null; pumpLevel = 0;
+    }
+  } else {
+    if (pumpTarget) { pumpTarget = null; pumpLevel = 0; }
+    if (keys['ArrowLeft'] || keys['KeyA']) dx = -1;
+    else if (keys['ArrowRight'] || keys['KeyD']) dx = 1;
+    else if (keys['ArrowUp'] || keys['KeyW']) dy = -1;
+    else if (keys['ArrowDown'] || keys['KeyS']) dy = 1;
+  }
+
+  if (dx !== 0 || dy !== 0) {
+    player.dir = dx < 0 ? 2 : dx > 0 ? 0 : dy < 0 ? 1 : 3;
+    let nx = player.px + dx * speed, ny = player.py + dy * speed;
+    let ncx = Math.floor((nx - OX + 16) / CELL), ncy = Math.floor((ny - OY + 16) / CELL);
+    if (ncx >= 0 && ncx < COLS && ncy >= 0 && ncy < ROWS) {
+      player.px = nx; player.py = ny;
+      // Dig surrounding cells
+      for (let ox = 0; ox <= 1; ox++) for (let oy = 0; oy <= 1; oy++) {
+        dig(Math.floor((player.px - OX + 8 + ox * 16) / CELL), Math.floor((player.py - OY + 8 + oy * 16) / CELL));
+      }
+      player.x = Math.floor((player.px - OX + 16) / CELL);
+      player.y = Math.floor((player.py - OY + 16) / CELL);
+      // Dig particles
+      if (Math.random() < 0.3) {
+        particles.push({ x: player.px + 16 + dx * 14, y: player.py + 16 + dy * 14, vx: dx * 2 + (Math.random() - 0.5) * 2, vy: dy * 2 - 1, life: 15, color: '#a86', size: 2 + Math.random() * 2 });
+      }
+    }
+  }
+
+  // Pump attack initiation
+  if (keys[' '] && !pumpTarget) {
+    let dirs = [[1, 0], [-1, 0], [0, -1], [0, 1]];
+    let pd = dirs[player.dir] || [1, 0];
+    for (let e of enemies) {
+      if (!e.alive || e.inflated > 0) continue;
+      let dist = Math.hypot(e.px - player.px, e.py - player.py);
+      let dot = (e.px - player.px) * pd[0] + (e.py - player.py) * pd[1];
+      if (dist < 55 && dot > 0) { pumpTarget = e; pumpLevel = e.inflated; break; }
+    }
+  }
+
+  // Enemy AI
+  for (let e of enemies) {
+    if (!e.alive) continue;
+    e.animFrame += dt * 0.1;
+    if (e.inflateTimer > 0) { e.inflateTimer -= dt; if (e.inflateTimer <= 0) e.inflated = 0; continue; }
+    if (e.inflated > 0) continue;
+
+    e.moveTimer += dt;
+    let espeed = e.speed;
+    if (e.moveTimer > 28) {
+      e.moveTimer = 0;
+      let toPlayer = Math.atan2(player.py - e.py, player.px - e.px);
+      if (Math.random() < 0.55 + level * 0.03) {
+        if (Math.abs(Math.cos(toPlayer)) > Math.abs(Math.sin(toPlayer))) e.dir = Math.cos(toPlayer) > 0 ? 0 : 2;
+        else e.dir = Math.sin(toPlayer) > 0 ? 3 : 1;
+      } else {
+        e.dir = Math.floor(Math.random() * 4);
+      }
+    }
+
+    let edx = [1, -1, 0, 0][e.dir] * espeed;
+    let edy = [0, 0, -1, 1][e.dir] * espeed;
+    let enx = e.px + edx, eny = e.py + edy;
+    let ecx = Math.floor((enx - OX + 16) / CELL), ecy = Math.floor((eny - OY + 16) / CELL);
+
+    if (isDug(ecx, ecy)) {
+      e.px = enx; e.py = eny;
+      e.ghostMode = false; e.ghostTimer = 0;
+    } else {
+      e.ghostTimer++;
+      if (e.ghostTimer > 50) {
+        e.px = enx; e.py = eny;
+        e.ghostMode = true;
+        dig(ecx, ecy);
+      } else {
+        e.dir = Math.floor(Math.random() * 4);
+      }
+    }
+    if (isDug(Math.floor((e.px - OX + 16) / CELL), Math.floor((e.py - OY + 16) / CELL))) e.ghostMode = false;
+    e.x = Math.floor((e.px - OX + 16) / CELL);
+    e.y = Math.floor((e.py - OY + 16) / CELL);
+
+    // Fygar fire attack
+    if (e.type === 'fygar' && !e.firing) {
+      e.fireTimer += dt;
+      let dist = Math.hypot(player.px - e.px, player.py - e.py);
+      if (e.fireTimer > 100 && dist < 130 && Math.abs(player.py - e.py) < 22) {
+        e.firing = true; e.fireTimer = 0;
+      }
+    }
+    if (e.firing) {
+      e.fireTimer++;
+      if (e.fireTimer > 35) e.firing = false;
+      let dist = Math.hypot(player.px - e.px, player.py - e.py);
+      if (dist < 90 && Math.abs(player.py - e.py) < 22 && e.fireTimer < 28) killPlayer();
+    }
+
+    // Collision with player
+    let dist = Math.hypot(player.px - e.px, player.py - e.py);
+    if (dist < 20 && e.inflated === 0) killPlayer();
+  }
+  enemies = enemies.filter(e => e.alive);
+
+  // Rock physics
+  for (let r of rocks) {
+    if (r.falling) {
+      r.fallTimer += dt;
+      r.fallSpeed = Math.min(r.fallSpeed + 0.3 * dt, 6);
+      r.py += r.fallSpeed;
+      r.y = Math.floor((r.py - OY) / CELL);
+      for (let e of enemies) {
+        if (e.alive && Math.hypot(e.px - r.px, e.py - r.py) < 30) {
+          e.alive = false;
+          addScore(1000, e.px + 16, e.py);
+          spawnParticles(e.px + 16, e.py + 16, '#ff0', 15);
+          screenShake = 12;
+        }
+      }
+      if (player.alive && Math.hypot(player.px - r.px, player.py - r.py) < 26) killPlayer();
+      if (r.py > OY + ROWS * CELL || (r.y < ROWS - 1 && grid[r.y + 1] && grid[r.y + 1][r.x] === 1 && r.fallTimer > 8)) {
+        r.falling = false; r.settled = true; r.fallSpeed = 0;
+        spawnParticles(r.px + 16, r.py + 28, '#a86', 10);
+        screenShake = 6;
+      }
+    } else {
+      let below = r.y + 1;
+      if (below < ROWS && isDug(r.x, below)) {
+        r.wobble += dt;
+        if (r.wobble > 35) { r.falling = true; r.fallTimer = 0; r.wobble = 0; r.fallSpeed = 0; }
+      } else {
+        r.wobble = 0;
+      }
+    }
+  }
+
+  // Level complete
+  if (enemies.length === 0 && levelMsgTimer <= 0) {
+    level++;
+    initLevel();
+  }
+}
+
+function killPlayer() {
+  if (!player.alive) return;
+  player.alive = false;
+  player.deathTimer = 90;
+  spawnParticles(player.px + 16, player.py + 16, '#f44', 22);
+  spawnParticles(player.px + 16, player.py + 16, '#ff0', 8);
+  flashTimer = 12;
+  screenShake = 15;
+}
+
+function draw() {
+  ctx.save();
+  if (screenShake > 0) ctx.translate(Math.random() * screenShake - screenShake / 2, Math.random() * screenShake - screenShake / 2);
+  ctx.fillStyle = '#0a0a1e';
+  ctx.fillRect(-10, -10, 820, 500);
+
+  if (state === 'title') { ctx.restore(); drawTitle(); return; }
+  if (state === 'over') { ctx.restore(); drawOver(); return; }
+
+  // Draw grid
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    let x = OX + c * CELL, y = OY + r * CELL;
+    if (grid[r][c] === 1) {
+      let depth = r / ROWS;
+      let rr = Math.floor(130 - depth * 50);
+      let gg = Math.floor(75 - depth * 25);
+      let bb = Math.floor(35 - depth * 10);
+      ctx.fillStyle = `rgb(${rr},${gg},${bb})`;
+      ctx.fillRect(x, y, CELL, CELL);
+      // Texture
+      ctx.fillStyle = 'rgba(0,0,0,0.12)';
+      ctx.fillRect(x, y + CELL - 3, CELL, 3);
+      ctx.fillRect(x + CELL - 2, y, 2, CELL);
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      ctx.fillRect(x, y, CELL, 2);
+      // Random dirt specks
+      if ((r * 7 + c * 13) % 5 === 0) {
+        ctx.fillStyle = 'rgba(0,0,0,0.15)';
+        ctx.fillRect(x + 8, y + 10, 4, 3);
+      }
+    } else {
+      ctx.fillStyle = '#0d0d1a';
+      ctx.fillRect(x, y, CELL, CELL);
+      ctx.fillStyle = 'rgba(30,30,50,0.5)';
+      ctx.fillRect(x, y, CELL, 1);
+    }
+  }
+
+  // Surface line
+  ctx.fillStyle = '#4a4';
+  ctx.fillRect(OX, OY - 5, COLS * CELL, 5);
+  ctx.fillStyle = '#6c6';
+  for (let x = OX; x < OX + COLS * CELL; x += 12) {
+    ctx.fillRect(x, OY - 8, 3, 4);
+  }
+
+  // Draw rocks
+  for (let r of rocks) {
+    let rx = r.px + (r.wobble > 0 && !r.falling ? Math.sin(r.wobble * 0.5) * 3 : 0);
+    ctx.fillStyle = '#777';
+    ctx.beginPath();
+    ctx.ellipse(rx + 16, r.py + 16, 14, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#999';
+    ctx.beginPath();
+    ctx.ellipse(rx + 12, r.py + 12, 6, 4, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#555';
+    ctx.beginPath();
+    ctx.ellipse(rx + 20, r.py + 20, 4, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (r.wobble > 0 && !r.falling) {
+      ctx.fillStyle = '#ff0';
+      ctx.font = '10px monospace';
+      ctx.fillText('!', rx + 14, r.py - 2);
+    }
+  }
+
+  // Draw enemies
+  for (let e of enemies) {
+    if (!e.alive) continue;
+    let ex = e.px, ey = e.py;
+    let scale = 1 + e.inflated * 0.22;
+    let wobble = Math.sin(e.animFrame) * 1.5;
+    ctx.save();
+    ctx.translate(ex + 16, ey + 16 + wobble);
+    ctx.scale(scale, scale);
+    if (e.ghostMode) ctx.globalAlpha = 0.5 + Math.sin(e.animFrame * 2) * 0.2;
+
+    if (e.type === 'pooka') {
+      // Body
+      ctx.fillStyle = e.inflated > 0 ? `hsl(0, 80%, ${60 + e.inflated * 8}%)` : '#f55';
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.beginPath(); ctx.arc(-3, -4, 5, 0, Math.PI * 2); ctx.fill();
+      // Goggles
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(-4, -3, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(4, -3, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(-4, -3, 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(4, -3, 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#222';
+      ctx.beginPath(); ctx.arc(-4, -2, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(4, -2, 2, 0, Math.PI * 2); ctx.fill();
+      // Feet
+      ctx.fillStyle = '#c33';
+      ctx.fillRect(-8, 10, 5, 4);
+      ctx.fillRect(3, 10, 5, 4);
+    } else {
+      // Fygar body
+      ctx.fillStyle = e.inflated > 0 ? `hsl(120, 70%, ${50 + e.inflated * 10}%)` : '#4a4';
+      ctx.beginPath(); ctx.ellipse(0, 0, 14, 10, 0, 0, Math.PI * 2); ctx.fill();
+      // Head crest
+      ctx.fillStyle = '#2a2';
+      ctx.beginPath(); ctx.moveTo(8, -6); ctx.lineTo(16, -12); ctx.lineTo(14, -2); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(6, -8); ctx.lineTo(12, -14); ctx.lineTo(10, -4); ctx.closePath(); ctx.fill();
+      // Eyes
+      ctx.fillStyle = '#ff0';
+      ctx.beginPath(); ctx.arc(-4, -2, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(4, -2, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#800';
+      ctx.beginPath(); ctx.arc(-4, -2, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(4, -2, 1.5, 0, Math.PI * 2); ctx.fill();
+      // Snout
+      ctx.fillStyle = '#3a3';
+      ctx.fillRect(10, -2, 8, 5);
+      // Fire breath
+      if (e.firing && e.fireTimer < 28) {
+        let fireLen = 50 + Math.sin(e.fireTimer * 0.5) * 15;
+        let grad = ctx.createLinearGradient(18, 0, 18 + fireLen, 0);
+        grad.addColorStop(0, 'rgba(255,255,0,0.9)');
+        grad.addColorStop(0.5, 'rgba(255,128,0,0.7)');
+        grad.addColorStop(1, 'rgba(255,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(18, -5); ctx.lineTo(18 + fireLen, -2);
+        ctx.lineTo(18 + fireLen, 4); ctx.lineTo(18, 7);
+        ctx.closePath(); ctx.fill();
+      }
+      // Tail
+      ctx.strokeStyle = '#3a3'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(-14, 0);
+      ctx.quadraticCurveTo(-20, -5 + wobble, -24, 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Draw player
+  if (player.alive) {
+    let px = player.px, py = player.py;
+    let bob = Math.sin(player.animFrame * 2) * 1.5;
+    ctx.save();
+    ctx.translate(px + 16, py + 16 + bob);
+    // Body
+    ctx.fillStyle = '#48f';
+    ctx.beginPath(); ctx.arc(0, -2, 10, 0, Math.PI * 2); ctx.fill();
+    // Helmet
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(0, -5, 7, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#26c';
+    ctx.fillRect(-3, -12, 6, 4);
+    // Body suit
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-8, 6, 16, 10);
+    // Legs
+    ctx.fillStyle = '#26c';
+    let legAnim = Math.sin(player.animFrame * 3) * 3;
+    ctx.fillRect(-7, 14, 5, 8 + legAnim);
+    ctx.fillRect(2, 14, 5, 8 - legAnim);
+    // Pump nozzle direction indicator
+    let dirs = [[1, 0], [-1, 0], [0, -1], [0, 1]];
+    let d = dirs[player.dir] || [1, 0];
+    ctx.fillStyle = '#ff0';
+    ctx.beginPath(); ctx.arc(d[0] * 15, d[1] * 15 - 2, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    // Pump line
+    if (pumpTarget) {
+      ctx.strokeStyle = '#f80'; ctx.lineWidth = 3;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(px + 16 + d[0] * 12, py + 14 + d[1] * 12);
+      ctx.lineTo(pumpTarget.px + 16, pumpTarget.py + 16);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Pump handle animation
+      let pumpBob = Math.sin(pumpLevel * 8) * 3;
+      ctx.fillStyle = '#f80';
+      ctx.fillRect(px + 16 + d[0] * 8 - 3, py + 14 + d[1] * 8 - 6 + pumpBob, 6, 12);
+    }
+  } else {
+    // Death animation
+    let t = player.deathTimer / 90;
+    ctx.fillStyle = `rgba(255,60,60,${t})`;
+    ctx.beginPath();
+    ctx.arc(player.px + 16, player.py + 16, 20 * (1 - t) + 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255,200,0,${t})`;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 6; i++) {
+      let angle = (i / 6) * Math.PI * 2 + player.deathTimer * 0.1;
+      let r = 15 * (1 - t) + 8;
+      ctx.beginPath();
+      ctx.moveTo(player.px + 16 + Math.cos(angle) * r * 0.5, player.py + 16 + Math.sin(angle) * r * 0.5);
+      ctx.lineTo(player.px + 16 + Math.cos(angle) * r, player.py + 16 + Math.sin(angle) * r);
+      ctx.stroke();
+    }
+  }
+
+  // Particles
+  for (let p of particles) {
+    ctx.globalAlpha = Math.min(1, p.life / 25);
+    if (p.text) {
+      ctx.fillStyle = p.color;
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText(p.text, p.x, p.y);
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Flash effect
+  if (flashTimer > 0) {
+    ctx.fillStyle = `rgba(255,0,0,${flashTimer * 0.025})`;
+    ctx.fillRect(0, 0, 800, 480);
+    flashTimer--;
+  }
+
+  // HUD
+  ctx.fillStyle = '#fff'; ctx.font = '16px monospace';
+  ctx.fillText('分数: ' + score, 10, 25);
+  ctx.fillText('最高: ' + hiScore, 180, 25);
+  ctx.fillStyle = '#f44';
+  ctx.fillText('生命: ' + '♥'.repeat(Math.max(0, lives)), 380, 25);
+  ctx.fillStyle = '#4af';
+  ctx.fillText('层数: ' + level, 560, 25);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('敌人: ' + enemies.length, 680, 25);
+
+  if (comboCount > 1 && comboTimer > 0) {
+    ctx.fillStyle = '#ff0'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(comboCount + ' 连击!', 400, 470);
+    ctx.textAlign = 'left';
+  }
+
+  // Level message
+  if (levelMsgTimer > 0) {
+    let alpha = Math.min(1, levelMsgTimer / 60);
+    ctx.fillStyle = `rgba(255,255,100,${alpha})`;
+    ctx.font = 'bold 36px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(levelMsg, 400, 250);
+    ctx.font = '18px monospace';
+    ctx.fillText('消灭所有敌人!', 400, 285);
+    ctx.textAlign = 'left';
+  }
+  ctx.restore();
+}
+
+function drawTitle() {
+  // Animated background
+  ctx.fillStyle = '#0a0a1e'; ctx.fillRect(0, 0, 800, 480);
+  for (let s of bgStars) {
+    s.b += 0.02;
+    ctx.fillStyle = `rgba(255,255,255,${0.2 + Math.sin(s.b) * 0.15})`;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+  // Ground layers
+  for (let i = 0; i < 5; i++) {
+    let depth = i / 5;
+    ctx.fillStyle = `rgb(${100 - depth * 40},${60 - depth * 20},${25})`;
+    ctx.fillRect(0, 320 + i * 32, 800, 32);
+  }
+  ctx.fillStyle = '#4a4'; ctx.fillRect(0, 316, 800, 5);
+
+  ctx.fillStyle = '#f80'; ctx.font = 'bold 52px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('挖 地 虫', 400, 120);
+  ctx.fillStyle = '#fa0'; ctx.font = '22px monospace';
+  ctx.fillText('DIG DUG', 400, 155);
+
+  // Animated character
+  let bobY = Math.sin(Date.now() * 0.004) * 5;
+  ctx.fillStyle = '#48f';
+  ctx.beginPath(); ctx.arc(400, 220 + bobY, 14, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(400, 216 + bobY, 9, Math.PI, 0); ctx.fill();
+
+  ctx.fillStyle = '#4f4'; ctx.font = '18px monospace';
+  ctx.fillText('方向键 / WASD - 移动挖掘', 400, 280);
+  ctx.fillText('空格键 - 打气筒攻击（按住充气4次爆炸）', 400, 310);
+  ctx.fillText('挖空石头下方使其坠落砸敌人', 400, 340);
+  ctx.fillText('越深处击杀分数越高!', 400, 370);
+
+  ctx.fillStyle = '#ff0'; ctx.font = 'bold 24px monospace';
+  let blink = Math.sin(Date.now() * 0.005) > 0;
+  if (blink) ctx.fillText('按 ENTER 开始游戏', 400, 425);
+  ctx.fillStyle = '#888'; ctx.font = '14px monospace';
+  ctx.fillText('ESC 退出', 400, 460);
+  ctx.textAlign = 'left';
+}
+
+function drawOver() {
+  ctx.fillStyle = '#0a0a1e'; ctx.fillRect(0, 0, 800, 480);
+  for (let s of bgStars) {
+    ctx.fillStyle = `rgba(255,255,255,${0.15 + Math.sin(s.b + Date.now() * 0.001) * 0.1})`;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+  ctx.fillStyle = '#f44'; ctx.font = 'bold 46px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('游 戏 结 束', 400, 150);
+  ctx.fillStyle = '#fff'; ctx.font = '26px monospace';
+  ctx.fillText('最终分数: ' + score, 400, 230);
+  ctx.fillStyle = '#ff0'; ctx.font = '22px monospace';
+  ctx.fillText('最高纪录: ' + hiScore, 400, 275);
+  ctx.fillStyle = '#aaa'; ctx.font = '18px monospace';
+  ctx.fillText('到达层数: ' + level, 400, 320);
+  ctx.fillStyle = '#4f4'; ctx.font = 'bold 22px monospace';
+  let blink = Math.sin(Date.now() * 0.005) > 0;
+  if (blink) ctx.fillText('按 ENTER 重新开始', 400, 400);
+  ctx.fillStyle = '#888'; ctx.font = '14px monospace';
+  ctx.fillText('ESC 退出', 400, 450);
+  ctx.textAlign = 'left';
+}
+
+function gameLoop(time) {
+  let dt = Math.min((time - lastTime) / 16.67, 3);
+  lastTime = time;
+  update(dt);
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Enter') {
+    if (state === 'title') { state = 'play'; score = 0; lives = 3; level = 1; initLevel(); }
+    else if (state === 'over') { state = 'play'; score = 0; lives = 3; level = 1; initLevel(); }
+  }
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.code)) e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>打地鼠</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const GAME_TIME = 30;
+const COLS = 3, ROWS = 3;
+const HOLE_W = 120, HOLE_H = 50;
+const START_X = 200, START_Y = 120, GAP_X = 200, GAP_Y = 120;
+
+let state = 'start';
+let score = 0, highScore = 0, timeLeft, moles, particles, combo, lastHit;
+
+function holePos(i) {
+  const col = i % COLS, row = Math.floor(i / COLS);
+  return {x: START_X + col * GAP_X, y: START_Y + row * GAP_Y};
+}
+
+function init() {
+  score = 0; timeLeft = GAME_TIME; combo = 0; lastHit = 0;
+  particles = [];
+  moles = Array.from({length: 9}, () => ({up: false, timer: 0, hit: false, golden: false}));
+}
+
+function update(dt) {
+  timeLeft -= dt;
+  if (timeLeft <= 0) {
+    timeLeft = 0; state = 'over';
+    if (score > highScore) highScore = score;
+    return;
+  }
+
+  const elapsed = GAME_TIME - timeLeft;
+  const spawnRate = Math.max(0.3, 1.2 - elapsed * 0.03);
+  const upTime = Math.max(40, 90 - elapsed * 1.5);
+
+  moles.forEach((m, i) => {
+    if (m.up) {
+      m.timer--;
+      if (m.timer <= 0) { m.up = false; m.hit = false; }
+    } else if (Math.random() < dt * spawnRate * 0.15) {
+      m.up = true; m.hit = false;
+      m.timer = upTime + Math.random() * 30;
+      m.golden = Math.random() < 0.12;
+    }
+  });
+
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.3; p.life -= 0.04; });
+  particles = particles.filter(p => p.life > 0);
+}
+
+function whack(mx, my) {
+  if (state !== 'play') return;
+  for (let i = 0; i < 9; i++) {
+    const m = moles[i];
+    if (!m.up || m.hit) continue;
+    const pos = holePos(i);
+    const dx = mx - pos.x, dy = my - (pos.y - 25);
+    if (dx*dx + dy*dy < 45*45) {
+      m.hit = true; m.up = false;
+      const now = Date.now();
+      combo = (now - lastHit < 1000) ? combo + 1 : 1;
+      lastHit = now;
+      const pts = (m.golden ? 50 : 10) * Math.min(combo, 5);
+      score += pts;
+      for (let j = 0; j < 8; j++) {
+        particles.push({
+          x: pos.x, y: pos.y - 25,
+          vx: (Math.random()-0.5)*8, vy: -Math.random()*6-2,
+          life: 1, color: m.golden ? '#fd0' : '#f84'
+        });
+      }
+      // Score popup
+      particles.push({x: pos.x, y: pos.y - 50, vx: 0, vy: -1.5, life: 1.5, color: '#fff', text: `+${pts}`});
+      return;
+    }
+  }
+}
+
+function drawMole(x, y, m) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Hole
+  ctx.fillStyle = '#2a1a0a';
+  ctx.beginPath();
+  ctx.ellipse(0, 20, HOLE_W/2, HOLE_H/2, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = '#4a3a2a';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  if (m.up) {
+    const pop = Math.min(1, (m.timer > 10) ? 1 : m.timer / 10);
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(0, 20, HOLE_W/2 - 5, HOLE_H/2 - 3, 0, Math.PI, 0);
+    ctx.rect(-HOLE_W/2, -60, HOLE_W, 80);
+    ctx.clip();
+
+    const yOff = m.hit ? 15 : -20 * pop;
+    // Body
+    ctx.fillStyle = m.golden ? '#da0' : '#8B4513';
+    ctx.beginPath();
+    ctx.ellipse(0, yOff, 28, 32, 0, 0, Math.PI*2);
+    ctx.fill();
+    // Face
+    ctx.fillStyle = m.golden ? '#fc6' : '#D2691E';
+    ctx.beginPath();
+    ctx.ellipse(0, yOff - 5, 20, 22, 0, 0, Math.PI*2);
+    ctx.fill();
+    // Eyes
+    if (m.hit) {
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-10, yOff-12); ctx.lineTo(-4, yOff-6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-4, yOff-12); ctx.lineTo(-10, yOff-6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(4, yOff-12); ctx.lineTo(10, yOff-6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(10, yOff-12); ctx.lineTo(4, yOff-6); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.arc(-8, yOff-10, 4, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(8, yOff-10, 4, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(-7, yOff-11, 1.5, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(9, yOff-11, 1.5, 0, Math.PI*2); ctx.fill();
+    }
+    // Nose
+    ctx.fillStyle = '#f69';
+    ctx.beginPath(); ctx.arc(0, yOff-2, 5, 0, Math.PI*2); ctx.fill();
+    // Teeth
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-5, yOff+4, 4, 6);
+    ctx.fillRect(1, yOff+4, 4, 6);
+
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function draw() {
+  ctx.fillStyle = '#1a2a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grass texture
+  ctx.fillStyle = '#2a3a2a';
+  for (let i = 0; i < 50; i++) {
+    ctx.fillRect((i*67)%W, (i*43)%H, 20, 3);
+  }
+
+  if (state === 'start') {
+    ctx.fillStyle = '#f84';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('打地鼠', 400, 130);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px monospace';
+    ctx.fillText('鼠标点击 打冒出来的地鼠', 400, 220);
+    ctx.fillText(`${GAME_TIME} 秒限时，金色地鼠分数更高`, 400, 260);
+    ctx.fillText('连续命中获得连击加分!', 400, 300);
+    ctx.fillStyle = '#ff0';
+    ctx.font = '24px monospace';
+    ctx.fillText('按 空格键 开始', 400, 370);
+    ctx.fillStyle = '#666';
+    ctx.font = '16px monospace';
+    ctx.fillText('ESC 退出游戏', 400, 430);
+    return;
+  }
+
+  moles.forEach((m, i) => {
+    const pos = holePos(i);
+    drawMole(pos.x, pos.y, m);
+  });
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = Math.min(1, p.life);
+    if (p.text) {
+      ctx.fillStyle = p.color;
+      ctx.font = 'bold 18px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.text, p.x, p.y);
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x-3, p.y-3, 6, 6);
+    }
+  });
+  ctx.globalAlpha = 1;
+
+  if (state === 'play') {
+    // HUD
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`分数: ${score}`, 15, 35);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = timeLeft < 10 ? '#f44' : '#4f4';
+    ctx.fillText(`时间: ${Math.ceil(timeLeft)}s`, 785, 35);
+    if (combo > 1) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fd0';
+      ctx.font = 'bold 20px monospace';
+      ctx.fillText(`连击 x${Math.min(combo, 5)}!`, 400, 35);
+    }
+    // Timer bar
+    ctx.fillStyle = '#333';
+    ctx.fillRect(200, H-20, 400, 10);
+    ctx.fillStyle = timeLeft < 10 ? '#f44' : '#4f4';
+    ctx.fillRect(200, H-20, 400 * (timeLeft/GAME_TIME), 10);
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fd0';
+    ctx.font = 'bold 44px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('时间到!', 400, 150);
+    ctx.fillStyle = '#fff';
+    ctx.font = '30px monospace';
+    ctx.fillText(`得分: ${score}`, 400, 220);
+    ctx.fillStyle = '#ff0';
+    ctx.font = '24px monospace';
+    ctx.fillText(`最高分: ${highScore}`, 400, 265);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '22px monospace';
+    ctx.fillText('按 空格键 重新开始', 400, 350);
+  }
+}
+
+let lastTs = 0;
+function loop(ts) {
+  const dt = Math.min((ts - lastTs) / 1000, 0.05);
+  lastTs = ts;
+  if (state === 'play') update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state === 'start' || state === 'over') { init(); state = 'play'; }
+  }
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+  whack(mx, my);
+});
+
+canvas.style.cursor = 'pointer';
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

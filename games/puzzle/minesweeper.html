@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>扫雷</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ---- 常量 ----
+const COLS = 16, ROWS = 16, MINES = 40;
+const CELL = 26;
+const BW = COLS * CELL, BH = ROWS * CELL;
+const BX = Math.floor((800 - BW) / 2);
+const BY = 78;
+let score = 0;
+let state = 'title'; // title | playing | won | lost
+
+// 数字颜色
+const NUM_COLORS = ['', '#4fc3f7', '#81c784', '#e57373', '#7986cb', '#ff8a65', '#4db6ac', '#f06292', '#bdbdbd'];
+
+let cells; // { mine, revealed, flagged, count }
+let firstClick, flagCount, revealedCount;
+let timer, timerRunning, startTime;
+let explodeCell = null;
+let mouseDown = false, chordCandidate = false;
+
+function idx(r, c) { return r * COLS + c; }
+function inBounds(r, c) { return r >= 0 && r < ROWS && c >= 0 && c < COLS; }
+
+function initGame() {
+  cells = [];
+  for (let i = 0; i < ROWS * COLS; i++) {
+    cells.push({ mine: false, revealed: false, flagged: false, count: 0 });
+  }
+  firstClick = true;
+  flagCount = 0; revealedCount = 0;
+  timer = 0; timerRunning = false; startTime = 0;
+  explodeCell = null;
+  score = 0;
+  state = 'playing';
+}
+
+function placeMines(safeR, safeC) {
+  // 保证第一次点击及其周围安全
+  const safe = new Set();
+  for (let dr = -1; dr <= 1; dr++)
+    for (let dc = -1; dc <= 1; dc++) {
+      const nr = safeR + dr, nc = safeC + dc;
+      if (inBounds(nr, nc)) safe.add(idx(nr, nc));
+    }
+  let placed = 0;
+  while (placed < MINES) {
+    const i = Math.floor(Math.random() * ROWS * COLS);
+    if (cells[i].mine || safe.has(i)) continue;
+    cells[i].mine = true;
+    placed++;
+  }
+  // 计算数字
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (cells[idx(r, c)].mine) continue;
+      let n = 0;
+      for (let dr = -1; dr <= 1; dr++)
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr, nc = c + dc;
+          if (inBounds(nr, nc) && cells[idx(nr, nc)].mine) n++;
+        }
+      cells[idx(r, c)].count = n;
+    }
+  }
+}
+
+function reveal(r, c) {
+  const cell = cells[idx(r, c)];
+  if (cell.revealed || cell.flagged) return;
+  cell.revealed = true;
+  revealedCount++;
+  if (cell.count === 0 && !cell.mine) {
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const nr = r + dr, nc = c + dc;
+        if (inBounds(nr, nc)) reveal(nr, nc);
+      }
+  }
+}
+
+function clickCell(r, c) {
+  if (state !== 'playing') return;
+  const cell = cells[idx(r, c)];
+  if (cell.flagged || cell.revealed) return;
+  if (firstClick) {
+    placeMines(r, c);
+    firstClick = false;
+    timerRunning = true;
+    startTime = performance.now();
+  }
+  if (cell.mine) {
+    cell.revealed = true;
+    explodeCell = idx(r, c);
+    loseGame();
+    return;
+  }
+  reveal(r, c);
+  checkWin();
+}
+
+function toggleFlag(r, c) {
+  if (state !== 'playing') return;
+  const cell = cells[idx(r, c)];
+  if (cell.revealed) return;
+  cell.flagged = !cell.flagged;
+  flagCount += cell.flagged ? 1 : -1;
+}
+
+function chord(r, c) {
+  // 和弦：在已翻开的数字上，若周围旗数等于数字，翻开周围未标旗的格子
+  const cell = cells[idx(r, c)];
+  if (!cell.revealed || cell.count === 0) return;
+  let flags = 0;
+  const neighbors = [];
+  for (let dr = -1; dr <= 1; dr++)
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = r + dr, nc = c + dc;
+      if (!inBounds(nr, nc)) continue;
+      const n = cells[idx(nr, nc)];
+      if (n.flagged) flags++;
+      else if (!n.revealed) neighbors.push([nr, nc]);
+    }
+  if (flags !== cell.count) return;
+  let hit = false;
+  for (const [nr, nc] of neighbors) {
+    const n = cells[idx(nr, nc)];
+    if (n.mine) { n.revealed = true; explodeCell = idx(nr, nc); hit = true; }
+  }
+  if (hit) { loseGame(); return; }
+  for (const [nr, nc] of neighbors) reveal(nr, nc);
+  checkWin();
+}
+
+function loseGame() {
+  state = 'lost';
+  timerRunning = false;
+  // 显示所有地雷
+  for (const cell of cells) {
+    if (cell.mine && !cell.flagged) cell.revealed = true;
+  }
+  score = Math.max(0, revealedCount);
+}
+
+function checkWin() {
+  if (revealedCount === ROWS * COLS - MINES) {
+    state = 'won';
+    timerRunning = false;
+    // 自动标旗
+    for (const cell of cells) if (cell.mine && !cell.flagged) { cell.flagged = true; flagCount++; }
+    score = Math.max(1, 1000 - timer * 2);
+  }
+}
+
+// ---- 输入 ----
+function cellFromMouse(e) {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  const c = Math.floor((mx - BX) / CELL);
+  const r = Math.floor((my - BY) / CELL);
+  if (inBounds(r, c)) return { r, c, mx, my };
+  return { r: -1, c: -1, mx, my };
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousedown', e => {
+  const { r, c, mx, my } = cellFromMouse(e);
+  if (state === 'title') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) initGame();
+    return;
+  }
+  if (state === 'won' || state === 'lost') {
+    if (mx > 300 && mx < 500 && my > 340 && my < 400) state = 'title';
+    return;
+  }
+  // 笑脸重置按钮
+  if (mx > 374 && mx < 426 && my > 20 && my < 64) { initGame(); return; }
+  if (r < 0) return;
+  if (e.button === 2) { toggleFlag(r, c); return; }
+  if (e.button === 0) {
+    mouseDown = true;
+    const cell = cells[idx(r, c)];
+    if (cell.revealed && cell.count > 0) chordCandidate = true;
+  }
+});
+
+canvas.addEventListener('mouseup', e => {
+  const { r, c } = cellFromMouse(e);
+  if (state !== 'playing') { mouseDown = false; chordCandidate = false; return; }
+  if (e.button === 0 && mouseDown && r >= 0) {
+    if (chordCandidate) chord(r, c);
+    else clickCell(r, c);
+  }
+  mouseDown = false;
+  chordCandidate = false;
+});
+
+// 双键和弦（同时按下左右键）
+canvas.addEventListener('mousedown', e => {
+  if (e.buttons === 3 && state === 'playing') {
+    const { r, c } = cellFromMouse(e);
+    if (r >= 0) chord(r, c);
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) initGame();
+  else if ((state === 'won' || state === 'lost') && (e.code === 'Enter' || e.code === 'Space')) state = 'title';
+  else if (state === 'playing' && e.code === 'KeyR') initGame();
+});
+
+// ---- 绘制 ----
+function drawCell(r, c) {
+  const cell = cells[idx(r, c)];
+  const x = BX + c * CELL, y = BY + r * CELL;
+  if (cell.revealed) {
+    ctx.fillStyle = (explodeCell === idx(r, c)) ? '#e53935' : '#2a2a35';
+    ctx.fillRect(x, y, CELL, CELL);
+    ctx.strokeStyle = '#1e1e28';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+    if (cell.mine) {
+      // 地雷
+      ctx.fillStyle = explodeCell === idx(r, c) ? '#fff' : '#111';
+      ctx.beginPath();
+      ctx.arc(x + CELL / 2, y + CELL / 2, CELL / 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = explodeCell === idx(r, c) ? '#fff' : '#111';
+      ctx.lineWidth = 2;
+      for (let a = 0; a < 4; a++) {
+        const ang = a * Math.PI / 4;
+        ctx.beginPath();
+        ctx.moveTo(x + CELL / 2 - Math.cos(ang) * CELL / 3, y + CELL / 2 - Math.sin(ang) * CELL / 3);
+        ctx.lineTo(x + CELL / 2 + Math.cos(ang) * CELL / 3, y + CELL / 2 + Math.sin(ang) * CELL / 3);
+        ctx.stroke();
+      }
+    } else if (cell.count > 0) {
+      ctx.fillStyle = NUM_COLORS[cell.count];
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(cell.count.toString(), x + CELL / 2, y + CELL / 2 + 1);
+    }
+  } else {
+    // 未翻开 - 凸起效果
+    ctx.fillStyle = '#4a4a5e';
+    ctx.fillRect(x, y, CELL, CELL);
+    ctx.fillStyle = '#5c5c72';
+    ctx.fillRect(x, y, CELL, 3);
+    ctx.fillRect(x, y, 3, CELL);
+    ctx.fillStyle = '#38384a';
+    ctx.fillRect(x, y + CELL - 3, CELL, 3);
+    ctx.fillRect(x + CELL - 3, y, 3, CELL);
+    if (cell.flagged) {
+      // 旗帜
+      const fx = x + CELL / 2, fy = y + CELL / 2;
+      ctx.strokeStyle = '#ddd';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(fx, fy - 8);
+      ctx.lineTo(fx, fy + 8);
+      ctx.stroke();
+      ctx.fillStyle = '#ff5252';
+      ctx.beginPath();
+      ctx.moveTo(fx, fy - 8);
+      ctx.lineTo(fx + 8, fy - 4);
+      ctx.lineTo(fx, fy);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+}
+
+function drawBoard() {
+  ctx.fillStyle = '#1a1a24';
+  ctx.fillRect(BX - 4, BY - 4, BW + 8, BH + 8);
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) drawCell(r, c);
+}
+
+function drawHUD() {
+  // 顶部栏
+  ctx.fillStyle = '#23232f';
+  ctx.beginPath();
+  ctx.roundRect(BX - 4, 14, BW + 8, 54, 6);
+  ctx.fill();
+
+  // 地雷计数
+  const remaining = MINES - flagCount;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(BX + 8, 24, 70, 34);
+  ctx.fillStyle = '#ff5252';
+  ctx.font = 'bold 26px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(Math.max(-99, remaining)).padStart(3, '0'), BX + 43, 42);
+
+  // 计时器
+  ctx.fillStyle = '#000';
+  ctx.fillRect(BX + BW - 78, 24, 70, 34);
+  ctx.fillStyle = '#ff5252';
+  ctx.fillText(String(Math.min(999, timer)).padStart(3, '0'), BX + BW - 43, 42);
+
+  // 笑脸按钮
+  const sx = 400, sy = 41;
+  ctx.fillStyle = '#ffd54f';
+  ctx.beginPath();
+  ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.arc(sx - 6, sy - 4, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(sx + 6, sy - 4, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (state === 'lost') { ctx.arc(sx, sy + 12, 7, Math.PI * 1.2, Math.PI * 1.8); }
+  else if (state === 'won') { ctx.arc(sx, sy + 2, 8, 0, Math.PI); }
+  else { ctx.arc(sx, sy + 2, 8, 0.15 * Math.PI, 0.85 * Math.PI); }
+  ctx.stroke();
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ff5252';
+  ctx.font = 'bold 56px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('扫雷', 400, 150);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('16 × 16  ·  40 颗地雷', 400, 200);
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('左键翻开  ·  右键标旗  ·  数字上点击可和弦展开', 400, 240);
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath(); ctx.roundRect(300, 320, 200, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('开始游戏', 400, 358);
+}
+
+function drawEnd() {
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(0, 0, 800, 480);
+  if (state === 'won') {
+    ctx.fillStyle = '#76ff03';
+    ctx.font = 'bold 50px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('胜利！', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px sans-serif';
+    ctx.fillText('用时 ' + timer + ' 秒  ·  得分 ' + score, 400, 220);
+  } else {
+    ctx.fillStyle = '#ff5252';
+    ctx.font = 'bold 50px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('踩到地雷！', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px sans-serif';
+    ctx.fillText('坚持了 ' + timer + ' 秒', 400, 220);
+  }
+  ctx.fillStyle = '#1565c0';
+  ctx.beginPath(); ctx.roundRect(300, 340, 200, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 378);
+}
+
+// ---- 主循环 ----
+function render(now) {
+  if (timerRunning) timer = Math.floor((now - startTime) / 1000);
+  if (state === 'title') { drawTitle(); }
+  else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, 800, 480);
+    drawBoard();
+    drawHUD();
+    ctx.fillStyle = '#666';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('R 重开  ·  Esc 退出', 400, BY + BH + 24);
+    if (state === 'won' || state === 'lost') drawEnd();
+  }
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>轮盘 Roulette</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let state = 'title';
+let balance = 1000;
+let bet = 25;
+let bets = []; // {type, value, amount}
+let wheelAngle = 0;
+let ballAngle = 0;
+let spinning = false;
+let spinTime = 0;
+let result = -1;
+let message = '';
+let history = [];
+let btnHover = '';
+let chipIdx = 1;
+const chips = [5, 10, 25, 50, 100];
+const redNums = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36];
+const wheelOrder = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
+
+function isRed(n) { return redNums.includes(n); }
+function numColor(n) { return n === 0 ? '#0a0' : isRed(n) ? '#d33' : '#222'; }
+
+function drawWheel(cx, cy, r) {
+  const seg = Math.PI * 2 / 37;
+  for (let i = 0; i < 37; i++) {
+    const a = wheelAngle + i * seg;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r, a, a + seg);
+    ctx.closePath();
+    ctx.fillStyle = numColor(wheelOrder[i]);
+    ctx.fill();
+    ctx.strokeStyle = '#gold';
+    ctx.strokeStyle = '#c9a227';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(a + seg / 2);
+    ctx.fillStyle = '#fff';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(wheelOrder[i], r - 14, 3);
+    ctx.restore();
+  }
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.3, 0, Math.PI * 2);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fill();
+  ctx.strokeStyle = '#c9a227';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  if (spinning || result >= 0) {
+    const ba = ballAngle;
+    const bx = cx + Math.cos(ba) * r * 0.7;
+    const by = cy + Math.sin(ba) * r * 0.7;
+    ctx.beginPath();
+    ctx.arc(bx, by, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+  }
+}
+
+function drawTable(ox, oy) {
+  const cw = 32, ch = 24;
+  ctx.fillStyle = '#0a5c2a';
+  ctx.fillRect(ox - 5, oy - 5, cw * 12 + 40, ch * 3 + 60);
+  ctx.strokeStyle = '#c9a227';
+  ctx.strokeRect(ox - 5, oy - 5, cw * 12 + 40, ch * 3 + 60);
+  // Zero
+  ctx.fillStyle = '#0a0';
+  ctx.fillRect(ox, oy, cw, ch * 3);
+  ctx.strokeStyle = '#fff';
+  ctx.strokeRect(ox, oy, cw, ch * 3);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('0', ox + cw/2, oy + ch * 1.5 + 4);
+  // Numbers grid
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 12; col++) {
+      const n = col * 3 + (3 - row);
+      const x = ox + cw + col * cw, y = oy + row * ch;
+      ctx.fillStyle = numColor(n);
+      ctx.fillRect(x, y, cw, ch);
+      ctx.strokeStyle = '#555';
+      ctx.strokeRect(x, y, cw, ch);
+      ctx.fillStyle = '#fff';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(n, x + cw/2, y + ch/2 + 4);
+      // Show bet indicator
+      const b = bets.find(b => b.type === 'straight' && b.value === n);
+      if (b) { ctx.fillStyle = '#ff0'; ctx.beginPath(); ctx.arc(x + cw/2, y + ch - 5, 4, 0, Math.PI*2); ctx.fill(); }
+    }
+  }
+  // Bottom bets
+  const by = oy + ch * 3 + 5;
+  const labels = ['1-18','偶','红','黑','奇','19-36'];
+  labels.forEach((l, i) => {
+    const x = ox + cw + i * (cw * 2);
+    ctx.fillStyle = '#1a5c38';
+    ctx.fillRect(x, by, cw * 2, ch);
+    ctx.strokeStyle = '#888';
+    ctx.strokeRect(x, by, cw * 2, ch);
+    ctx.fillStyle = l === '红' ? '#f66' : l === '黑' ? '#aaa' : '#fff';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(l, x + cw, by + ch/2 + 4);
+    const b = bets.find(b => b.type === 'even' && b.value === l);
+    if (b) { ctx.fillStyle = '#ff0'; ctx.beginPath(); ctx.arc(x + cw, by + ch - 4, 4, 0, Math.PI*2); ctx.fill(); }
+  });
+  // Dozens
+  const dy = by + ch + 3;
+  ['1-12','13-24','25-36'].forEach((l, i) => {
+    const x = ox + cw + i * (cw * 4);
+    ctx.fillStyle = '#1a5c38';
+    ctx.fillRect(x, dy, cw * 4, ch - 4);
+    ctx.strokeStyle = '#888';
+    ctx.strokeRect(x, dy, cw * 4, ch - 4);
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(l, x + cw * 2, dy + (ch-4)/2 + 4);
+    const b = bets.find(b => b.type === 'dozen' && b.value === l);
+    if (b) { ctx.fillStyle = '#ff0'; ctx.beginPath(); ctx.arc(x + cw*2, dy + ch - 8, 4, 0, Math.PI*2); ctx.fill(); }
+  });
+}
+
+function drawButton(x, y, w, h, text, id, color) {
+  const hover = btnHover === id;
+  ctx.fillStyle = hover ? (color || '#4a9') : '#333';
+  ctx.strokeStyle = color || '#4a9';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 5);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = hover ? '#111' : '#eee';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w/2, y + h/2);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  drawWheel(W/2, 200, 120);
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('轮 盘', W/2, 380);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('European Roulette', W/2, 415);
+  drawButton(W/2 - 80, 435, 160, 40, '开始游戏', 'start', '#e94560');
+}
+
+function drawGame() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, W, H);
+  drawWheel(130, 160, 110);
+  drawTable(280, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('余额: $' + balance, 20, 320);
+  ctx.fillText('总下注: $' + bets.reduce((s,b) => s + b.amount, 0), 20, 345);
+  // Chips
+  ctx.textAlign = 'center';
+  chips.forEach((v, i) => {
+    const cx = 60 + i * 55, cy = 400;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 20, 0, Math.PI * 2);
+    ctx.fillStyle = i === chipIdx ? '#e94560' : '#444';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillText('$' + v, cx, cy + 4);
+  });
+  drawButton(600, 320, 80, 30, '清除', 'clear', '#a44');
+  drawButton(690, 320, 90, 30, '旋转!', 'spin', '#e94560');
+  if (message) {
+    ctx.fillStyle = '#ff0';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, W/2, 460);
+  }
+  if (history.length > 0) {
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = '#888';
+    ctx.textAlign = 'left';
+    ctx.fillText('历史: ' + history.slice(-8).join(', '), 20, 460);
+  }
+}
+
+function drawResult() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  drawWheel(W/2, 170, 120);
+  ctx.font = 'bold 30px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('结果: ' + result, W/2, 330);
+  ctx.fillStyle = numColor(result) === '#222' ? '#aaa' : numColor(result);
+  ctx.beginPath();
+  ctx.arc(W/2, 360, 15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(result, W/2, 365);
+  ctx.font = '20px sans-serif';
+  ctx.fillStyle = message.includes('赢') ? '#4f4' : '#f66';
+  ctx.fillText(message, W/2, 400);
+  ctx.fillStyle = '#ccc';
+  ctx.fillText('余额: $' + balance, W/2, 435);
+  drawButton(W/2 - 80, 450, 160, 35, '继续', 'continue', '#4a9');
+}
+
+function spin() {
+  if (bets.length === 0) { message = '请先下注!'; return; }
+  spinning = true;
+  state = 'game';
+  message = '';
+  result = Math.floor(Math.random() * 37);
+  const targetIdx = wheelOrder.indexOf(result);
+  const seg = Math.PI * 2 / 37;
+  const targetAngle = -(targetIdx * seg + seg / 2) - Math.PI / 2;
+  let t = 0;
+  const startW = wheelAngle, startB = ballAngle;
+  const anim = setInterval(() => {
+    t += 0.015;
+    if (t >= 1) { t = 1; clearInterval(anim); spinning = false; resolve(); }
+    const ease = 1 - Math.pow(1 - t, 3);
+    wheelAngle = startW + ease * (Math.PI * 8);
+    ballAngle = startB - ease * (Math.PI * 12) + targetAngle * ease;
+  }, 16);
+}
+
+function resolve() {
+  let totalWin = 0;
+  const totalBet = bets.reduce((s, b) => s + b.amount, 0);
+  bets.forEach(b => {
+    let win = 0;
+    if (b.type === 'straight' && b.value === result) win = b.amount * 36;
+    else if (b.type === 'even') {
+      if (result === 0) return;
+      if (b.value === '红' && isRed(result)) win = b.amount * 2;
+      if (b.value === '黑' && !isRed(result)) win = b.amount * 2;
+      if (b.value === '偶' && result % 2 === 0) win = b.amount * 2;
+      if (b.value === '奇' && result % 2 === 1) win = b.amount * 2;
+      if (b.value === '1-18' && result >= 1 && result <= 18) win = b.amount * 2;
+      if (b.value === '19-36' && result >= 19 && result <= 36) win = b.amount * 2;
+    } else if (b.type === 'dozen') {
+      if (result === 0) return;
+      if (b.value === '1-12' && result <= 12) win = b.amount * 3;
+      if (b.value === '13-24' && result >= 13 && result <= 24) win = b.amount * 3;
+      if (b.value === '25-36' && result >= 25) win = b.amount * 3;
+    }
+    totalWin += win;
+  });
+  balance += totalWin - totalBet;
+  if (totalWin > 0) message = '赢 $' + totalWin + '!';
+  else message = '输 $' + totalBet;
+  history.push(result + (isRed(result) ? 'R' : result === 0 ? 'G' : 'B'));
+  score = balance;
+  bets = [];
+  state = 'result';
+}
+
+function handleClick(mx, my) {
+  if (state === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 435 && my < 475) { state = 'game'; balance = 1000; score = 1000; bets = []; history = []; }
+    return;
+  }
+  if (state === 'result') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 450 && my < 485) { state = 'game'; message = ''; if (balance <= 0) { balance = 1000; score = 1000; } }
+    return;
+  }
+  if (state !== 'game' || spinning) return;
+  // Chip selection
+  chips.forEach((v, i) => {
+    const cx = 60 + i * 55, cy = 400;
+    if (Math.hypot(mx - cx, my - cy) < 20) chipIdx = i;
+  });
+  // Buttons
+  if (mx > 600 && mx < 680 && my > 320 && my < 350) { bets = []; message = ''; }
+  if (mx > 690 && mx < 780 && my > 320 && my < 350) { spin(); return; }
+  // Table clicks
+  const ox = 280, oy = 60, cw = 32, ch = 24;
+  const amt = chips[chipIdx];
+  if (amt > balance) { message = '余额不足!'; return; }
+  // Zero
+  if (mx > ox && mx < ox + cw && my > oy && my < oy + ch * 3) {
+    bets.push({type: 'straight', value: 0, amount: amt}); balance -= 0; return;
+  }
+  // Number grid
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 12; col++) {
+      const x = ox + cw + col * cw, y = oy + row * ch;
+      if (mx > x && mx < x + cw && my > y && my < y + ch) {
+        const n = col * 3 + (3 - row);
+        bets.push({type: 'straight', value: n, amount: amt}); return;
+      }
+    }
+  }
+  // Even money bets
+  const by = oy + ch * 3 + 5;
+  const labels = ['1-18','偶','红','黑','奇','19-36'];
+  labels.forEach((l, i) => {
+    const x = ox + cw + i * (cw * 2);
+    if (mx > x && mx < x + cw * 2 && my > by && my < by + ch) {
+      bets.push({type: 'even', value: l, amount: amt});
+    }
+  });
+  // Dozens
+  const dy = by + ch + 3;
+  ['1-12','13-24','25-36'].forEach((l, i) => {
+    const x = ox + cw + i * (cw * 4);
+    if (mx > x && mx < x + cw * 4 && my > dy && my < dy + ch - 4) {
+      bets.push({type: 'dozen', value: l, amount: amt});
+    }
+  });
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  handleClick(e.clientX - rect.left, e.clientY - rect.top);
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  btnHover = '';
+  if (state === 'title' && mx > W/2-80 && mx < W/2+80 && my > 435 && my < 475) btnHover = 'start';
+  if (state === 'game') {
+    if (mx > 600 && mx < 680 && my > 320 && my < 350) btnHover = 'clear';
+    if (mx > 690 && mx < 780 && my > 320 && my < 350) btnHover = 'spin';
+  }
+  if (state === 'result' && mx > W/2-80 && mx < W/2+80 && my > 450 && my < 485) btnHover = 'continue';
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (state === 'title') drawTitle();
+  else if (state === 'game') drawGame();
+  else if (state === 'result') drawResult();
+  if (!spinning && state === 'title') wheelAngle += 0.003;
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>颜色匹配</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let state = 'title'; // title, play, over
+let score = 0, streak = 0, bestStreak = 0;
+let timeLeft = 30, lastTick = 0;
+let cur = null, feedback = '', fbColor = '#fff', fbTimer = 0;
+
+const COLORS = [
+  { name: '红', hex: '#ff5252' },
+  { name: '黄', hex: '#ffd740' },
+  { name: '蓝', hex: '#448aff' },
+  { name: '绿', hex: '#69f0ae' },
+  { name: '紫', hex: '#e040fb' },
+  { name: '橙', hex: '#ff9100' }
+];
+
+function newRound() {
+  const word = COLORS[Math.floor(Math.random() * COLORS.length)];
+  let paint;
+  // 50% chance the paint matches the word meaning
+  if (Math.random() < 0.5) paint = word;
+  else {
+    do { paint = COLORS[Math.floor(Math.random() * COLORS.length)]; } while (paint === word);
+  }
+  cur = { word, paint, match: word === paint };
+}
+function start() {
+  score = 0; streak = 0; bestStreak = 0; timeLeft = 30;
+  lastTick = performance.now();
+  feedback = ''; fbTimer = 0;
+  newRound();
+  state = 'play';
+}
+function answer(yes) {
+  if (state !== 'play') return;
+  const correct = (yes === cur.match);
+  if (correct) {
+    streak++;
+    if (streak > bestStreak) bestStreak = streak;
+    const bonus = Math.min(streak, 5);
+    score += 10 + (bonus - 1) * 2;
+    feedback = '+' + (10 + (bonus - 1) * 2) + (streak >= 3 ? '  连击x' + streak : '');
+    fbColor = '#69f0ae';
+  } else {
+    streak = 0;
+    score = Math.max(0, score - 5);
+    feedback = '错误 -5';
+    fbColor = '#ff5252';
+  }
+  fbTimer = performance.now();
+  newRound();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (state === 'title' || state === 'over') {
+    if (e.code === 'Space' || e.code === 'Enter') start();
+    return;
+  }
+  if (e.code === 'KeyY' || e.code === 'ArrowLeft') answer(true);
+  if (e.code === 'KeyN' || e.code === 'ArrowRight') answer(false);
+});
+cv.addEventListener('mousedown', e => {
+  if (state === 'title' || state === 'over') { start(); return; }
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (W / r.width);
+  answer(x < W / 2);
+});
+
+function centerText(t, y, s, c, w) {
+  ctx.fillStyle = c; ctx.font = (w || 'bold') + ' ' + s + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(t, W / 2, y);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  centerText('颜色匹配', 110, 60, '#00e5ff');
+  centerText('Stroop Test', 165, 22, '#666', 'normal');
+  centerText('文字的颜色 与 文字含义 相同吗？', 250, 24, '#eee', 'normal');
+  centerText('相同 按 Y / 点左半屏', 300, 22, '#69f0ae', 'normal');
+  centerText('不同 按 N / 点右半屏', 335, 22, '#ff5252', 'normal');
+  centerText('30 秒限时，连击有加分！', 385, 18, '#888', 'normal');
+  centerText('按空格开始', 430, 24, '#ffd54f');
+}
+function drawPlay(now) {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  // timer bar
+  const frac = Math.max(0, timeLeft / 30);
+  ctx.fillStyle = '#333'; ctx.fillRect(60, 30, W - 120, 14);
+  ctx.fillStyle = frac > 0.3 ? '#00e5ff' : '#ff5252';
+  ctx.fillRect(60, 30, (W - 120) * frac, 14);
+  ctx.fillStyle = '#fff'; ctx.font = '18px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('得分 ' + score, 60, 70);
+  ctx.textAlign = 'right';
+  ctx.fillText('连击 x' + streak, W - 60, 70);
+  ctx.textAlign = 'center';
+  ctx.fillText(Math.ceil(timeLeft) + 's', W / 2, 70);
+  // the stroop word
+  ctx.fillStyle = cur.paint.hex;
+  ctx.font = 'bold 150px sans-serif'; ctx.textBaseline = 'middle';
+  ctx.fillText(cur.word.name, W / 2, 230);
+  // feedback
+  if (fbTimer && now - fbTimer < 600) {
+    ctx.fillStyle = fbColor; ctx.font = 'bold 30px sans-serif';
+    ctx.fillText(feedback, W / 2, 350);
+  }
+  // hints
+  ctx.font = '20px sans-serif';
+  ctx.fillStyle = '#69f0ae'; ctx.textAlign = 'left'; ctx.fillText('Y  相同', 70, H - 40);
+  ctx.fillStyle = '#ff5252'; ctx.textAlign = 'right'; ctx.fillText('不同  N', W - 70, H - 40);
+}
+function drawOver() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  centerText('时间到！', 130, 56, '#00e5ff');
+  centerText('最终得分', 220, 26, '#aaa', 'normal');
+  centerText('' + score, 280, 80, '#ffd54f');
+  centerText('最高连击 x' + bestStreak, 350, 26, '#69f0ae');
+  centerText('按空格再来一次', 420, 22, '#888', 'normal');
+}
+
+function loop() {
+  const now = performance.now();
+  if (state === 'play') {
+    timeLeft -= (now - lastTick) / 1000;
+    lastTick = now;
+    if (timeLeft <= 0) { timeLeft = 0; state = 'over'; }
+    drawPlay(now);
+  } else if (state === 'title') {
+    drawTitle();
+  } else {
+    drawOver();
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

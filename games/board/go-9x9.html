@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>围棋 9×9</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; font-family: "Microsoft YaHei", sans-serif; color: #ddd; }
+#wrap { display: flex; gap: 16px; align-items: flex-start; }
+canvas { border: 2px solid #333; cursor: pointer; }
+#panel { width: 230px; background: #1c1c1c; border: 2px solid #333; padding: 14px; height: 540px; display: flex; flex-direction: column; }
+h1 { font-size: 20px; color: #f0c060; margin-bottom: 12px; text-align: center; }
+.info { background: #262626; border-radius: 4px; padding: 10px; margin-bottom: 10px; font-size: 13px; line-height: 1.7; }
+.info b { color: #f0c060; }
+.stone-ind { display: inline-block; width: 14px; height: 14px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+.stone-b { background: radial-gradient(circle at 35% 30%, #555, #000); }
+.stone-w { background: radial-gradient(circle at 35% 30%, #fff, #aaa); }
+#status { font-size: 14px; padding: 10px; background: #2a2a1a; border: 1px solid #554; border-radius: 4px; margin-bottom: 10px; min-height: 44px; line-height: 1.4; }
+.btns { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+button { padding: 10px; background: #3a3a3a; color: #eee; border: 1px solid #555; border-radius: 4px; cursor: pointer; font-size: 14px; }
+button:hover { background: #4a4a4a; }
+button:disabled { opacity: 0.4; cursor: default; }
+#log { flex: 1; overflow-y: auto; background: #161616; border: 1px solid #333; padding: 6px; font-size: 12px; margin-top: 10px; min-height: 80px; }
+#log div { padding: 2px 0; border-bottom: 1px solid #222; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="540" height="540"></canvas>
+  <div id="panel">
+    <h1>围棋 9×9</h1>
+    <div id="status">黑方（你）落子</div>
+    <div class="info">
+      <div><span class="stone-ind stone-b"></span>黑（你）提子: <b id="capBlack">0</b></div>
+      <div><span class="stone-ind stone-w"></span>白（AI）提子: <b id="capWhite">0</b></div>
+      <div>贴目: <b>6.5</b> (白方加)</div>
+      <div>手数: <b id="moveNum">0</b></div>
+    </div>
+    <div id="log"></div>
+    <div class="btns">
+      <button id="btnPass">停一手 (Pass)</button>
+      <button id="btnUndo">悔棋</button>
+      <button id="btnNew">新对局</button>
+    </div>
+  </div>
+</div>
+<script>
+// ===================== 围棋 9×9 完整实现 =====================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const N = 9;
+const MARGIN = 30;
+const CELL = (540 - MARGIN * 2) / (N - 1);
+const EMPTY = 0, BLACK = 1, WHITE = 2;
+
+let board;          // board[r][c]
+let turn;           // 当前走子方
+let captures;       // {1: 黑方提的白子数, 2: 白方提的黑子数}
+let koPoint;        // 禁着点 (劫) {r,c} 或 null
+let lastMove;       // {r,c,color} 或 null (pass为 'pass')
+let passCount;      // 连续停手次数
+let moveNumber;
+let history;        // 状态栈
+let gameOver;
+let aiThinking;
+let score;
+let hoverPos;       // 鼠标悬停位置
+let deadStones;     // 终局标记的死子集合
+let territory;      // 终局地域归属
+
+// 星位 (hoshi) 9x9: 角星 (2,2)(2,6)(6,2)(6,6) + 天元 (4,4)
+const STAR_POINTS = [[2,2],[2,6],[6,2],[6,6],[4,4]];
+
+function newGame() {
+  board = Array.from({length: N}, () => Array(N).fill(EMPTY));
+  turn = BLACK;
+  captures = {1: 0, 2: 0};
+  koPoint = null;
+  lastMove = null;
+  passCount = 0;
+  moveNumber = 0;
+  history = [];
+  gameOver = false;
+  aiThinking = false;
+  score = 0;
+  hoverPos = null;
+  deadStones = null;
+  territory = null;
+  document.getElementById('log').innerHTML = '';
+  updateStatus();
+  updateInfo();
+  draw();
+}
+
+function cloneBoard(bd) {
+  return bd.map(row => row.slice());
+}
+
+function boardKey(bd) {
+  return bd.map(row => row.join('')).join('|');
+}
+
+const inBounds = (r, c) => r >= 0 && r < N && c >= 0 && c < N;
+const opp = color => color === BLACK ? WHITE : BLACK;
+
+// 获取一个棋子所在的连通块及其气
+function getGroup(bd, r, c) {
+  const color = bd[r][c];
+  if (color === EMPTY) return { stones: [], liberties: 0 };
+  const visited = new Set();
+  const stones = [];
+  const libs = new Set();
+  const stack = [[r, c]];
+  visited.add(r + ',' + c);
+  while (stack.length) {
+    const [cr, cc] = stack.pop();
+    stones.push([cr, cc]);
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = cr + dr, nc = cc + dc;
+      if (!inBounds(nr, nc)) continue;
+      const key = nr + ',' + nc;
+      if (bd[nr][nc] === EMPTY) {
+        libs.add(key);
+      } else if (bd[nr][nc] === color && !visited.has(key)) {
+        visited.add(key);
+        stack.push([nr, nc]);
+      }
+    }
+  }
+  return { stones, liberties: libs.size, libSet: libs };
+}
+
+// 尝试落子, 返回 {legal, board, captured} 或 {legal:false, reason}
+function tryMove(bd, r, c, color, ko) {
+  if (bd[r][c] !== EMPTY) return { legal: false, reason: '该点已有棋子' };
+  if (ko && ko.r === r && ko.c === c) return { legal: false, reason: '劫争禁着点' };
+
+  const nb = cloneBoard(bd);
+  nb[r][c] = color;
+  let captured = [];
+  const enemy = opp(color);
+
+  // 检查并提掉对方无气的块
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (!inBounds(nr, nc)) continue;
+    if (nb[nr][nc] === enemy) {
+      const g = getGroup(nb, nr, nc);
+      if (g.liberties === 0) {
+        for (const [sr, sc] of g.stones) {
+          nb[sr][sc] = EMPTY;
+          captured.push([sr, sc]);
+        }
+      }
+    }
+  }
+
+  // 自杀检查
+  const selfGroup = getGroup(nb, r, c);
+  if (selfGroup.liberties === 0) {
+    return { legal: false, reason: '禁着点（自杀）' };
+  }
+
+  return { legal: true, board: nb, captured };
+}
+
+// 计算劫点: 如果恰好提了一子, 且自己这块只有一气一子, 则对方不能立即回提
+function computeKo(bd, r, c, color, captured) {
+  if (captured.length === 1) {
+    const g = getGroup(bd, r, c);
+    if (g.stones.length === 1 && g.liberties === 1) {
+      return { r: captured[0][0], c: captured[0][1] };
+    }
+  }
+  return null;
+}
+
+function makeMove(r, c, color) {
+  history.push({
+    board: cloneBoard(board),
+    captures: {...captures},
+    koPoint: koPoint ? {...koPoint} : null,
+    lastMove: lastMove ? (lastMove === 'pass' ? 'pass' : {...lastMove}) : null,
+    turn, moveNumber, passCount
+  });
+
+  const result = tryMove(board, r, c, color, koPoint);
+  if (!result.legal) return false;
+
+  board = result.board;
+  captures[color] += result.captured.length;
+  koPoint = computeKo(board, r, c, color, result.captured);
+  lastMove = { r, c, color };
+  passCount = 0;
+  moveNumber++;
+
+  addLog((color === BLACK ? '黑' : '白') + ' ' + coordName(r, c) +
+    (result.captured.length ? ' 提' + result.captured.length + '子' : ''));
+  return true;
+}
+
+function pass(color) {
+  history.push({
+    board: cloneBoard(board),
+    captures: {...captures},
+    koPoint: koPoint ? {...koPoint} : null,
+    lastMove: lastMove ? (lastMove === 'pass' ? 'pass' : {...lastMove}) : null,
+    turn, moveNumber, passCount
+  });
+  passCount++;
+  koPoint = null;
+  lastMove = 'pass';
+  moveNumber++;
+  addLog((color === BLACK ? '黑' : '白') + ' 停一手');
+}
+
+function coordName(r, c) {
+  const letters = 'ABCDEFGHJ'; // 围棋跳过 I
+  return letters[c] + (N - r);
+}
+
+function addLog(text) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  div.textContent = moveNumber + '. ' + text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ===================== 终局与计目 =====================
+function endGame() {
+  gameOver = true;
+  // 简化: 标记死子 (无气的相邻敌块, 这里用基本启发式: 被完全包围且无法做两眼的小块)
+  deadStones = markDeadStones();
+  territory = computeTerritory();
+  const result = scoreGame();
+  score = Math.max(0, Math.round(result.blackScore));
+  let msg;
+  if (result.winner === BLACK) {
+    msg = '对局结束 — 黑胜 ' + result.diff.toFixed(1) + ' 目！';
+  } else if (result.winner === WHITE) {
+    msg = '对局结束 — 白胜 ' + result.diff.toFixed(1) + ' 目（AI 胜）';
+  } else {
+    msg = '对局结束 — 平局';
+  }
+  setStatus(msg);
+  updateInfo();
+  showScoreDetail();
+  draw();
+}
+
+// 简易死子判定: 对每块棋, 若其所有相邻空点都被对方占据/控制且气数<=1, 视为死子
+// 这里采用更实用的方法: 对局双方停手后, 认为被对方完全围住且自身无法扩展的空点中的孤立小块为死子
+function markDeadStones() {
+  const dead = new Set();
+  const visited = new Set();
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] === EMPTY || visited.has(r + ',' + c)) continue;
+      const g = getGroup(board, r, c);
+      for (const [sr, sc] of g.stones) visited.add(sr + ',' + sc);
+      // 如果一块棋只有1气, 且周围全是对方棋子(无自己的扩展空间), 标记为死
+      if (g.liberties <= 1) {
+        // 检查这块棋是否被完全包围
+        let surrounded = true;
+        const color = board[r][c];
+        for (const [sr, sc] of g.stones) {
+          for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+            const nr = sr + dr, nc = sc + dc;
+            if (!inBounds(nr, nc)) continue;
+            if (board[nr][nc] === EMPTY) {
+              // 这个空点是否能让我方做出第二只眼? 简化: 若空点周围有我方其他活棋则不算死
+              surrounded = false;
+            }
+          }
+        }
+        if (surrounded && g.liberties === 1) {
+          for (const [sr, sc] of g.stones) dead.add(sr + ',' + sc);
+        }
+      }
+    }
+  }
+  return dead;
+}
+
+// 计算地域 (area scoring 中国规则): 棋子 + 围住的空点
+function computeTerritory() {
+  const terr = Array.from({length: N}, () => Array(N).fill(EMPTY));
+  const visited = new Set();
+
+  // 死子视为对方地域中的空点
+  const effectiveBoard = cloneBoard(board);
+  if (deadStones) {
+    for (const key of deadStones) {
+      const [r, c] = key.split(',').map(Number);
+      effectiveBoard[r][c] = EMPTY;
+    }
+  }
+
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (effectiveBoard[r][c] !== EMPTY || visited.has(r + ',' + c)) continue;
+      // BFS 找连通空点区域
+      const region = [];
+      const stack = [[r, c]];
+      visited.add(r + ',' + c);
+      let touchBlack = false, touchWhite = false;
+      while (stack.length) {
+        const [cr, cc] = stack.pop();
+        region.push([cr, cc]);
+        for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          const nr = cr + dr, nc = cc + dc;
+          if (!inBounds(nr, nc)) continue;
+          if (effectiveBoard[nr][nc] === BLACK) touchBlack = true;
+          else if (effectiveBoard[nr][nc] === WHITE) touchWhite = true;
+          else if (!visited.has(nr + ',' + nc)) {
+            visited.add(nr + ',' + nc);
+            stack.push([nr, nc]);
+          }
+        }
+      }
+      let owner = EMPTY;
+      if (touchBlack && !touchWhite) owner = BLACK;
+      else if (touchWhite && !touchBlack) owner = WHITE;
+      for (const [rr, rc] of region) terr[rr][rc] = owner;
+    }
+  }
+  return terr;
+}
+
+function scoreGame() {
+  let blackScore = 0, whiteScore = 6.5; // 贴目
+  const effectiveBoard = cloneBoard(board);
+  if (deadStones) {
+    for (const key of deadStones) {
+      const [r, c] = key.split(',').map(Number);
+      effectiveBoard[r][c] = EMPTY;
+    }
+  }
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (effectiveBoard[r][c] === BLACK) blackScore++;
+      else if (effectiveBoard[r][c] === WHITE) whiteScore++;
+      else {
+        if (territory[r][c] === BLACK) blackScore++;
+        else if (territory[r][c] === WHITE) whiteScore++;
+      }
+    }
+  }
+  // 死子算作对方俘获 (area scoring 中死子移除即减少其分数, 已处理)
+  const diff = Math.abs(blackScore - whiteScore);
+  const winner = blackScore > whiteScore ? BLACK : (whiteScore > blackScore ? WHITE : 0);
+  return { blackScore, whiteScore, diff, winner };
+}
+
+// ===================== AI =====================
+// 简单评估: 提子优先 + 气数 + 地域潜力 + 随机权重
+function aiMove() {
+  aiThinking = true;
+  updateStatus();
+  setTimeout(() => {
+    const move = chooseAiMove();
+    if (move === 'pass') {
+      pass(WHITE);
+      if (passCount >= 2) {
+        aiThinking = false;
+        endGame();
+        return;
+      }
+    } else {
+      makeMove(move.r, move.c, WHITE);
+    }
+    aiThinking = false;
+    turn = BLACK;
+    updateStatus();
+    updateInfo();
+    draw();
+  }, 80);
+}
+
+function chooseAiMove() {
+  const candidates = [];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const result = tryMove(board, r, c, WHITE, koPoint);
+      if (!result.legal) continue;
+      let val = 0;
+
+      // 1. 提子价值 (最高优先)
+      val += result.captured.length * 15;
+
+      // 2. 攻击: 减少对方块的气
+      val += countAtariThreats(result.board, r, c) * 6;
+
+      // 3. 自身气数
+      const g = getGroup(result.board, r, c);
+      val += g.liberties * 1.5;
+
+      // 4. 避免自填眼 (周围4个都是己方棋子且都是活棋 -> 不填)
+      if (isSelfEye(result.board, r, c, WHITE)) val -= 30;
+
+      // 5. 地域潜力: 周围空点越多越好 (早期)
+      val += countAdjacentEmpty(result.board, r, c) * 0.8;
+
+      // 6. 位置价值: 早期偏好3-4线, 避免1线
+      val += positionValue(r, c);
+
+      // 7. 连接 bonus
+      val += connectionBonus(result.board, r, c, WHITE);
+
+      // 8. 困难模式前瞻
+      val += lookaheadCheck(board, r, c, WHITE, koPoint);
+
+      // 9. 随机扰动 (难度相关)
+      val += Math.random() * getAiRandomness();
+
+      candidates.push({ r, c, val });
+    }
+  }
+
+  if (candidates.length === 0) return 'pass';
+
+  // 如果最佳分值很低且棋局已稳定, 考虑停手
+  candidates.sort((a, b) => b.val - a.val);
+  const best = candidates[0];
+
+  // 终局判断: 如果所有候选都很差, 停手
+  if (best.val < 2 && moveNumber > 20) {
+    // 检查是否还有有意义的走法
+    if (candidates.filter(c => c.val > 5).length === 0) {
+      return 'pass';
+    }
+  }
+
+  return best;
+}
+
+function countAtariThreats(bd, r, c) {
+  // 落子后, 检查周围对方块是否处于叫吃 (1气)
+  let count = 0;
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (!inBounds(nr, nc) || bd[nr][nc] !== BLACK) continue;
+    const g = getGroup(bd, nr, nc);
+    if (g.liberties === 1) count++;
+  }
+  return count;
+}
+
+function isSelfEye(bd, r, c, color) {
+  // 所有正交相邻都是己方棋子
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (!inBounds(nr, nc)) continue;
+    if (bd[nr][nc] !== color) return false;
+  }
+  return true;
+}
+
+function countAdjacentEmpty(bd, r, c) {
+  let count = 0;
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (inBounds(nr, nc) && bd[nr][nc] === EMPTY) count++;
+  }
+  return count;
+}
+
+function positionValue(r, c) {
+  // 9x9: 偏好 2-6 线 (索引 2-6), 避免边线 0,8
+  const lineR = Math.min(r, N - 1 - r);
+  const lineC = Math.min(c, N - 1 - c);
+  const line = Math.min(lineR, lineC);
+  if (line === 0) return -3;   // 第一线
+  if (line === 1) return 0;    // 第二线
+  if (line === 2) return 2;    // 第三线
+  return 1.5;                  // 第四线及以上 (中心)
+}
+
+function connectionBonus(bd, r, c, color) {
+  let bonus = 0;
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (inBounds(nr, nc) && bd[nr][nc] === color) bonus += 1;
+  }
+  return bonus;
+}
+
+// ===================== 渲染 =====================
+function draw() {
+  // 木纹底色
+  ctx.fillStyle = '#d4a843';
+  ctx.fillRect(0, 0, 540, 540);
+  // 木纹纹理
+  ctx.strokeStyle = 'rgba(160, 120, 40, 0.15)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 540; i += 7) {
+    ctx.beginPath();
+    ctx.moveTo(0, i + Math.sin(i * 0.1) * 3);
+    ctx.lineTo(540, i + Math.cos(i * 0.1) * 3);
+    ctx.stroke();
+  }
+
+  // 网格线
+  ctx.strokeStyle = '#3a2a10';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < N; i++) {
+    const pos = MARGIN + i * CELL;
+    ctx.beginPath();
+    ctx.moveTo(MARGIN, pos);
+    ctx.lineTo(MARGIN + (N - 1) * CELL, pos);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(pos, MARGIN);
+    ctx.lineTo(pos, MARGIN + (N - 1) * CELL);
+    ctx.stroke();
+  }
+  // 外框加粗
+  ctx.lineWidth = 2;
+  ctx.strokeRect(MARGIN, MARGIN, (N - 1) * CELL, (N - 1) * CELL);
+
+  // 星位
+  ctx.fillStyle = '#3a2a10';
+  for (const [r, c] of STAR_POINTS) {
+    ctx.beginPath();
+    ctx.arc(MARGIN + c * CELL, MARGIN + r * CELL, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 坐标
+  ctx.fillStyle = '#5a4a20';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const letters = 'ABCDEFGHJ';
+  for (let i = 0; i < N; i++) {
+    ctx.fillText(letters[i], MARGIN + i * CELL, 12);
+    ctx.fillText(N - i, 12, MARGIN + i * CELL);
+  }
+
+  // 终局地域显示
+  if (gameOver && territory) {
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (board[r][c] === EMPTY && territory[r][c] !== EMPTY) {
+          const x = MARGIN + c * CELL;
+          const y = MARGIN + r * CELL;
+          ctx.fillStyle = territory[r][c] === BLACK ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.6)';
+          ctx.fillRect(x - 6, y - 6, 12, 12);
+        }
+      }
+    }
+  }
+
+  // 势力图覆盖层
+  renderInfluenceOverlay();
+
+  // 棋子
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] === EMPTY) continue;
+      const x = MARGIN + c * CELL;
+      const y = MARGIN + r * CELL;
+      drawStone(x, y, board[r][c]);
+
+      // 死子标记
+      if (deadStones && deadStones.has(r + ',' + c)) {
+        ctx.strokeStyle = '#ff4444';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x - 8, y - 8);
+        ctx.lineTo(x + 8, y + 8);
+        ctx.moveTo(x + 8, y - 8);
+        ctx.lineTo(x - 8, y + 8);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // 最后一手标记
+  if (lastMove && lastMove !== 'pass') {
+    const x = MARGIN + lastMove.c * CELL;
+    const y = MARGIN + lastMove.r * CELL;
+    ctx.strokeStyle = lastMove.color === BLACK ? '#fff' : '#000';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // 劫点标记
+  if (koPoint && !gameOver) {
+    const x = MARGIN + koPoint.c * CELL;
+    const y = MARGIN + koPoint.r * CELL;
+    ctx.fillStyle = 'rgba(200, 50, 50, 0.5)';
+    ctx.fillRect(x - 5, y - 5, 10, 10);
+  }
+
+  // 悬停预览
+  if (hoverPos && !gameOver && !aiThinking && turn === BLACK) {
+    const { r, c } = hoverPos;
+    if (board[r][c] === EMPTY) {
+      const x = MARGIN + c * CELL;
+      const y = MARGIN + r * CELL;
+      ctx.globalAlpha = 0.4;
+      drawStone(x, y, BLACK);
+      ctx.globalAlpha = 1.0;
+    }
+  }
+}
+
+function drawStone(x, y, color) {
+  const radius = CELL * 0.44;
+  // 阴影
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.arc(x + 2, y + 2, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 棋子渐变
+  const grad = ctx.createRadialGradient(x - radius * 0.3, y - radius * 0.3, radius * 0.1, x, y, radius);
+  if (color === BLACK) {
+    grad.addColorStop(0, '#555');
+    grad.addColorStop(1, '#000');
+  } else {
+    grad.addColorStop(0, '#fff');
+    grad.addColorStop(1, '#b0b0b0');
+  }
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 边缘
+  ctx.strokeStyle = color === BLACK ? '#000' : '#888';
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+}
+
+// ===================== 交互 =====================
+function getGridPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const c = Math.round((x - MARGIN) / CELL);
+  const r = Math.round((y - MARGIN) / CELL);
+  if (r < 0 || r >= N || c < 0 || c >= N) return null;
+  // 检查是否在交叉点附近
+  const dx = Math.abs(x - (MARGIN + c * CELL));
+  const dy = Math.abs(y - (MARGIN + r * CELL));
+  if (dx > CELL * 0.5 || dy > CELL * 0.5) return null;
+  return { r, c };
+}
+
+canvas.addEventListener('mousemove', e => {
+  hoverPos = getGridPos(e);
+  if (!gameOver && !aiThinking) draw();
+});
+
+canvas.addEventListener('mouseleave', () => {
+  hoverPos = null;
+  if (!gameOver && !aiThinking) draw();
+});
+
+canvas.addEventListener('click', e => {
+  if (gameOver || aiThinking || turn !== BLACK) return;
+  const pos = getGridPos(e);
+  if (!pos) return;
+
+  const result = tryMove(board, pos.r, pos.c, BLACK, koPoint);
+  if (!result.legal) {
+    flashStatus(result.reason);
+    playErrorSound();
+    return;
+  }
+
+  makeMove(pos.r, pos.c, BLACK);
+  if (result.captured.length > 0) playCaptureSound();
+  else playStoneSound();
+  turn = WHITE;
+  passCount = 0;
+  updateInfo();
+  draw();
+
+  // AI 回应
+  aiMove();
+});
+
+document.getElementById('btnPass').addEventListener('click', () => {
+  if (gameOver || aiThinking || turn !== BLACK) return;
+  pass(BLACK);
+  if (passCount >= 2) {
+    endGame();
+    return;
+  }
+  turn = WHITE;
+  updateInfo();
+  draw();
+  aiMove();
+});
+
+document.getElementById('btnUndo').addEventListener('click', () => {
+  if (aiThinking || history.length < 2) return;
+  // 回退 AI + 玩家
+  for (let i = 0; i < 2 && history.length > 0; i++) {
+    const s = history.pop();
+    board = s.board;
+    captures = s.captures;
+    koPoint = s.koPoint;
+    lastMove = s.lastMove;
+    turn = s.turn;
+    moveNumber = s.moveNumber;
+    passCount = s.passCount;
+  }
+  gameOver = false;
+  deadStones = null;
+  territory = null;
+  // 重建日志
+  rebuildLog();
+  updateStatus();
+  updateInfo();
+  draw();
+});
+
+function rebuildLog() {
+  // 简单清空 (完整重建需要记录所有走法, 这里简化)
+  document.getElementById('log').innerHTML = '';
+}
+
+document.getElementById('btnNew').addEventListener('click', newGame);
+
+// ===================== 音效 (Web Audio) =====================
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function playStoneSound() {
+  initAudio();
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(200, audioCtx.currentTime + 0.08);
+  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.12);
+  osc.start(audioCtx.currentTime);
+  osc.stop(audioCtx.currentTime + 0.12);
+}
+
+function playCaptureSound() {
+  initAudio();
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.2);
+  gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+  osc.start(audioCtx.currentTime);
+  osc.stop(audioCtx.currentTime + 0.25);
+}
+
+function playErrorSound() {
+  initAudio();
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+  gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+  osc.start(audioCtx.currentTime);
+  osc.stop(audioCtx.currentTime + 0.15);
+}
+
+// ===================== AI 难度 =====================
+let aiDifficulty = 1; // 0=简单, 1=普通, 2=困难
+const DIFFICULTY_NAMES = ['简单', '普通', '困难'];
+
+function getAiRandomness() {
+  // 难度越高, 随机性越低
+  return [10, 4, 1.5][aiDifficulty];
+}
+
+function getAiDepthBonus() {
+  // 困难模式额外考虑对手回应
+  return [0, 0, 1][aiDifficulty];
+}
+
+// 困难模式: 简单前瞻 (检查对手是否能立即提回)
+function lookaheadCheck(bd, r, c, color, ko) {
+  if (getAiDepthBonus() === 0) return 0;
+  const result = tryMove(bd, r, c, color, ko);
+  if (!result.legal) return -100;
+  // 检查对手是否能在周围提子
+  let penalty = 0;
+  const enemy = opp(color);
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[-1,1],[1,-1],[1,1]]) {
+    const nr = r + dr, nc = c + dc;
+    if (!inBounds(nr, nc)) continue;
+    const enemyResult = tryMove(result.board, nr, nc, enemy, null);
+    if (enemyResult.legal && enemyResult.captured.length > 0) {
+      penalty -= enemyResult.captured.length * 8;
+    }
+  }
+  return penalty;
+}
+
+// ===================== 势力图可视化 =====================
+let showInfluence = false;
+
+function computeInfluence() {
+  // 计算每个点黑白双方的势力值
+  const influence = Array.from({length: N}, () => Array(N).fill(0));
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] === EMPTY) continue;
+      const sign = board[r][c] === BLACK ? 1 : -1;
+      // 向周围扩散影响力, 距离越远越弱
+      for (let dr = -3; dr <= 3; dr++) {
+        for (let dc = -3; dc <= 3; dc++) {
+          const nr = r + dr, nc = c + dc;
+          if (!inBounds(nr, nc)) continue;
+          const dist = Math.abs(dr) + Math.abs(dc);
+          if (dist === 0) continue;
+          const strength = sign * (4 - dist) / 4;
+          influence[nr][nc] += strength;
+        }
+      }
+    }
+  }
+  return influence;
+}
+
+function renderInfluenceOverlay() {
+  if (!showInfluence) return;
+  const influence = computeInfluence();
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] !== EMPTY) continue;
+      const val = influence[r][c];
+      const x = MARGIN + c * CELL;
+      const y = MARGIN + r * CELL;
+      if (val > 0.3) {
+        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.4, val * 0.15)})`;
+        ctx.fillRect(x - CELL * 0.35, y - CELL * 0.35, CELL * 0.7, CELL * 0.7);
+      } else if (val < -0.3) {
+        ctx.fillStyle = `rgba(255,255,255,${Math.min(0.4, -val * 0.15)})`;
+        ctx.fillRect(x - CELL * 0.35, y - CELL * 0.35, CELL * 0.7, CELL * 0.7);
+      }
+    }
+  }
+}
+
+// ===================== 终局详细计分 =====================
+function showScoreDetail() {
+  if (!gameOver || !territory) return;
+  const result = scoreGame();
+  let blackTerritory = 0, whiteTerritory = 0;
+  let blackStones = 0, whiteStones = 0;
+  const effectiveBoard = cloneBoard(board);
+  if (deadStones) {
+    for (const key of deadStones) {
+      const [r, c] = key.split(',').map(Number);
+      effectiveBoard[r][c] = EMPTY;
+    }
+  }
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (effectiveBoard[r][c] === BLACK) blackStones++;
+      else if (effectiveBoard[r][c] === WHITE) whiteStones++;
+      else {
+        if (territory[r][c] === BLACK) blackTerritory++;
+        else if (territory[r][c] === WHITE) whiteTerritory++;
+      }
+    }
+  }
+  const detail = `黑: 子${blackStones} + 地${blackTerritory} = ${result.blackScore.toFixed(1)}\n` +
+    `白: 子${whiteStones} + 地${whiteTerritory} + 贴6.5 = ${result.whiteScore.toFixed(1)}`;
+  addLog('--- 计分详情 ---');
+  addLog(`黑方: 棋子${blackStones} + 地域${blackTerritory} = ${result.blackScore.toFixed(1)}`);
+  addLog(`白方: 棋子${whiteStones} + 地域${whiteTerritory} + 贴目6.5 = ${result.whiteScore.toFixed(1)}`);
+  addLog(result.winner === BLACK ? `黑胜 ${result.diff.toFixed(1)} 目` :
+    result.winner === WHITE ? `白胜 ${result.diff.toFixed(1)} 目` : '平局');
+}
+
+// ===================== 状态显示 =====================
+function setStatus(text) {
+  document.getElementById('status').textContent = text;
+}
+
+let flashTimer = null;
+function flashStatus(text) {
+  const el = document.getElementById('status');
+  const prev = el.textContent;
+  el.textContent = '⚠ ' + text;
+  el.style.borderColor = '#a44';
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    el.style.borderColor = '#554';
+    updateStatus();
+  }, 1500);
+}
+
+function updateStatus() {
+  if (gameOver) return;
+  if (aiThinking) {
+    setStatus('白方（AI）思考中…');
+  } else if (turn === BLACK) {
+    setStatus('黑方（你）落子');
+  } else {
+    setStatus('白方（AI）落子');
+  }
+}
+
+function updateInfo() {
+  document.getElementById('capBlack').textContent = captures[1];
+  document.getElementById('capWhite').textContent = captures[2];
+  document.getElementById('moveNum').textContent = moveNumber;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'KeyI') {
+    showInfluence = !showInfluence;
+    draw();
+  }
+  if (e.code === 'KeyD' && !gameOver) {
+    aiDifficulty = (aiDifficulty + 1) % 3;
+    flashStatus('AI 难度: ' + DIFFICULTY_NAMES[aiDifficulty]);
+  }
+});
+
+newGame();
+</script>
+</body>
+</html>

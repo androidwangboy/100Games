@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>几何冲刺</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0, attempts = 0, bestProgress = 0;
+let player, camera, particles = [], groundParticles = [], trailParticles = [];
+let level = [], levelLength = 0, frameCount = 0;
+let gameSpeed = 5.5, gravity = 0.7, jumpForce = -12.5;
+let isDead = false, deathTimer = 0;
+let screenShake = 0, bgHue = 260;
+
+const GROUND_Y = H - 80;
+const PLAYER_SIZE = 30;
+const BLOCK = 40;
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    if (state === 'title') startGame();
+    else if (state === 'playing' && !isDead) jump();
+    else if (state === 'gameover') startGame();
+    else if (state === 'win') state = 'title';
+  }
+});
+
+canvas.addEventListener('mousedown', () => {
+  if (state === 'title') startGame();
+  else if (state === 'playing' && !isDead) jump();
+  else if (state === 'gameover') startGame();
+  else if (state === 'win') state = 'title';
+});
+
+function buildLevel() {
+  level = [];
+  let x = 700;
+  let seed = 777;
+  function rng() { seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF; return (seed >>> 0) / 0xFFFFFFFF; }
+
+  const patterns = [
+    () => { level.push({ type: 'spike', x, y: GROUND_Y - 30, w: 30, h: 30 }); x += 220; },
+    () => { level.push({ type: 'spike', x, y: GROUND_Y - 30, w: 30, h: 30 }); level.push({ type: 'spike', x: x + 35, y: GROUND_Y - 30, w: 30, h: 30 }); x += 280; },
+    () => { level.push({ type: 'block', x, y: GROUND_Y - BLOCK, w: BLOCK, h: BLOCK }); x += 220; },
+    () => { level.push({ type: 'block', x, y: GROUND_Y - BLOCK, w: BLOCK, h: BLOCK }); level.push({ type: 'block', x: x + BLOCK, y: GROUND_Y - BLOCK * 2, w: BLOCK, h: BLOCK }); x += 300; },
+    () => { level.push({ type: 'spike', x, y: GROUND_Y - 30, w: 30, h: 30 }); level.push({ type: 'block', x: x + 90, y: GROUND_Y - BLOCK, w: BLOCK, h: BLOCK }); x += 320; },
+    () => { for (let i = 0; i < 3; i++) level.push({ type: 'spike', x: x + i * 35, y: GROUND_Y - 30, w: 30, h: 30 }); x += 340; },
+    () => { level.push({ type: 'platform', x, y: GROUND_Y - 110, w: 130, h: 15 }); level.push({ type: 'spike', x: x + 35, y: GROUND_Y - 30, w: 30, h: 30 }); level.push({ type: 'spike', x: x + 70, y: GROUND_Y - 30, w: 30, h: 30 }); x += 320; },
+    () => { level.push({ type: 'block', x, y: GROUND_Y - BLOCK, w: BLOCK * 3, h: BLOCK }); level.push({ type: 'spike', x: x + BLOCK * 3 + 10, y: GROUND_Y - 30, w: 30, h: 30 }); x += 360; },
+    () => { level.push({ type: 'spike', x, y: GROUND_Y - 30, w: 30, h: 30 }); x += 130; level.push({ type: 'spike', x, y: GROUND_Y - 30, w: 30, h: 30 }); x += 130; level.push({ type: 'spike', x, y: GROUND_Y - 30, w: 30, h: 30 }); x += 270; },
+    () => { level.push({ type: 'block', x, y: GROUND_Y - BLOCK, w: BLOCK, h: BLOCK }); level.push({ type: 'spike', x: x + BLOCK + 5, y: GROUND_Y - BLOCK - 30, w: 30, h: 30 }); x += 320; },
+    () => { level.push({ type: 'block', x, y: GROUND_Y - BLOCK * 2, w: BLOCK * 2, h: BLOCK }); level.push({ type: 'spike', x: x - 35, y: GROUND_Y - 30, w: 30, h: 30 }); x += 320; },
+    () => { level.push({ type: 'spike', x, y: GROUND_Y - 30, w: 30, h: 30 }); level.push({ type: 'block', x: x + 60, y: GROUND_Y - BLOCK, w: BLOCK, h: BLOCK }); level.push({ type: 'spike', x: x + 60 + BLOCK + 5, y: GROUND_Y - 30, w: 30, h: 30 }); x += 350; },
+  ];
+
+  const numPatterns = 50;
+  for (let i = 0; i < numPatterns; i++) {
+    const difficulty = i / numPatterns;
+    let idx;
+    if (difficulty < 0.15) idx = Math.floor(rng() * 3);
+    else if (difficulty < 0.4) idx = Math.floor(rng() * 6);
+    else if (difficulty < 0.7) idx = Math.floor(rng() * 9);
+    else idx = Math.floor(rng() * patterns.length);
+    patterns[idx]();
+    x += Math.max(50, 130 - difficulty * 50);
+  }
+  levelLength = x + 500;
+}
+
+function startGame() {
+  state = 'playing';
+  attempts++;
+  isDead = false; deathTimer = 0;
+  player = { x: 100, y: GROUND_Y - PLAYER_SIZE, vy: 0, onGround: true, rotation: 0 };
+  camera = { x: 0 };
+  particles = []; groundParticles = []; trailParticles = [];
+  frameCount = 0; screenShake = 0;
+  buildLevel();
+}
+
+function jump() {
+  if (player.onGround) {
+    player.vy = jumpForce;
+    player.onGround = false;
+    for (let i = 0; i < 6; i++) {
+      groundParticles.push({
+        x: player.x + PLAYER_SIZE / 2 + (Math.random() - 0.5) * 10,
+        y: player.y + PLAYER_SIZE,
+        vx: (Math.random() - 0.5) * 3, vy: Math.random() * 2 + 0.5,
+        life: 18, radius: 2 + Math.random() * 2
+      });
+    }
+  }
+}
+
+function killPlayer() {
+  if (isDead) return;
+  isDead = true; deathTimer = 70; screenShake = 15;
+  const progress = Math.round((camera.x / levelLength) * 100);
+  score = Math.max(score, progress);
+  if (progress > bestProgress) bestProgress = progress;
+  for (let i = 0; i < 30; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 7;
+    particles.push({
+      x: player.x + PLAYER_SIZE / 2, y: player.y + PLAYER_SIZE / 2,
+      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+      life: 45, radius: 2 + Math.random() * 5,
+      color: ['#00e5ff', '#76ff03', '#fff', '#ffea00'][Math.floor(Math.random() * 4)]
+    });
+  }
+}
+
+function checkCollision(px, py, pw, ph, ox, oy, ow, oh) {
+  return px < ox + ow && px + pw > ox && py < oy + oh && py + ph > oy;
+}
+
+function update() {
+  frameCount++;
+  bgHue = (bgHue + 0.1) % 360;
+  if (screenShake > 0) screenShake *= 0.88;
+
+  if (state !== 'playing') return;
+
+  if (isDead) {
+    deathTimer--;
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life--;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+    if (deathTimer <= 0) state = 'gameover';
+    return;
+  }
+
+  camera.x += gameSpeed;
+  player.x = camera.x + 100;
+  player.vy += gravity;
+  player.y += player.vy;
+  player.onGround = false;
+
+  if (player.y + PLAYER_SIZE >= GROUND_Y) {
+    player.y = GROUND_Y - PLAYER_SIZE;
+    player.vy = 0;
+    player.onGround = true;
+  }
+
+  if (!player.onGround) player.rotation += 0.09;
+  else player.rotation = Math.round(player.rotation / (Math.PI / 2)) * (Math.PI / 2);
+
+  for (const obj of level) {
+    const rx = obj.x - camera.x + 100;
+    if (rx > W + 100 || rx + obj.w < -100) continue;
+    const ox = obj.x, oy = obj.y;
+
+    if (obj.type === 'spike') {
+      const shrink = 7;
+      if (checkCollision(player.x + shrink, player.y + shrink, PLAYER_SIZE - shrink * 2, PLAYER_SIZE - shrink * 2, ox + 5, oy + 10, obj.w - 10, obj.h - 10)) {
+        killPlayer(); return;
+      }
+    } else if (obj.type === 'block' || obj.type === 'platform') {
+      if (checkCollision(player.x + 2, player.y + 2, PLAYER_SIZE - 4, PLAYER_SIZE - 4, ox, oy, obj.w, obj.h)) {
+        const overlapBottom = (player.y + PLAYER_SIZE) - oy;
+        const overlapTop = (oy + obj.h) - player.y;
+        const overlapRight = (player.x + PLAYER_SIZE) - ox;
+        const overlapLeft = (ox + obj.w) - player.x;
+        const minOverlap = Math.min(overlapBottom, overlapTop, overlapRight, overlapLeft);
+
+        if (minOverlap === overlapBottom && player.vy >= 0) {
+          player.y = oy - PLAYER_SIZE;
+          player.vy = 0; player.onGround = true;
+        } else if (minOverlap === overlapTop && player.vy < 0) {
+          player.y = oy + obj.h; player.vy = 1;
+        } else {
+          killPlayer(); return;
+        }
+      }
+    }
+  }
+
+  if (player.y > H + 100) { killPlayer(); return; }
+  if (camera.x >= levelLength) { state = 'win'; score = 100; return; }
+
+  if (player.onGround && frameCount % 3 === 0) {
+    groundParticles.push({
+      x: player.x, y: player.y + PLAYER_SIZE,
+      vx: -1.5 - Math.random(), vy: -Math.random() * 1.5,
+      life: 14, radius: 1.5 + Math.random() * 1.5
+    });
+  }
+
+  if (frameCount % 2 === 0) {
+    trailParticles.push({
+      x: player.x + PLAYER_SIZE / 2, y: player.y + PLAYER_SIZE / 2,
+      life: 12, radius: PLAYER_SIZE * 0.35
+    });
+  }
+
+  for (let i = groundParticles.length - 1; i >= 0; i--) {
+    const p = groundParticles[i];
+    p.x += p.vx; p.y += p.vy; p.life--;
+    if (p.life <= 0) groundParticles.splice(i, 1);
+  }
+  for (let i = trailParticles.length - 1; i >= 0; i--) {
+    trailParticles[i].life--;
+    if (trailParticles[i].life <= 0) trailParticles.splice(i, 1);
+  }
+}
+
+function drawBackground() {
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  const h1 = Math.floor(bgHue);
+  const h2 = Math.floor((bgHue + 40) % 360);
+  grad.addColorStop(0, `hsl(${h1}, 60%, 8%)`);
+  grad.addColorStop(1, `hsl(${h2}, 50%, 5%)`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = `hsla(${h1}, 80%, 50%, 0.06)`;
+  ctx.lineWidth = 1;
+  const offset = (camera.x * 0.3) % 60;
+  for (let x = -offset; x < W; x += 60) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += 60) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  ctx.fillStyle = `hsla(${h1}, 80%, 60%, 0.03)`;
+  for (let i = 0; i < 4; i++) {
+    const bx = ((i * 250 - camera.x * 0.1) % (W + 200)) - 100;
+    const by = 60 + i * 80 + Math.sin(frameCount * 0.01 + i) * 20;
+    ctx.beginPath(); ctx.arc(bx, by, 40 + i * 15, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawGround() {
+  ctx.fillStyle = `hsl(${Math.floor(bgHue)}, 30%, 10%)`;
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2;
+  ctx.shadowColor = '#00e5ff'; ctx.shadowBlur = 8;
+  ctx.beginPath(); ctx.moveTo(0, GROUND_Y); ctx.lineTo(W, GROUND_Y); ctx.stroke();
+  ctx.shadowBlur = 0; ctx.lineWidth = 1;
+
+  ctx.strokeStyle = 'rgba(0, 229, 255, 0.1)';
+  const gOffset = (camera.x * 0.8) % 40;
+  for (let x = -gOffset; x < W; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, GROUND_Y + 5); ctx.lineTo(x + 20, H); ctx.stroke();
+  }
+}
+
+function drawLevel() {
+  for (const obj of level) {
+    const sx = obj.x - camera.x + 100;
+    if (sx > W + 50 || sx + obj.w < -50) continue;
+
+    if (obj.type === 'spike') {
+      ctx.fillStyle = '#ff1744';
+      ctx.shadowColor = '#ff1744'; ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(sx, obj.y + obj.h);
+      ctx.lineTo(sx + obj.w / 2, obj.y);
+      ctx.lineTo(sx + obj.w, obj.y + obj.h);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#ff5252'; ctx.lineWidth = 1;
+      ctx.stroke();
+    } else if (obj.type === 'block') {
+      ctx.fillStyle = '#1a2a3a';
+      ctx.fillRect(sx, obj.y, obj.w, obj.h);
+      ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx, obj.y, obj.w, obj.h);
+      ctx.fillStyle = 'rgba(0, 229, 255, 0.08)';
+      ctx.fillRect(sx + 3, obj.y + 3, obj.w - 6, obj.h - 6);
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)';
+      ctx.beginPath();
+      ctx.moveTo(sx + 5, obj.y + 5); ctx.lineTo(sx + obj.w - 5, obj.y + obj.h - 5);
+      ctx.moveTo(sx + obj.w - 5, obj.y + 5); ctx.lineTo(sx + 5, obj.y + obj.h - 5);
+      ctx.stroke();
+    } else if (obj.type === 'platform') {
+      ctx.fillStyle = '#2a3a2a';
+      ctx.fillRect(sx, obj.y, obj.w, obj.h);
+      ctx.strokeStyle = '#76ff03'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx, obj.y, obj.w, obj.h);
+      ctx.shadowColor = '#76ff03'; ctx.shadowBlur = 4;
+      ctx.beginPath(); ctx.moveTo(sx, obj.y); ctx.lineTo(sx + obj.w, obj.y); ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+  }
+}
+
+function drawPlayer() {
+  if (isDead) return;
+  const sx = 100, sy = player.y;
+
+  for (const tp of trailParticles) {
+    const alpha = tp.life / 12 * 0.3;
+    const tsx = tp.x - camera.x + 100;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#00e5ff';
+    ctx.fillRect(tsx - tp.radius, tp.y - tp.radius, tp.radius * 2, tp.radius * 2);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.save();
+  ctx.translate(sx + PLAYER_SIZE / 2, sy + PLAYER_SIZE / 2);
+  ctx.rotate(player.rotation);
+  ctx.shadowColor = '#00e5ff'; ctx.shadowBlur = 15;
+  ctx.fillStyle = '#00e5ff';
+  ctx.fillRect(-PLAYER_SIZE / 2, -PLAYER_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE);
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  ctx.strokeRect(-PLAYER_SIZE / 2, -PLAYER_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-5, -9, 10, 10);
+  ctx.fillStyle = '#0d001a';
+  ctx.fillRect(-3, -7, 6, 6);
+  ctx.restore();
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = p.life / 45;
+    ctx.fillStyle = p.color;
+    const px = p.x - camera.x + 100;
+    ctx.save();
+    ctx.translate(px, p.y);
+    ctx.rotate(p.life * 0.2);
+    ctx.fillRect(-p.radius, -p.radius, p.radius * 2, p.radius * 2);
+    ctx.restore();
+  }
+  for (const p of groundParticles) {
+    ctx.globalAlpha = p.life / 18;
+    ctx.fillStyle = '#00e5ff';
+    const px = p.x - camera.x + 100;
+    ctx.fillRect(px - p.radius, p.y - p.radius, p.radius * 2, p.radius * 2);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  const progress = Math.min(100, Math.round((camera.x / levelLength) * 100));
+  const barW = W - 120, barH = 8, barX = 60, barY = 14;
+  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.roundRect(barX, barY, barW, barH, 4); ctx.fill();
+  ctx.fillStyle = '#76ff03'; ctx.beginPath(); ctx.roundRect(barX, barY, barW * progress / 100, barH, 4); ctx.fill();
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(barX, barY, barW, barH, 4); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(`${progress}%`, W / 2, barY + barH + 16);
+
+  ctx.textAlign = 'left'; ctx.font = '14px sans-serif'; ctx.fillStyle = '#888';
+  ctx.fillText(`尝试 #${attempts}`, 15, H - 15);
+  ctx.textAlign = 'right';
+  ctx.fillText(`最佳: ${bestProgress}%`, W - 15, H - 15);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#0d001a'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(0, 229, 255, 0.05)';
+  for (let x = 0; x < W; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  ctx.textAlign = 'center';
+  const pulse = Math.sin(frameCount * 0.04) * 3;
+  ctx.fillStyle = '#00e5ff'; ctx.font = `bold ${46 + pulse}px sans-serif`;
+  ctx.shadowColor = '#00e5ff'; ctx.shadowBlur = 20;
+  ctx.fillText('◆ 几何冲刺', W / 2, H / 2 - 80);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#ecf0f1'; ctx.font = '19px sans-serif';
+  ctx.fillText('按空格/点击跳跃，躲避障碍物到达终点', W / 2, H / 2 - 25);
+  ctx.fillText('碰到尖刺或撞墙即死，只有一次机会！', W / 2, H / 2 + 8);
+  ctx.fillStyle = '#aaa'; ctx.font = '15px sans-serif';
+  ctx.fillText('关卡约60秒，包含各种节奏型障碍组合', W / 2, H / 2 + 45);
+  ctx.fillStyle = '#76ff03'; ctx.font = 'bold 22px sans-serif';
+  const blink = Math.sin(frameCount * 0.06) > 0;
+  if (blink) ctx.fillText('按空格或点击开始', W / 2, H / 2 + 95);
+  if (bestProgress > 0) {
+    ctx.fillStyle = '#95a5a6'; ctx.font = '17px sans-serif';
+    ctx.fillText(`最佳进度: ${bestProgress}%  尝试次数: ${attempts}`, W / 2, H / 2 + 135);
+  }
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(13, 0, 26, 0.88)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff1744'; ctx.font = 'bold 42px sans-serif';
+  ctx.fillText('坠落了!', W / 2, H / 2 - 50);
+  const progress = Math.round((camera.x / levelLength) * 100);
+  ctx.fillStyle = '#fff'; ctx.font = '24px sans-serif';
+  ctx.fillText(`进度: ${progress}%`, W / 2, H / 2);
+  ctx.fillStyle = '#95a5a6'; ctx.font = '18px sans-serif';
+  ctx.fillText(`尝试 #${attempts}   最佳: ${bestProgress}%`, W / 2, H / 2 + 40);
+  ctx.fillStyle = '#76ff03'; ctx.font = 'bold 20px sans-serif';
+  ctx.fillText('按空格重试', W / 2, H / 2 + 95);
+}
+
+function drawWin() {
+  ctx.fillStyle = '#0d001a'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#76ff03'; ctx.font = 'bold 46px sans-serif';
+  ctx.shadowColor = '#76ff03'; ctx.shadowBlur = 20;
+  ctx.fillText('🎉 通关成功!', W / 2, H / 2 - 60);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff'; ctx.font = '24px sans-serif';
+  ctx.fillText(`总尝试次数: ${attempts}`, W / 2, H / 2);
+  ctx.fillStyle = '#f1c40f'; ctx.font = '20px sans-serif';
+  ctx.fillText('你征服了这个关卡！', W / 2, H / 2 + 45);
+  ctx.fillStyle = '#95a5a6'; ctx.font = '18px sans-serif';
+  ctx.fillText('按空格返回标题', W / 2, H / 2 + 100);
+}
+
+function render() {
+  ctx.save();
+  if (screenShake > 0.5) {
+    ctx.translate((Math.random() - 0.5) * screenShake, (Math.random() - 0.5) * screenShake);
+  }
+  if (state === 'title') { drawTitle(); ctx.restore(); return; }
+  if (state === 'win') { drawWin(); ctx.restore(); return; }
+  drawBackground();
+  drawGround();
+  drawLevel();
+  drawPlayer();
+  drawParticles();
+  drawHUD();
+  if (state === 'gameover') drawGameOver();
+  ctx.restore();
+}
+
+function loop() { update(); render(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

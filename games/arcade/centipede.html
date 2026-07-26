@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>蜈蚣</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let score = 0;
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const STATE = { TITLE: 0, PLAYING: 1, GAMEOVER: 2, LEVELUP: 3 };
+let state = STATE.TITLE;
+let lives = 3;
+let level = 1;
+let shakeTimer = 0, shakeIntensity = 0;
+
+// Grid system for mushrooms
+const GRID = 16;
+const COLS = W / GRID; // 50
+const ROWS = H / GRID; // 30
+const PLAYER_ZONE_TOP = ROWS - 6; // player restricted to bottom 6 rows
+
+// Mushrooms grid
+let mushrooms = [];
+
+// Player (shooter)
+const player = { x: W/2, y: H - 24, w: 14, h: 14, speed: 4 };
+
+// Bullets
+let bullets = [];
+const BULLET_SPEED = 9;
+let shootCooldown = 0;
+
+// Centipede
+let centipede = [];
+let centipedeDir = 1;
+let centipedeTimer = 0;
+let centipedeInterval = 4; // frames per move (lower = faster)
+let centipedeDropping = false;
+
+// Spider
+let spider = null;
+let spiderTimer = 0;
+
+// Particles
+let particles = [];
+
+// Input
+let keys = {};
+let mouseDown = false;
+let mouseX = W/2, mouseY = H - 24;
+document.addEventListener('keydown', e => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  keys[e.code] = true;
+  if (e.code === 'Space') {
+    if (state === STATE.TITLE) startGame();
+    else if (state === STATE.GAMEOVER) state = STATE.TITLE;
+    else if (state === STATE.LEVELUP) nextLevel();
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+canvas.addEventListener('mousedown', e => {
+  mouseDown = true;
+  if (state === STATE.TITLE) startGame();
+  else if (state === STATE.GAMEOVER) state = STATE.TITLE;
+  else if (state === STATE.LEVELUP) nextLevel();
+});
+canvas.addEventListener('mouseup', () => { mouseDown = false; });
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) * (W / rect.width);
+  mouseY = (e.clientY - rect.top) * (H / rect.height);
+});
+
+function createMushrooms() {
+  mushrooms = [];
+  const count = 25 + level * 3;
+  for (let i = 0; i < count; i++) {
+    const col = Math.floor(Math.random() * COLS);
+    const row = 2 + Math.floor(Math.random() * (PLAYER_ZONE_TOP - 3));
+    // Avoid duplicates
+    if (!mushrooms.find(m => m.col === col && m.row === row)) {
+      mushrooms.push({ col, row, hp: 4 });
+    }
+  }
+}
+
+function createCentipede() {
+  centipede = [];
+  const length = 10 + level * 2;
+  for (let i = 0; i < length; i++) {
+    centipede.push({
+      col: -i, row: 0,
+      x: -i * GRID, y: 0,
+      dir: 1, dropping: false, dropTarget: 0
+    });
+  }
+  centipedeInterval = Math.max(2, 5 - Math.floor(level / 2));
+}
+
+function startGame() {
+  state = STATE.PLAYING;
+  score = 0; lives = 3; level = 1;
+  player.x = W/2; player.y = H - 24;
+  bullets = []; particles = [];
+  spider = null; spiderTimer = 300;
+  createMushrooms();
+  createCentipede();
+}
+
+function nextLevel() {
+  level++;
+  state = STATE.PLAYING;
+  player.x = W/2; player.y = H - 24;
+  bullets = []; particles = [];
+  spider = null; spiderTimer = 300;
+  createMushrooms();
+  createCentipede();
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = Math.random() * 3 + 1;
+    particles.push({ x, y, vx: Math.cos(angle)*spd, vy: Math.sin(angle)*spd, life: 1, decay: 0.03+Math.random()*0.02, color, size: Math.random()*3+1 });
+  }
+}
+
+function triggerShake(i, d) { shakeIntensity = i; shakeTimer = d; }
+
+function getMushroomAt(col, row) {
+  return mushrooms.find(m => m.col === col && m.row === row);
+}
+
+function update() {
+  if (state !== STATE.PLAYING) return;
+
+  // Player movement
+  if (keys['ArrowLeft'] || keys['KeyA']) player.x -= player.speed;
+  if (keys['ArrowRight'] || keys['KeyD']) player.x += player.speed;
+  if (keys['ArrowUp'] || keys['KeyW']) player.y -= player.speed;
+  if (keys['ArrowDown'] || keys['KeyS']) player.y += player.speed;
+
+  // Mouse control
+  const dx = mouseX - player.x, dy = mouseY - player.y;
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+    player.x += dx * 0.12;
+    player.y += dy * 0.12;
+  }
+
+  // Constrain player to bottom zone
+  player.x = Math.max(player.w/2, Math.min(W - player.w/2, player.x));
+  player.y = Math.max(PLAYER_ZONE_TOP * GRID, Math.min(H - 10, player.y));
+
+  // Shooting
+  if (shootCooldown > 0) shootCooldown--;
+  if ((keys['Space'] || mouseDown) && shootCooldown === 0) {
+    bullets.push({ x: player.x, y: player.y - player.h/2, vy: -BULLET_SPEED });
+    shootCooldown = 8;
+  }
+
+  // Update bullets
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    bullets[i].y += bullets[i].vy;
+    if (bullets[i].y < 0) { bullets.splice(i, 1); continue; }
+
+    // Bullet vs mushrooms
+    const bcol = Math.floor(bullets[i].x / GRID);
+    const brow = Math.floor(bullets[i].y / GRID);
+    const mush = getMushroomAt(bcol, brow);
+    if (mush) {
+      mush.hp--;
+      if (mush.hp <= 0) {
+        mushrooms.splice(mushrooms.indexOf(mush), 1);
+        score += 1;
+        spawnParticles(bcol*GRID+GRID/2, brow*GRID+GRID/2, '#a0f', 6);
+      }
+      bullets.splice(i, 1);
+      continue;
+    }
+
+    // Bullet vs centipede
+    for (let j = centipede.length - 1; j >= 0; j--) {
+      const seg = centipede[j];
+      const sx = seg.col * GRID + GRID/2;
+      const sy = seg.row * GRID + GRID/2;
+      if (Math.abs(bullets[i].x - sx) < GRID && Math.abs(bullets[i].y - sy) < GRID) {
+        // Create mushroom at hit location
+        if (!getMushroomAt(seg.col, seg.row)) {
+          mushrooms.push({ col: seg.col, row: seg.row, hp: 4 });
+        }
+        score += 10;
+        spawnParticles(sx, sy, '#0f0', 8);
+        triggerShake(2, 4);
+        centipede.splice(j, 1);
+        bullets.splice(i, 1);
+        break;
+      }
+    }
+  }
+
+  // Centipede movement
+  centipedeTimer++;
+  if (centipedeTimer >= centipedeInterval) {
+    centipedeTimer = 0;
+    moveCentipede();
+  }
+
+  // Spider logic
+  spiderTimer--;
+  if (spiderTimer <= 0 && !spider) {
+    const fromLeft = Math.random() > 0.5;
+    spider = {
+      x: fromLeft ? -20 : W + 20,
+      y: (PLAYER_ZONE_TOP - 3 + Math.random() * 3) * GRID,
+      vx: (fromLeft ? 1 : -1) * (2 + Math.random()),
+      vy: (Math.random() > 0.5 ? 1 : -1) * (1.5 + Math.random()),
+      size: 12
+    };
+    spiderTimer = 400 + Math.random() * 300;
+  }
+
+  if (spider) {
+    spider.x += spider.vx;
+    spider.y += spider.vy;
+    // Bounce vertically
+    if (spider.y < (PLAYER_ZONE_TOP - 5) * GRID || spider.y > H - GRID) {
+      spider.vy *= -1;
+    }
+    // Eat mushrooms
+    const scol = Math.floor(spider.x / GRID);
+    const srow = Math.floor(spider.y / GRID);
+    const sm = getMushroomAt(scol, srow);
+    if (sm && Math.random() < 0.1) {
+      mushrooms.splice(mushrooms.indexOf(sm), 1);
+    }
+    // Off screen
+    if (spider.x < -40 || spider.x > W + 40) spider = null;
+
+    // Spider vs player
+    if (spider && Math.abs(spider.x - player.x) < 16 && Math.abs(spider.y - player.y) < 16) {
+      killPlayer();
+      return;
+    }
+
+    // Bullet vs spider
+    if (spider) {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        if (Math.abs(bullets[i].x - spider.x) < spider.size && Math.abs(bullets[i].y - spider.y) < spider.size) {
+          score += 300;
+          spawnParticles(spider.x, spider.y, '#f0f', 12);
+          triggerShake(3, 6);
+          bullets.splice(i, 1);
+          spider = null;
+          break;
+        }
+      }
+    }
+  }
+
+  // Centipede vs player collision
+  for (let seg of centipede) {
+    const sx = seg.col * GRID + GRID/2;
+    const sy = seg.row * GRID + GRID/2;
+    if (Math.abs(sx - player.x) < 12 && Math.abs(sy - player.y) < 12) {
+      killPlayer();
+      return;
+    }
+  }
+
+  // Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.05;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  if (shakeTimer > 0) shakeTimer--;
+
+  // Level clear
+  if (centipede.length === 0) {
+    score += 100;
+    state = STATE.LEVELUP;
+  }
+}
+
+function moveCentipede() {
+  for (let seg of centipede) {
+    if (seg.dropping) {
+      seg.row++;
+      seg.y = seg.row * GRID;
+      if (seg.row >= seg.dropTarget) {
+        seg.dropping = false;
+        seg.dir *= -1;
+      }
+      continue;
+    }
+
+    const nextCol = seg.col + seg.dir;
+
+    // Check bounds or mushroom collision
+    if (nextCol < 0 || nextCol >= COLS || getMushroomAt(nextCol, seg.row)) {
+      // Drop down
+      if (seg.row >= ROWS - 1) {
+        // Reached bottom, reset to top
+        seg.row = 0;
+        seg.col = Math.floor(Math.random() * COLS);
+        seg.dir = Math.random() > 0.5 ? 1 : -1;
+      } else {
+        seg.dropping = true;
+        seg.dropTarget = seg.row + 1;
+      }
+    } else {
+      seg.col = nextCol;
+      seg.x = seg.col * GRID;
+    }
+  }
+}
+
+function killPlayer() {
+  lives--;
+  spawnParticles(player.x, player.y, '#0ff', 20);
+  triggerShake(6, 12);
+  if (lives <= 0) {
+    state = STATE.GAMEOVER;
+  } else {
+    player.x = W/2;
+    player.y = H - 24;
+    bullets = [];
+  }
+}
+
+function draw() {
+  ctx.save();
+  if (shakeTimer > 0) {
+    ctx.translate((Math.random()-0.5)*shakeIntensity, (Math.random()-0.5)*shakeIntensity);
+  }
+
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE.TITLE) { drawTitle(); ctx.restore(); return; }
+  if (state === STATE.GAMEOVER) { drawGameOver(); ctx.restore(); return; }
+  if (state === STATE.LEVELUP) { drawLevelUp(); ctx.restore(); return; }
+
+  // Player zone indicator
+  ctx.fillStyle = 'rgba(0,255,100,0.03)';
+  ctx.fillRect(0, PLAYER_ZONE_TOP * GRID, W, H - PLAYER_ZONE_TOP * GRID);
+  ctx.strokeStyle = 'rgba(0,255,100,0.15)';
+  ctx.beginPath();
+  ctx.moveTo(0, PLAYER_ZONE_TOP * GRID);
+  ctx.lineTo(W, PLAYER_ZONE_TOP * GRID);
+  ctx.stroke();
+
+  // Mushrooms
+  for (let m of mushrooms) {
+    const mx = m.col * GRID, my = m.row * GRID;
+    const alpha = 0.4 + 0.15 * m.hp;
+    ctx.fillStyle = `rgba(200, 80, 255, ${alpha})`;
+    // Cap
+    ctx.beginPath();
+    ctx.ellipse(mx + GRID/2, my + GRID*0.35, GRID*0.4, GRID*0.3, 0, Math.PI, 0);
+    ctx.fill();
+    // Stem
+    ctx.fillStyle = `rgba(180, 160, 200, ${alpha})`;
+    ctx.fillRect(mx + GRID*0.35, my + GRID*0.35, GRID*0.3, GRID*0.5);
+    // Damage indicator
+    if (m.hp < 4) {
+      ctx.fillStyle = 'rgba(255,255,0,0.3)';
+      for (let d = 0; d < 4 - m.hp; d++) {
+        ctx.fillRect(mx + 3 + d*4, my + 3, 2, 2);
+      }
+    }
+  }
+
+  // Centipede
+  for (let i = 0; i < centipede.length; i++) {
+    const seg = centipede[i];
+    const sx = seg.col * GRID + GRID/2;
+    const sy = seg.row * GRID + GRID/2;
+    const isHead = i === 0;
+    // Body segment
+    ctx.fillStyle = isHead ? '#0f0' : `hsl(${120 + i*3}, 100%, ${50 - i*0.5}%)`;
+    ctx.shadowColor = '#0f0';
+    ctx.shadowBlur = isHead ? 8 : 3;
+    ctx.beginPath();
+    ctx.arc(sx, sy, isHead ? GRID*0.45 : GRID*0.38, 0, Math.PI*2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Eyes on head
+    if (isHead) {
+      ctx.fillStyle = '#f00';
+      ctx.beginPath();
+      ctx.arc(sx - 3, sy - 2, 2, 0, Math.PI*2);
+      ctx.arc(sx + 3, sy - 2, 2, 0, Math.PI*2);
+      ctx.fill();
+    }
+    // Legs
+    ctx.strokeStyle = 'rgba(0,200,0,0.5)';
+    ctx.lineWidth = 1;
+    const legPhase = performance.now() * 0.01 + i;
+    ctx.beginPath();
+    ctx.moveTo(sx - 5, sy + 4);
+    ctx.lineTo(sx - 9, sy + 7 + Math.sin(legPhase)*2);
+    ctx.moveTo(sx + 5, sy + 4);
+    ctx.lineTo(sx + 9, sy + 7 + Math.cos(legPhase)*2);
+    ctx.stroke();
+  }
+
+  // Spider
+  if (spider) {
+    ctx.fillStyle = '#f0f';
+    ctx.shadowColor = '#f0f';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.ellipse(spider.x, spider.y, spider.size, spider.size*0.7, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Legs
+    ctx.strokeStyle = '#f0f';
+    ctx.lineWidth = 1.5;
+    for (let l = 0; l < 4; l++) {
+      const la = (l - 1.5) * 0.4;
+      ctx.beginPath();
+      ctx.moveTo(spider.x - 8, spider.y + la*8);
+      ctx.lineTo(spider.x - 16, spider.y + la*12 + Math.sin(performance.now()*0.01+l)*3);
+      ctx.moveTo(spider.x + 8, spider.y + la*8);
+      ctx.lineTo(spider.x + 16, spider.y + la*12 + Math.cos(performance.now()*0.01+l)*3);
+      ctx.stroke();
+    }
+  }
+
+  // Player
+  ctx.fillStyle = '#0ff';
+  ctx.shadowColor = '#0ff';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(player.x, player.y - player.h/2);
+  ctx.lineTo(player.x - player.w/2, player.y + player.h/2);
+  ctx.lineTo(player.x + player.w/2, player.y + player.h/2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Bullets
+  ctx.fillStyle = '#ff0';
+  ctx.shadowColor = '#ff0';
+  ctx.shadowBlur = 4;
+  for (let b of bullets) {
+    ctx.fillRect(b.x - 1.5, b.y - 4, 3, 8);
+  }
+  ctx.shadowBlur = 0;
+
+  // Particles
+  for (let p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+
+  // HUD
+  ctx.fillStyle = '#fff';
+  ctx.font = '15px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('分数: ' + score, 10, 20);
+  ctx.textAlign = 'center';
+  ctx.fillText('关卡: ' + level, W/2, 20);
+  ctx.textAlign = 'right';
+  ctx.fillText('生命: ' + '▲'.repeat(lives), W - 10, 20);
+
+  ctx.restore();
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#0f0';
+  ctx.font = 'bold 48px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#0f0';
+  ctx.shadowBlur = 20;
+  ctx.fillText('蜈 蚣', W/2, H/2 - 70);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px monospace';
+  ctx.fillText('CENTIPEDE', W/2, H/2 - 30);
+
+  // Animated centipede on title
+  const t = performance.now() * 0.003;
+  for (let i = 0; i < 12; i++) {
+    const cx = W/2 - 120 + i * 22;
+    const cy = H/2 + 10 + Math.sin(t + i * 0.5) * 8;
+    ctx.fillStyle = i === 0 ? '#0f0' : `hsl(${120+i*4}, 100%, 45%)`;
+    ctx.beginPath();
+    ctx.arc(cx, cy, i === 0 ? 9 : 7, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '15px monospace';
+  ctx.fillText('方向键/鼠标移动  空格/点击射击', W/2, H/2 + 60);
+  ctx.fillText('射击蜈蚣身体，注意蘑菇和蜘蛛！', W/2, H/2 + 85);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '16px monospace';
+  ctx.fillText('点击或按空格开始', W/2, H/2 + 130);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = '#f00';
+  ctx.font = 'bold 44px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#f00';
+  ctx.shadowBlur = 20;
+  ctx.fillText('游戏结束', W/2, H/2 - 40);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px monospace';
+  ctx.fillText('最终分数: ' + score, W/2, H/2 + 10);
+  ctx.fillText('到达关卡: ' + level, W/2, H/2 + 45);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '16px monospace';
+  ctx.fillText('点击返回标题', W/2, H/2 + 100);
+}
+
+function drawLevelUp() {
+  ctx.fillStyle = '#0ff';
+  ctx.font = 'bold 38px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#0ff';
+  ctx.shadowBlur = 15;
+  ctx.fillText('关卡 ' + level + ' 完成!', W/2, H/2 - 30);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px monospace';
+  ctx.fillText('分数: ' + score, W/2, H/2 + 15);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '16px monospace';
+  ctx.fillText('点击进入第 ' + (level+1) + ' 关', W/2, H/2 + 60);
+}
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

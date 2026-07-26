@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>双陆棋 Backgammon</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let state = 'title';
+let board = []; // 24 points, positive=white(human), negative=black(AI)
+let bar = { white: 0, black: 0 };
+let off = { white: 0, black: 0 };
+let dice = [];
+let movesLeft = [];
+let turn = 'white'; // white=human, black=AI
+let selected = -1; // selected point or 'bar'
+let validMoves = [];
+let message = '';
+let btnHover = '';
+let gameOver = false;
+
+function initBoard() {
+  board = new Array(24).fill(0);
+  board[0] = 2; board[5] = -5; board[7] = -3; board[11] = 5;
+  board[12] = -5; board[16] = 3; board[18] = 5; board[23] = -2;
+  bar = { white: 0, black: 0 };
+  off = { white: 0, black: 0 };
+  dice = []; movesLeft = []; turn = 'white'; selected = -1;
+  validMoves = []; message = ''; gameOver = false;
+}
+
+function rollDice() {
+  const d1 = Math.ceil(Math.random() * 6);
+  const d2 = Math.ceil(Math.random() * 6);
+  dice = [d1, d2];
+  movesLeft = d1 === d2 ? [d1, d1, d1, d1] : [d1, d2];
+  message = turn === 'white' ? '你的回合: ' + d1 + ',' + d2 : 'AI回合: ' + d1 + ',' + d2;
+  selected = -1; validMoves = [];
+}
+
+function canBearOff(color) {
+  const sign = color === 'white' ? 1 : -1;
+  if (bar[color] > 0) return false;
+  for (let i = 0; i < 24; i++) {
+    if (color === 'white' && board[i] > 0 && i < 18) return false;
+    if (color === 'black' && board[i] < 0 && i > 5) return false;
+  }
+  return true;
+}
+
+function getValidMoves(from, color) {
+  const moves = [];
+  const sign = color === 'white' ? 1 : -1;
+  movesLeft.forEach((die, idx) => {
+    let to;
+    if (from === 'bar') {
+      to = color === 'white' ? die - 1 : 24 - die;
+    } else {
+      to = from + sign * die;
+    }
+    if (from === 'bar' || (from >= 0 && from < 24)) {
+      if (to >= 0 && to < 24) {
+        const target = board[to];
+        if (color === 'white' && target >= -1) moves.push({ to, dieIdx: idx, die });
+        if (color === 'black' && target <= 1) moves.push({ to, dieIdx: idx, die });
+      } else if (canBearOff(color)) {
+        // Bear off logic
+        if (color === 'white' && from >= 18) {
+          const exact = from + die === 24;
+          const higher = die > (24 - from);
+          const noFurther = !board.slice(from + 1, 24).some(v => v > 0);
+          if (exact || (higher && noFurther)) moves.push({ to: 'off', dieIdx: idx, die });
+        }
+        if (color === 'black' && from <= 5) {
+          const exact = from - die === -1;
+          const higher = die > from + 1;
+          const noFurther = !board.slice(0, from).some(v => v < 0);
+          if (exact || (higher && noFurther)) moves.push({ to: 'off', dieIdx: idx, die });
+        }
+      }
+    }
+  });
+  return moves;
+}
+
+function makeMove(from, move, color) {
+  const sign = color === 'white' ? 1 : -1;
+  if (from === 'bar') { bar[color]--; }
+  else { board[from] -= sign; }
+  if (move.to === 'off') {
+    off[color]++;
+  } else {
+    const target = board[move.to];
+    if (color === 'white' && target === -1) { board[move.to] = 0; bar.black++; }
+    if (color === 'black' && target === 1) { board[move.to] = 0; bar.white++; }
+    board[move.to] += sign;
+  }
+  movesLeft.splice(move.dieIdx, 1);
+  selected = -1; validMoves = [];
+  if (off[color] === 15) { gameOver = true; score = color === 'white' ? 100 : 0; state = 'result'; }
+}
+
+function hasAnyMove(color) {
+  if (movesLeft.length === 0) return false;
+  if (bar[color] > 0) return getValidMoves('bar', color).length > 0;
+  for (let i = 0; i < 24; i++) {
+    if (color === 'white' && board[i] > 0 && getValidMoves(i, color).length > 0) return true;
+    if (color === 'black' && board[i] < 0 && getValidMoves(i, color).length > 0) return true;
+  }
+  return false;
+}
+
+function endTurn() {
+  turn = turn === 'white' ? 'black' : 'white';
+  rollDice();
+  if (!hasAnyMove(turn)) {
+    message = (turn === 'white' ? '你' : 'AI') + '无法移动，跳过';
+    setTimeout(() => { if (state === 'game') { endTurn(); } }, 1200);
+    return;
+  }
+  if (turn === 'black') setTimeout(aiMove, 800);
+}
+
+function aiMove() {
+  if (state !== 'game' || turn !== 'black' || gameOver) return;
+  if (movesLeft.length === 0) { endTurn(); return; }
+  let bestMove = null, bestFrom = null, bestScore = -999;
+  const sources = bar.black > 0 ? ['bar'] : [];
+  if (bar.black === 0) for (let i = 0; i < 24; i++) if (board[i] < 0) sources.push(i);
+  sources.forEach(from => {
+    getValidMoves(from, 'black').forEach(move => {
+      let sc = 0;
+      if (move.to !== 'off') {
+        if (board[move.to] === 1) sc += 10; // hit
+        if (board[move.to] < 0) sc += 3; // stack
+        if (move.to <= 5) sc += 2; // progress home
+      } else sc += 8;
+      if (sc > bestScore) { bestScore = sc; bestMove = move; bestFrom = from; }
+    });
+  });
+  if (bestMove) {
+    makeMove(bestFrom, bestMove, 'black');
+    if (!gameOver) setTimeout(aiMove, 600);
+  } else endTurn();
+}
+
+function drawBoard() {
+  ctx.fillStyle = '#5c3317';
+  ctx.fillRect(50, 40, 700, 400);
+  ctx.fillStyle = '#3a1f0d';
+  ctx.fillRect(55, 45, 690, 390);
+  // Draw 24 points (triangles)
+  const pw = 48, ph = 150;
+  for (let i = 0; i < 24; i++) {
+    let x, y, up;
+    if (i < 6) { x = 440 + i * pw; y = 245; up = true; }
+    else if (i < 12) { x = 440 + (i - 6) * pw; y = 50; up = false; }
+    else if (i < 18) { x = 60 + (i - 12) * pw; y = 245; up = true; }
+    else { x = 60 + (i - 18) * pw; y = 50; up = false; }
+    // Triangle
+    ctx.beginPath();
+    if (up) { ctx.moveTo(x, y + ph); ctx.lineTo(x + pw/2, y); ctx.lineTo(x + pw, y + ph); }
+    else { ctx.moveTo(x, y); ctx.lineTo(x + pw/2, y + ph); ctx.lineTo(x + pw, y); }
+    ctx.closePath();
+    ctx.fillStyle = i % 2 === 0 ? '#c0392b' : '#2c3e50';
+    if (selected === i) ctx.fillStyle = '#f1c40f';
+    ctx.fill();
+    // Checkers
+    const count = Math.abs(board[i]);
+    const isWhite = board[i] > 0;
+    for (let c = 0; c < Math.min(count, 5); c++) {
+      const cy = up ? y + ph - 15 - c * 28 : y + 15 + c * 28;
+      ctx.beginPath();
+      ctx.arc(x + pw/2, cy, 12, 0, Math.PI * 2);
+      ctx.fillStyle = isWhite ? '#ecf0f1' : '#1a1a1a';
+      ctx.fill();
+      ctx.strokeStyle = isWhite ? '#bdc3c7' : '#555';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    if (count > 5) {
+      const cy = up ? y + ph - 15 - 4 * 28 : y + 15 + 4 * 28;
+      ctx.fillStyle = '#fff';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(count, x + pw/2, cy + 4);
+    }
+  }
+  // Bar
+  ctx.fillStyle = '#5c3317';
+  ctx.fillRect(380, 45, 55, 390);
+  ctx.fillStyle = '#fff';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('BAR', 407, 240);
+  for (let i = 0; i < bar.white; i++) {
+    ctx.beginPath(); ctx.arc(407, 350 + i * 25, 10, 0, Math.PI*2);
+    ctx.fillStyle = '#ecf0f1'; ctx.fill(); ctx.strokeStyle = '#999'; ctx.stroke();
+  }
+  for (let i = 0; i < bar.black; i++) {
+    ctx.beginPath(); ctx.arc(407, 130 - i * 25, 10, 0, Math.PI*2);
+    ctx.fillStyle = '#1a1a1a'; ctx.fill(); ctx.strokeStyle = '#555'; ctx.stroke();
+  }
+  // Bear off tray
+  ctx.fillStyle = '#2c3e50';
+  ctx.fillRect(735, 250, 18, 180);
+  ctx.fillRect(735, 50, 18, 180);
+  ctx.fillStyle = '#fff';
+  ctx.font = '10px sans-serif';
+  ctx.save();
+  ctx.translate(744, 340);
+  ctx.rotate(-Math.PI/2);
+  ctx.fillText('白:' + off.white, 0, 4);
+  ctx.restore();
+  ctx.save();
+  ctx.translate(744, 140);
+  ctx.rotate(-Math.PI/2);
+  ctx.fillText('黑:' + off.black, 0, 4);
+  ctx.restore();
+  // Valid move highlights
+  validMoves.forEach(m => {
+    if (m.to === 'off') {
+      ctx.fillStyle = 'rgba(46,204,113,0.5)';
+      ctx.fillRect(735, 250, 18, 180);
+    } else {
+      let x, y;
+      const i = m.to;
+      if (i < 6) { x = 440 + i * pw + pw/2; y = 390; }
+      else if (i < 12) { x = 440 + (i-6) * pw + pw/2; y = 60; }
+      else if (i < 18) { x = 60 + (i-12) * pw + pw/2; y = 390; }
+      else { x = 60 + (i-18) * pw + pw/2; y = 60; }
+      ctx.beginPath();
+      ctx.arc(x, y, 14, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(46,204,113,0.6)';
+      ctx.fill();
+    }
+  });
+  // Dice
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'center';
+  dice.forEach((d, i) => {
+    const dx = 360 + i * 40, dy = 455;
+    ctx.fillStyle = movesLeft.includes(d) ? '#f1c40f' : '#666';
+    ctx.fillRect(dx, dy - 15, 30, 30);
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(d, dx + 15, dy + 6);
+  });
+  // Info
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(message, 60, 465);
+  ctx.textAlign = 'right';
+  ctx.fillText(turn === 'white' ? '你的回合' : 'AI回合', 740, 465);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 46px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('双 陆 棋', W/2, 140);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('Backgammon', W/2, 180);
+  // Draw sample checkers
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath(); ctx.arc(W/2 - 80 + i*40, 250, 15, 0, Math.PI*2);
+    ctx.fillStyle = i < 3 ? '#ecf0f1' : '#1a1a1a';
+    ctx.fill(); ctx.strokeStyle = '#888'; ctx.stroke();
+  }
+  ctx.fillStyle = '#888';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('白色(你) vs 黑色(AI)，先将15颗棋子全部移出者胜', W/2, 320);
+  ctx.fillText('点击棋子选择，绿色高亮为可移动位置', W/2, 350);
+  ctx.fillText('掷出 doubles 可移动4次', W/2, 375);
+  drawBtn(W/2-80, 410, 160, 42, '开始游戏', 'start', '#e94560');
+}
+
+function drawBtn(x, y, w, h, text, id, color) {
+  const hover = btnHover === id;
+  ctx.fillStyle = hover ? (color||'#4a9') : '#333';
+  ctx.strokeStyle = color || '#4a9';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 5);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = hover ? '#111' : '#eee';
+  ctx.font = 'bold 15px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x+w/2, y+h/2);
+}
+
+function drawResult() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  const won = off.white === 15;
+  ctx.fillStyle = won ? '#4f4' : '#f44';
+  ctx.font = 'bold 40px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(won ? '你赢了!' : 'AI获胜!', W/2, 180);
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('白方移出: ' + off.white + '/15', W/2, 250);
+  ctx.fillText('黑方移出: ' + off.black + '/15', W/2, 285);
+  drawBtn(W/2-80, 380, 160, 40, '再来一局', 'restart', '#4a9');
+}
+
+function pointFromClick(mx, my) {
+  const pw = 48;
+  // Check bar click
+  if (mx > 380 && mx < 435 && my > 45 && my < 435) return 'bar';
+  // Check bear off
+  if (mx > 735 && mx < 755 && my > 250 && my < 430) return 'off';
+  for (let i = 0; i < 24; i++) {
+    let x, yTop, yBot;
+    if (i < 6) { x = 440 + i * pw; yTop = 245; yBot = 395; }
+    else if (i < 12) { x = 440 + (i-6) * pw; yTop = 50; yBot = 200; }
+    else if (i < 18) { x = 60 + (i-12) * pw; yTop = 245; yBot = 395; }
+    else { x = 60 + (i-18) * pw; yTop = 50; yBot = 200; }
+    if (mx > x && mx < x + pw && my > yTop && my < yBot) return i;
+  }
+  return -1;
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (state === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 410 && my < 452) { initBoard(); state = 'game'; rollDice(); }
+    return;
+  }
+  if (state === 'result') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 380 && my < 420) { state = 'title'; }
+    return;
+  }
+  if (state !== 'game' || turn !== 'white' || gameOver) return;
+  const pt = pointFromClick(mx, my);
+  // If bar has checkers, must enter first
+  if (bar.white > 0) {
+    if (pt === 'bar' || selected === 'bar') {
+      if (selected === 'bar') {
+        const move = validMoves.find(m => m.to === pt || (pt === 'off' && m.to === 'off'));
+        if (move) { makeMove('bar', move, 'white'); if (movesLeft.length === 0 && !gameOver) endTurn(); }
+        else { selected = -1; validMoves = []; }
+      } else {
+        selected = 'bar';
+        validMoves = getValidMoves('bar', 'white');
+      }
+    }
+    return;
+  }
+  if (pt === 'off' && selected >= 0) {
+    const move = validMoves.find(m => m.to === 'off');
+    if (move) { makeMove(selected, move, 'white'); if (movesLeft.length === 0 && !gameOver) endTurn(); }
+    return;
+  }
+  if (selected >= 0) {
+    const move = validMoves.find(m => m.to === pt);
+    if (move) { makeMove(selected, move, 'white'); if (movesLeft.length === 0 && !gameOver) endTurn(); return; }
+  }
+  if (pt >= 0 && pt < 24 && board[pt] > 0) {
+    selected = pt;
+    validMoves = getValidMoves(pt, 'white');
+  } else { selected = -1; validMoves = []; }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  btnHover = '';
+  if (state === 'title' && mx > W/2-80 && mx < W/2+80 && my > 410 && my < 452) btnHover = 'start';
+  if (state === 'result' && mx > W/2-80 && mx < W/2+80 && my > 380 && my < 420) btnHover = 'restart';
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (state === 'title') drawTitle();
+  else if (state === 'game') drawBoard();
+  else if (state === 'result') drawResult();
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

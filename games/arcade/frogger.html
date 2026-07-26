@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>青蛙过河</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let score = 0;
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const STATE = { TITLE: 0, PLAYING: 1, GAMEOVER: 2, LEVELUP: 3 };
+let state = STATE.TITLE;
+let lives = 3;
+let level = 1;
+let shakeTimer = 0, shakeIntensity = 0;
+let timer = 0;
+let maxTime = 600; // frames (10 seconds at 60fps)
+let deathAnim = 0;
+
+// Frog
+const CELL = 40;
+const frog = { x: W/2, y: H - 30, size: 30, targetX: W/2, targetY: H - 30, hopping: false, hopProgress: 0 };
+const HOP_DIST = 40;
+
+// Home slots
+const homes = [];
+const HOME_COUNT = 5;
+const HOME_W = 50;
+const homeGap = (W - HOME_COUNT * HOME_W) / (HOME_COUNT + 1);
+for (let i = 0; i < HOME_COUNT; i++) {
+  homes.push({ x: homeGap + i * (HOME_W + homeGap) + HOME_W/2, filled: false });
+}
+
+// Lanes configuration
+// Row 0: homes (y=10)
+// Rows 1-5: river (logs/turtles)
+// Row 6: median (safe)
+// Rows 7-11: road (cars)
+// Row 12: start (safe)
+const LANE_H = 36;
+const LANE_Y_START = 46; // first lane top
+
+// Lane definitions: type, speed, direction, items
+let lanes = [];
+
+function createLanes() {
+  lanes = [];
+  const spd = 1 + level * 0.2;
+  // River lanes (rows 1-5 from top)
+  const riverConfigs = [
+    { type: 'log', speed: 1.2*spd, dir: 1, count: 3, len: 100 },
+    { type: 'turtle', speed: 0.9*spd, dir: -1, count: 4, len: 60 },
+    { type: 'log', speed: 1.5*spd, dir: 1, count: 2, len: 140 },
+    { type: 'turtle', speed: 1.1*spd, dir: -1, count: 5, len: 50 },
+    { type: 'log', speed: 0.8*spd, dir: 1, count: 3, len: 110 },
+  ];
+  // Road lanes (rows 7-11)
+  const roadConfigs = [
+    { type: 'car', speed: 1.4*spd, dir: -1, count: 3, len: 36, color: '#ff4444' },
+    { type: 'truck', speed: 1.0*spd, dir: 1, count: 2, len: 60, color: '#ffaa00' },
+    { type: 'car', speed: 1.8*spd, dir: -1, count: 4, len: 34, color: '#ff66ff' },
+    { type: 'car', speed: 1.2*spd, dir: 1, count: 3, len: 38, color: '#44aaff' },
+    { type: 'truck', speed: 0.7*spd, dir: -1, count: 2, len: 65, color: '#ffff44' },
+  ];
+
+  for (let i = 0; i < 5; i++) {
+    const cfg = riverConfigs[i];
+    const items = [];
+    const gap = W / cfg.count;
+    for (let j = 0; j < cfg.count; j++) {
+      items.push({ x: j * gap, w: cfg.len });
+    }
+    lanes.push({ ...cfg, y: LANE_Y_START + i * LANE_H, items, isRiver: true });
+  }
+
+  for (let i = 0; i < 5; i++) {
+    const cfg = roadConfigs[i];
+    const items = [];
+    const gap = W / cfg.count;
+    for (let j = 0; j < cfg.count; j++) {
+      items.push({ x: j * gap, w: cfg.len });
+    }
+    lanes.push({ ...cfg, y: LANE_Y_START + (i + 6) * LANE_H, items, isRiver: false });
+  }
+}
+
+// Particles
+let particles = [];
+
+// Input
+let keys = {};
+let lastHop = 0;
+document.addEventListener('keydown', e => {
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  keys[e.code] = true;
+  if (e.code === 'Space') {
+    if (state === STATE.TITLE) startGame();
+    else if (state === STATE.GAMEOVER) state = STATE.TITLE;
+    else if (state === STATE.LEVELUP) nextLevel();
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+canvas.addEventListener('click', () => {
+  if (state === STATE.TITLE) startGame();
+  else if (state === STATE.GAMEOVER) state = STATE.TITLE;
+  else if (state === STATE.LEVELUP) nextLevel();
+});
+
+function startGame() {
+  state = STATE.PLAYING;
+  score = 0; lives = 3; level = 1;
+  resetFrog();
+  createLanes();
+  homes.forEach(h => h.filled = false);
+  particles = [];
+  maxTime = 600;
+}
+
+function nextLevel() {
+  level++;
+  state = STATE.PLAYING;
+  resetFrog();
+  createLanes();
+  homes.forEach(h => h.filled = false);
+  maxTime = Math.max(360, 600 - level * 30);
+}
+
+function resetFrog() {
+  frog.x = W/2;
+  frog.y = H - 30;
+  frog.hopping = false;
+  frog.hopProgress = 0;
+  timer = 0;
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = Math.random() * 3 + 1;
+    particles.push({ x, y, vx: Math.cos(angle)*spd, vy: Math.sin(angle)*spd, life: 1, decay: 0.03, color, size: Math.random()*4+2 });
+  }
+}
+
+function triggerShake(i, d) { shakeIntensity = i; shakeTimer = d; }
+
+function killFrog() {
+  lives--;
+  spawnParticles(frog.x, frog.y, '#0f0', 15);
+  triggerShake(5, 10);
+  deathAnim = 30;
+  if (lives <= 0) {
+    state = STATE.GAMEOVER;
+  } else {
+    resetFrog();
+  }
+}
+
+function update() {
+  if (state !== STATE.PLAYING) return;
+  if (deathAnim > 0) { deathAnim--; return; }
+
+  // Timer
+  timer++;
+  if (timer >= maxTime) { killFrog(); return; }
+
+  // Frog hopping
+  if (!frog.hopping) {
+    let dx = 0, dy = 0;
+    if (keys['ArrowUp'] || keys['KeyW']) dy = -HOP_DIST;
+    else if (keys['ArrowDown'] || keys['KeyS']) dy = HOP_DIST;
+    else if (keys['ArrowLeft'] || keys['KeyA']) dx = -HOP_DIST;
+    else if (keys['ArrowRight'] || keys['KeyD']) dx = HOP_DIST;
+
+    if (dx !== 0 || dy !== 0) {
+      frog.hopping = true;
+      frog.hopProgress = 0;
+      frog.startX = frog.x;
+      frog.startY = frog.y;
+      frog.targetX = Math.max(15, Math.min(W - 15, frog.x + dx));
+      frog.targetY = Math.max(20, Math.min(H - 15, frog.y + dy));
+      if (dy < 0) score += 10; // forward progress bonus
+    }
+  } else {
+    frog.hopProgress += 0.15;
+    if (frog.hopProgress >= 1) {
+      frog.hopProgress = 1;
+      frog.hopping = false;
+      frog.x = frog.targetX;
+      frog.y = frog.targetY;
+    } else {
+      frog.x = frog.startX + (frog.targetX - frog.startX) * frog.hopProgress;
+      frog.y = frog.startY + (frog.targetY - frog.startY) * frog.hopProgress;
+    }
+  }
+
+  // Update lanes
+  let onLog = false;
+  let logDx = 0;
+
+  for (let lane of lanes) {
+    for (let item of lane.items) {
+      item.x += lane.speed * lane.dir;
+      // Wrap around
+      if (lane.dir > 0 && item.x > W + item.w) item.x = -item.w;
+      if (lane.dir < 0 && item.x + item.w < -item.w) item.x = W + item.w;
+    }
+
+    // Check collision with frog
+    const frogRow = frog.y;
+    if (frogRow > lane.y - 5 && frogRow < lane.y + LANE_H - 5) {
+      if (lane.isRiver) {
+        // Must be on a log/turtle
+        let foundPlatform = false;
+        for (let item of lane.items) {
+          if (frog.x > item.x - 5 && frog.x < item.x + item.w + 5) {
+            foundPlatform = true;
+            onLog = true;
+            logDx = lane.speed * lane.dir;
+            break;
+          }
+        }
+        if (!foundPlatform && !frog.hopping) {
+          killFrog();
+          return;
+        }
+      } else {
+        // Road - cars kill
+        for (let item of lane.items) {
+          if (frog.x > item.x - 10 && frog.x < item.x + item.w + 10) {
+            killFrog();
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // Move frog with log
+  if (onLog && !frog.hopping) {
+    frog.x += logDx;
+    if (frog.x < 5 || frog.x > W - 5) { killFrog(); return; }
+  }
+
+  // Check home arrival
+  if (frog.y < LANE_Y_START) {
+    let landed = false;
+    for (let home of homes) {
+      if (!home.filled && Math.abs(frog.x - home.x) < HOME_W/2) {
+        home.filled = true;
+        landed = true;
+        score += 100 + Math.floor((maxTime - timer) / 10);
+        spawnParticles(home.x, 25, '#0f0', 12);
+        break;
+      }
+    }
+    if (!landed) {
+      killFrog();
+      return;
+    }
+    // Check all homes filled
+    if (homes.every(h => h.filled)) {
+      score += 500;
+      state = STATE.LEVELUP;
+    } else {
+      resetFrog();
+    }
+  }
+
+  // Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.08;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  if (shakeTimer > 0) shakeTimer--;
+}
+
+function draw() {
+  ctx.save();
+  if (shakeTimer > 0) {
+    ctx.translate((Math.random()-0.5)*shakeIntensity, (Math.random()-0.5)*shakeIntensity);
+  }
+
+  // Background
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE.TITLE) { drawTitle(); ctx.restore(); return; }
+  if (state === STATE.GAMEOVER) { drawGameOver(); ctx.restore(); return; }
+  if (state === STATE.LEVELUP) { drawLevelUp(); ctx.restore(); return; }
+
+  // Draw zones
+  // Home zone
+  ctx.fillStyle = '#0a3d0a';
+  ctx.fillRect(0, 0, W, LANE_Y_START);
+  // Home slots
+  for (let home of homes) {
+    ctx.fillStyle = home.filled ? '#0f0' : '#033';
+    ctx.fillRect(home.x - HOME_W/2, 5, HOME_W, 36);
+    ctx.strokeStyle = '#0a0';
+    ctx.strokeRect(home.x - HOME_W/2, 5, HOME_W, 36);
+    if (home.filled) {
+      drawFrogSprite(home.x, 23, 20);
+    }
+  }
+
+  // River zone
+  ctx.fillStyle = '#001a4d';
+  ctx.fillRect(0, LANE_Y_START, W, LANE_H * 5);
+
+  // Median
+  ctx.fillStyle = '#2d2d0a';
+  ctx.fillRect(0, LANE_Y_START + LANE_H * 5, W, LANE_H);
+
+  // Road zone
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, LANE_Y_START + LANE_H * 6, W, LANE_H * 5);
+  // Road lines
+  ctx.strokeStyle = '#444';
+  ctx.setLineDash([20, 15]);
+  for (let i = 1; i < 5; i++) {
+    const ly = LANE_Y_START + LANE_H * 6 + i * LANE_H;
+    ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(W, ly); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Start zone
+  ctx.fillStyle = '#0a3d0a';
+  ctx.fillRect(0, LANE_Y_START + LANE_H * 11, W, H);
+
+  // Draw lane items
+  for (let lane of lanes) {
+    for (let item of lane.items) {
+      if (lane.isRiver) {
+        if (lane.type === 'log') {
+          ctx.fillStyle = '#8B4513';
+          ctx.fillRect(item.x, lane.y + 4, item.w, LANE_H - 8);
+          ctx.fillStyle = '#A0522D';
+          ctx.fillRect(item.x + 3, lane.y + 6, item.w - 6, 4);
+          ctx.strokeStyle = '#654321';
+          ctx.strokeRect(item.x, lane.y + 4, item.w, LANE_H - 8);
+        } else {
+          // Turtles
+          const tCount = Math.floor(item.w / 30);
+          for (let t = 0; t < tCount; t++) {
+            ctx.fillStyle = '#2a8a2a';
+            ctx.beginPath();
+            ctx.ellipse(item.x + 15 + t * 30, lane.y + LANE_H/2, 12, 10, 0, 0, Math.PI*2);
+            ctx.fill();
+            ctx.fillStyle = '#1a6a1a';
+            ctx.beginPath();
+            ctx.ellipse(item.x + 15 + t * 30, lane.y + LANE_H/2, 7, 6, 0, 0, Math.PI*2);
+            ctx.fill();
+          }
+        }
+      } else {
+        // Vehicles
+        ctx.fillStyle = lane.color;
+        ctx.shadowColor = lane.color;
+        ctx.shadowBlur = 4;
+        const vy = lane.y + 5;
+        const vh = LANE_H - 10;
+        ctx.fillRect(item.x, vy, item.w, vh);
+        // Windows
+        ctx.fillStyle = 'rgba(200,255,255,0.5)';
+        if (lane.type === 'car') {
+          ctx.fillRect(item.x + item.w*0.2, vy + 3, item.w*0.25, vh - 6);
+        } else {
+          ctx.fillRect(item.x + 4, vy + 3, 12, vh - 6);
+        }
+        ctx.shadowBlur = 0;
+      }
+    }
+  }
+
+  // Draw frog
+  if (deathAnim <= 0) {
+    const hopOffset = frog.hopping ? Math.sin(frog.hopProgress * Math.PI) * 8 : 0;
+    drawFrogSprite(frog.x, frog.y - hopOffset, frog.size);
+  }
+
+  // Particles
+  for (let p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+
+  // HUD
+  ctx.fillStyle = '#fff';
+  ctx.font = '15px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('分数: ' + score, 10, H - 8);
+  ctx.textAlign = 'center';
+  ctx.fillText('关卡: ' + level, W/2, H - 8);
+  ctx.textAlign = 'right';
+  ctx.fillText('生命: ' + '🐸'.repeat(lives), W - 10, H - 8);
+
+  // Timer bar
+  const timeRatio = 1 - timer / maxTime;
+  ctx.fillStyle = timeRatio > 0.3 ? '#0f0' : '#f00';
+  ctx.fillRect(0, H - 3, W * timeRatio, 3);
+
+  ctx.restore();
+}
+
+function drawFrogSprite(x, y, size) {
+  const s = size / 2;
+  // Body
+  ctx.fillStyle = '#00dd00';
+  ctx.shadowColor = '#00ff00';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.ellipse(x, y, s * 0.7, s * 0.8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  // Eyes
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(x - s*0.35, y - s*0.5, s*0.22, 0, Math.PI*2);
+  ctx.arc(x + s*0.35, y - s*0.5, s*0.22, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(x - s*0.35, y - s*0.5, s*0.1, 0, Math.PI*2);
+  ctx.arc(x + s*0.35, y - s*0.5, s*0.1, 0, Math.PI*2);
+  ctx.fill();
+  // Legs
+  ctx.strokeStyle = '#00aa00';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x - s*0.5, y + s*0.3); ctx.lineTo(x - s*0.9, y + s*0.7);
+  ctx.moveTo(x + s*0.5, y + s*0.3); ctx.lineTo(x + s*0.9, y + s*0.7);
+  ctx.moveTo(x - s*0.5, y - s*0.1); ctx.lineTo(x - s*0.9, y - s*0.3);
+  ctx.moveTo(x + s*0.5, y - s*0.1); ctx.lineTo(x + s*0.9, y - s*0.3);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#0f0';
+  ctx.font = 'bold 46px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#0f0';
+  ctx.shadowBlur = 20;
+  ctx.fillText('青蛙过河', W/2, H/2 - 70);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px monospace';
+  ctx.fillText('FROGGER', W/2, H/2 - 30);
+  drawFrogSprite(W/2, H/2 + 20, 50);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '15px monospace';
+  ctx.fillText('方向键控制青蛙跳跃', W/2, H/2 + 70);
+  ctx.fillText('躲避车辆，搭乘木头过河，到达对岸！', W/2, H/2 + 95);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '16px monospace';
+  ctx.fillText('点击或按空格开始', W/2, H/2 + 140);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = '#f00';
+  ctx.font = 'bold 44px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#f00';
+  ctx.shadowBlur = 20;
+  ctx.fillText('游戏结束', W/2, H/2 - 40);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px monospace';
+  ctx.fillText('最终分数: ' + score, W/2, H/2 + 10);
+  ctx.fillText('到达关卡: ' + level, W/2, H/2 + 45);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '16px monospace';
+  ctx.fillText('点击返回标题', W/2, H/2 + 100);
+}
+
+function drawLevelUp() {
+  ctx.fillStyle = '#0ff';
+  ctx.font = 'bold 38px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#0ff';
+  ctx.shadowBlur = 15;
+  ctx.fillText('关卡 ' + level + ' 完成!', W/2, H/2 - 30);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px monospace';
+  ctx.fillText('分数: ' + score, W/2, H/2 + 15);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '16px monospace';
+  ctx.fillText('点击进入第 ' + (level+1) + ' 关', W/2, H/2 + 60);
+}
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

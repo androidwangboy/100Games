@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>知识问答 Trivia Quiz</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let state = 'title'; // title, category, playing, answer, result
+let btnHover = '';
+let message = '';
+let highScore = parseInt(localStorage.getItem('trivia_high') || '0');
+
+let questions = [];
+let currentQ = 0;
+let totalQ = 10;
+let correct = 0;
+let streak = 0;
+let bestStreak = 0;
+let timeLeft = 15;
+let timerInterval = null;
+let selectedAnswer = -1;
+let showCorrect = false;
+let chosenCategory = 'all';
+let answered = false;
+
+const CATEGORIES = [
+  { id: 'science', name: '科学', color: '#3498db' },
+  { id: 'history', name: '历史', color: '#e74c3c' },
+  { id: 'geography', name: '地理', color: '#2ecc71' },
+  { id: 'culture', name: '文化', color: '#f39c12' },
+  { id: 'all', name: '综合', color: '#9b59b6' }
+];
+
+const ALL_QUESTIONS = [
+  { cat: 'science', q: '水的化学式是什么?', opts: ['H2O', 'CO2', 'NaCl', 'O2'], ans: 0, diff: 1 },
+  { cat: 'science', q: '光在真空中的速度约为?', opts: ['30万km/s', '15万km/s', '3万km/s', '300万km/s'], ans: 0, diff: 1 },
+  { cat: 'science', q: '人体最大的器官是?', opts: ['皮肤', '肝脏', '大脑', '肺'], ans: 0, diff: 1 },
+  { cat: 'science', q: 'DNA的双螺旋结构由谁发现?', opts: ['沃森和克里克', '达尔文', '牛顿', '爱因斯坦'], ans: 0, diff: 2 },
+  { cat: 'science', q: '元素周期表中原子序数为1的是?', opts: ['氢', '氦', '氧', '碳'], ans: 0, diff: 1 },
+  { cat: 'science', q: '地球绕太阳一周约需多少天?', opts: ['365天', '360天', '370天', '355天'], ans: 0, diff: 1 },
+  { cat: 'science', q: '绝对零度是多少摄氏度?', opts: ['-273.15°C', '-100°C', '-459°C', '0°C'], ans: 0, diff: 2 },
+  { cat: 'science', q: '哪种气体占大气比例最高?', opts: ['氮气', '氧气', '二氧化碳', '氩气'], ans: 0, diff: 1 },
+  { cat: 'science', q: '量子力学中的测不准原理由谁提出?', opts: ['海森堡', '玻尔', '薛定谔', '狄拉克'], ans: 0, diff: 3 },
+  { cat: 'science', q: '人体有多少对染色体?', opts: ['23对', '22对', '24对', '46对'], ans: 0, diff: 2 },
+  { cat: 'science', q: '光合作用主要发生在细胞的哪个结构?', opts: ['叶绿体', '线粒体', '核糖体', '内质网'], ans: 0, diff: 2 },
+  { cat: 'science', q: '声音在哪种介质中传播最快?', opts: ['固体', '液体', '气体', '真空'], ans: 0, diff: 2 },
+  { cat: 'science', q: '太阳系中最大的行星是?', opts: ['木星', '土星', '天王星', '海王星'], ans: 0, diff: 1 },
+  { cat: 'history', q: '中国第一个封建王朝是?', opts: ['秦朝', '汉朝', '周朝', '商朝'], ans: 0, diff: 1 },
+  { cat: 'history', q: '第二次世界大战结束于哪一年?', opts: ['1945年', '1944年', '1946年', '1943年'], ans: 0, diff: 1 },
+  { cat: 'history', q: '万里长城主要修建于哪个朝代达到最大规模?', opts: ['明朝', '秦朝', '汉朝', '唐朝'], ans: 0, diff: 2 },
+  { cat: 'history', q: '法国大革命爆发于哪一年?', opts: ['1789年', '1776年', '1799年', '1804年'], ans: 0, diff: 2 },
+  { cat: 'history', q: '古埃及人建造金字塔的主要目的是?', opts: ['法老陵墓', '天文观测', '宗教祭祀', '粮食储存'], ans: 0, diff: 1 },
+  { cat: 'history', q: '丝绸之路的起点城市是?', opts: ['长安', '洛阳', '北京', '南京'], ans: 0, diff: 2 },
+  { cat: 'history', q: '第一次工业革命起源于哪个国家?', opts: ['英国', '法国', '德国', '美国'], ans: 0, diff: 1 },
+  { cat: 'history', q: '唐朝的开国皇帝是谁?', opts: ['李渊', '李世民', '李隆基', '李白'], ans: 0, diff: 2 },
+  { cat: 'history', q: '文艺复兴运动起源于哪个国家?', opts: ['意大利', '法国', '英国', '希腊'], ans: 0, diff: 2 },
+  { cat: 'history', q: '人类首次登月是在哪一年?', opts: ['1969年', '1965年', '1972年', '1961年'], ans: 0, diff: 1 },
+  { cat: 'history', q: '《史记》的作者是谁?', opts: ['司马迁', '司马光', '班固', '左丘明'], ans: 0, diff: 2 },
+  { cat: 'history', q: '奥斯曼帝国攻陷君士坦丁堡是哪一年?', opts: ['1453年', '1492年', '1389年', '1517年'], ans: 0, diff: 3 },
+  { cat: 'history', q: '中国的科举制度始于哪个朝代?', opts: ['隋朝', '唐朝', '宋朝', '汉朝'], ans: 0, diff: 3 },
+  { cat: 'geography', q: '世界上面积最大的国家是?', opts: ['俄罗斯', '加拿大', '中国', '美国'], ans: 0, diff: 1 },
+  { cat: 'geography', q: '世界上最长的河流是?', opts: ['尼罗河', '亚马逊河', '长江', '密西西比河'], ans: 0, diff: 1 },
+  { cat: 'geography', q: '澳大利亚的首都是?', opts: ['堪培拉', '悉尼', '墨尔本', '布里斯班'], ans: 0, diff: 2 },
+  { cat: 'geography', q: '世界上最高的山峰是?', opts: ['珠穆朗玛峰', 'K2', '干城章嘉峰', '洛子峰'], ans: 0, diff: 1 },
+  { cat: 'geography', q: '撒哈拉沙漠位于哪个大洲?', opts: ['非洲', '亚洲', '大洋洲', '南美洲'], ans: 0, diff: 1 },
+  { cat: 'geography', q: '日本由几个主要大岛组成?', opts: ['4个', '3个', '5个', '6个'], ans: 0, diff: 2 },
+  { cat: 'geography', q: '亚马逊雨林主要位于哪个国家?', opts: ['巴西', '秘鲁', '哥伦比亚', '委内瑞拉'], ans: 0, diff: 2 },
+  { cat: 'geography', q: '地中海位于哪两个大洲之间?', opts: ['欧洲和非洲', '亚洲和非洲', '欧洲和亚洲', '非洲和大洋洲'], ans: 0, diff: 1 },
+  { cat: 'geography', q: '世界上人口最多的城市是?', opts: ['东京', '上海', '德里', '北京'], ans: 0, diff: 2 },
+  { cat: 'geography', q: '马里亚纳海沟位于哪个大洋?', opts: ['太平洋', '大西洋', '印度洋', '北冰洋'], ans: 0, diff: 2 },
+  { cat: 'geography', q: '冰岛位于哪两个板块的交界处?', opts: ['欧亚和北美', '太平洋和北美', '非洲和欧亚', '南美和非洲'], ans: 0, diff: 3 },
+  { cat: 'geography', q: '尼罗河流经几个国家?', opts: ['11个', '5个', '7个', '3个'], ans: 0, diff: 3 },
+  { cat: 'culture', q: '《蒙娜丽莎》的作者是谁?', opts: ['达芬奇', '米开朗基罗', '拉斐尔', '毕加索'], ans: 0, diff: 1 },
+  { cat: 'culture', q: '京剧中的"生旦净丑"，"旦"指的是?', opts: ['女性角色', '男性角色', '花脸角色', '丑角'], ans: 0, diff: 2 },
+  { cat: 'culture', q: '《哈利·波特》系列的作者是谁?', opts: ['J.K.罗琳', '托尔金', '斯蒂芬·金', '乔治·马丁'], ans: 0, diff: 1 },
+  { cat: 'culture', q: '奥运会五环旗中，蓝色环代表哪个大洲?', opts: ['欧洲', '亚洲', '非洲', '大洋洲'], ans: 0, diff: 2 },
+  { cat: 'culture', q: '世界上使用人数最多的语言是?', opts: ['中文', '英语', '西班牙语', '印地语'], ans: 0, diff: 1 },
+  { cat: 'culture', q: '莎士比亚是哪国人?', opts: ['英国', '法国', '意大利', '德国'], ans: 0, diff: 1 },
+  { cat: 'culture', q: '《清明上河图》描绘的是哪个城市?', opts: ['开封', '北京', '杭州', '南京'], ans: 0, diff: 2 },
+  { cat: 'culture', q: '格莱美奖是哪个领域的最高荣誉?', opts: ['音乐', '电影', '文学', '戏剧'], ans: 0, diff: 1 },
+  { cat: 'culture', q: '寿司起源于哪个国家?', opts: ['日本', '中国', '韩国', '泰国'], ans: 0, diff: 1 },
+  { cat: 'culture', q: '《百年孤独》的作者马尔克斯是哪国人?', opts: ['哥伦比亚', '墨西哥', '阿根廷', '智利'], ans: 0, diff: 3 },
+  { cat: 'culture', q: '世界上第一部电影诞生于哪一年?', opts: ['1895年', '1900年', '1888年', '1905年'], ans: 0, diff: 3 },
+  { cat: 'culture', q: '中国的四大名著不包括以下哪部?', opts: ['聊斋志异', '红楼梦', '西游记', '水浒传'], ans: 0, diff: 2 },
+  { cat: 'culture', q: '贝多芬的第九交响曲又被称为?', opts: ['合唱交响曲', '命运交响曲', '田园交响曲', '英雄交响曲'], ans: 0, diff: 2 },
+  { cat: 'culture', q: '奥斯卡金像奖的小金人手持什么?', opts: ['宝剑', '权杖', '花环', '盾牌'], ans: 0, diff: 3 },
+  { cat: 'culture', q: '世界上最大的博物馆是?', opts: ['卢浮宫', '大英博物馆', '大都会博物馆', '故宫博物院'], ans: 0, diff: 2 },
+  { cat: 'culture', q: '探戈舞起源于哪个国家?', opts: ['阿根廷', '西班牙', '巴西', '古巴'], ans: 0, diff: 2 }
+];
+
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function startGame(category) {
+  chosenCategory = category;
+  let pool = category === 'all' ? ALL_QUESTIONS : ALL_QUESTIONS.filter(q => q.cat === category);
+  pool = shuffleArray(pool);
+  // Sort by difficulty for progression
+  pool.sort((a, b) => a.diff - b.diff);
+  questions = pool.slice(0, Math.min(totalQ, pool.length));
+  // Shuffle options for each question
+  questions = questions.map(q => {
+    const indices = [0, 1, 2, 3];
+    const shuffled = shuffleArray(indices);
+    return {
+      ...q,
+      opts: shuffled.map(i => q.opts[i]),
+      ans: shuffled.indexOf(q.ans)
+    };
+  });
+  currentQ = 0; correct = 0; streak = 0; bestStreak = 0; score = 0;
+  answered = false; selectedAnswer = -1; showCorrect = false;
+  state = 'playing';
+  startTimer();
+}
+
+function startTimer() {
+  timeLeft = 15;
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    timeLeft--;
+    if (timeLeft <= 0) {
+      clearInterval(timerInterval);
+      if (!answered) timeUp();
+    }
+  }, 1000);
+}
+
+function timeUp() {
+  answered = true;
+  showCorrect = true;
+  streak = 0;
+  message = '时间到!';
+  state = 'answer';
+}
+
+function selectAnswer(idx) {
+  if (answered) return;
+  answered = true;
+  selectedAnswer = idx;
+  showCorrect = true;
+  clearInterval(timerInterval);
+  const q = questions[currentQ];
+  if (idx === q.ans) {
+    correct++;
+    streak++;
+    if (streak > bestStreak) bestStreak = streak;
+    const bonus = Math.min(streak - 1, 5) * 5;
+    const timeBonus = timeLeft * 2;
+    const diffBonus = q.diff * 10;
+    score += 10 + bonus + timeBonus + diffBonus;
+    message = '正确! +' + (10 + bonus + timeBonus + diffBonus) + '分' + (streak > 1 ? ' (连击x' + streak + ')' : '');
+  } else {
+    streak = 0;
+    message = '错误! 正确答案: ' + q.opts[q.ans];
+  }
+  state = 'answer';
+}
+
+function nextQuestion() {
+  currentQ++;
+  if (currentQ >= questions.length) {
+    if (score > highScore) { highScore = score; localStorage.setItem('trivia_high', '' + highScore); }
+    state = 'result';
+    return;
+  }
+  answered = false;
+  selectedAnswer = -1;
+  showCorrect = false;
+  message = '';
+  state = 'playing';
+  startTimer();
+}
+
+function drawBtn(x, y, w, h, text, id, color) {
+  const hover = btnHover === id;
+  ctx.fillStyle = hover ? (color || '#4a9') : '#2a2a3e';
+  ctx.strokeStyle = color || '#4a9';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 6);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = hover ? '#111' : '#eee';
+  ctx.font = 'bold 15px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w/2, y + h/2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('知识问答', W/2, 120);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('Trivia Quiz', W/2, 160);
+  // Decorative question marks
+  ctx.fillStyle = '#333';
+  ctx.font = 'bold 80px sans-serif';
+  ctx.fillText('?', 150, 300);
+  ctx.fillText('?', 650, 250);
+  ctx.fillText('!', 100, 180);
+  ctx.fillStyle = '#888';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('50+题目 | 科学·历史·地理·文化 | 15秒限时', W/2, 280);
+  ctx.fillText('连续答对获得连击奖励，难度递增', W/2, 310);
+  ctx.fillStyle = '#c9a227';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('最高分: ' + highScore, W/2, 350);
+  drawBtn(W/2 - 80, 390, 160, 45, '开始游戏', 'start', '#e94560');
+}
+
+function drawCategory() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('选择题目类别', W/2, 80);
+  CATEGORIES.forEach((cat, i) => {
+    const x = W/2 - 120, y = 120 + i * 65;
+    const hover = btnHover === 'cat_' + cat.id;
+    ctx.fillStyle = hover ? cat.color : '#2a2a3e';
+    ctx.strokeStyle = cat.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(x, y, 240, 50, 8);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = hover ? '#111' : '#eee';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(cat.name, x + 120, y + 30);
+    const count = cat.id === 'all' ? ALL_QUESTIONS.length : ALL_QUESTIONS.filter(q => q.cat === cat.id).length;
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = hover ? '#333' : '#888';
+    ctx.fillText(count + '题', x + 120, y + 45);
+  });
+}
+
+function drawPlaying() {
+  ctx.fillStyle = '#16213e';
+  ctx.fillRect(0, 0, W, H);
+  const q = questions[currentQ];
+  // Header
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('第 ' + (currentQ + 1) + '/' + questions.length + ' 题', 30, 30);
+  ctx.textAlign = 'right';
+  ctx.fillText('得分: ' + score, W - 30, 30);
+  if (streak > 1) {
+    ctx.fillStyle = '#f39c12';
+    ctx.fillText('连击 x' + streak, W - 30, 52);
+  }
+  // Timer bar
+  const tw = (W - 60) * (timeLeft / 15);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(30, 45, W - 60, 8);
+  ctx.fillStyle = timeLeft > 5 ? '#2ecc71' : '#e74c3c';
+  ctx.fillRect(30, 45, tw, 8);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(timeLeft + 's', W/2, 72);
+  // Category badge
+  const catInfo = CATEGORIES.find(c => c.id === q.cat);
+  ctx.fillStyle = catInfo ? catInfo.color : '#888';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('[' + (catInfo ? catInfo.name : '') + '] 难度' + '★'.repeat(q.diff), 30, 95);
+  // Question
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'center';
+  const words = q.q;
+  ctx.fillText(words, W/2, 140);
+  // Options
+  const optW = 340, optH = 50;
+  q.opts.forEach((opt, i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = 60 + col * (optW + 40), y = 180 + row * 70;
+    let bg = '#2a2a3e', border = '#555';
+    if (showCorrect) {
+      if (i === q.ans) { bg = '#1a5c2a'; border = '#2ecc71'; }
+      else if (i === selectedAnswer) { bg = '#5c1a1a'; border = '#e74c3c'; }
+    } else if (btnHover === 'opt_' + i) { bg = '#3a3a5e'; border = '#4a9'; }
+    ctx.fillStyle = bg;
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(x, y, optW, optH, 6);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(String.fromCharCode(65 + i) + '. ' + opt, x + 15, y + optH/2 + 5);
+  });
+  // Message
+  if (message) {
+    ctx.fillStyle = message.includes('正确') ? '#2ecc71' : '#e74c3c';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, W/2, 370);
+  }
+  if (state === 'answer') {
+    drawBtn(W/2 - 70, 400, 140, 40, currentQ < questions.length - 1 ? '下一题' : '查看结果', 'next', '#4a9');
+  }
+}
+
+function drawResult() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  const pct = Math.round(correct / questions.length * 100);
+  let rating = pct >= 90 ? '天才!' : pct >= 70 ? '博学!' : pct >= 50 ? '不错!' : pct >= 30 ? '继续学习!' : '再接再厉!';
+  ctx.fillStyle = pct >= 70 ? '#4f4' : pct >= 50 ? '#ff0' : '#f66';
+  ctx.font = 'bold 38px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(rating, W/2, 100);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('最终得分: ' + score, W/2, 170);
+  ctx.font = '18px sans-serif';
+  ctx.fillStyle = '#ccc';
+  ctx.fillText('正确: ' + correct + '/' + questions.length + ' (' + pct + '%)', W/2, 220);
+  ctx.fillText('最高连击: ' + bestStreak, W/2, 255);
+  ctx.fillStyle = '#c9a227';
+  ctx.fillText('历史最高: ' + highScore, W/2, 300);
+  if (score >= highScore && score > 0) {
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText('新纪录!', W/2, 330);
+  }
+  // Stats bar
+  ctx.fillStyle = '#333';
+  ctx.fillRect(200, 350, 400, 20);
+  ctx.fillStyle = '#2ecc71';
+  ctx.fillRect(200, 350, 400 * pct / 100, 20);
+  ctx.strokeStyle = '#555';
+  ctx.strokeRect(200, 350, 400, 20);
+  drawBtn(W/2 - 170, 400, 150, 40, '再来一局', 'restart', '#4a9');
+  drawBtn(W/2 + 20, 400, 150, 40, '返回标题', 'title', '#666');
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (state === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 390 && my < 435) state = 'category';
+    return;
+  }
+  if (state === 'category') {
+    CATEGORIES.forEach((cat, i) => {
+      const x = W/2 - 120, y = 120 + i * 65;
+      if (mx > x && mx < x + 240 && my > y && my < y + 50) startGame(cat.id);
+    });
+    return;
+  }
+  if (state === 'playing') {
+    const optW = 340, optH = 50;
+    for (let i = 0; i < 4; i++) {
+      const col = i % 2, row = Math.floor(i / 2);
+      const x = 60 + col * (optW + 40), y = 180 + row * 70;
+      if (mx > x && mx < x + optW && my > y && my < y + optH) { selectAnswer(i); return; }
+    }
+    return;
+  }
+  if (state === 'answer') {
+    if (mx > W/2-70 && mx < W/2+70 && my > 400 && my < 440) nextQuestion();
+    return;
+  }
+  if (state === 'result') {
+    if (mx > W/2-170 && mx < W/2-20 && my > 400 && my < 440) state = 'category';
+    if (mx > W/2+20 && mx < W/2+170 && my > 400 && my < 440) state = 'title';
+    return;
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  btnHover = '';
+  if (state === 'title' && mx > W/2-80 && mx < W/2+80 && my > 390 && my < 435) btnHover = 'start';
+  if (state === 'category') {
+    CATEGORIES.forEach((cat, i) => {
+      const x = W/2 - 120, y = 120 + i * 65;
+      if (mx > x && mx < x + 240 && my > y && my < y + 50) btnHover = 'cat_' + cat.id;
+    });
+  }
+  if (state === 'playing') {
+    const optW = 340, optH = 50;
+    for (let i = 0; i < 4; i++) {
+      const col = i % 2, row = Math.floor(i / 2);
+      const x = 60 + col * (optW + 40), y = 180 + row * 70;
+      if (mx > x && mx < x + optW && my > y && my < y + optH) btnHover = 'opt_' + i;
+    }
+  }
+  if (state === 'answer' && mx > W/2-70 && mx < W/2+70 && my > 400 && my < 440) btnHover = 'next';
+  if (state === 'result') {
+    if (mx > W/2-170 && mx < W/2-20 && my > 400 && my < 440) btnHover = 'restart';
+    if (mx > W/2+20 && mx < W/2+170 && my > 400 && my < 440) btnHover = 'title';
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (state === 'playing' && !answered) {
+    if (e.key === '1' || e.key === 'a' || e.key === 'A') selectAnswer(0);
+    if (e.key === '2' || e.key === 'b' || e.key === 'B') selectAnswer(1);
+    if (e.key === '3' || e.key === 'c' || e.key === 'C') selectAnswer(2);
+    if (e.key === '4' || e.key === 'd' || e.key === 'D') selectAnswer(3);
+  }
+  if (state === 'answer' && (e.code === 'Space' || e.code === 'Enter')) nextQuestion();
+});
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (state === 'title') drawTitle();
+  else if (state === 'category') drawCategory();
+  else if (state === 'playing' || state === 'answer') drawPlaying();
+  else if (state === 'result') drawResult();
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>战争 (War Card Game)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title'; // title, playing, war, result, gameover
+let playerDeck = [], aiDeck = [];
+let playerCard = null, aiCard = null;
+let warPile = [];
+let message = '';
+let animTimer = 0;
+let flipAnim = 0;
+let roundResult = '';
+let clickEnabled = true;
+
+const SUITS = ['♠','♥','♦','♣'];
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+const RED = '#e74c3c';
+const BLACK = '#ecf0f1';
+
+function createDeck() {
+  let deck = [];
+  for (let s = 0; s < 4; s++)
+    for (let r = 0; r < 13; r++)
+      deck.push({ suit: SUITS[s], rank: r, name: RANKS[r] });
+  return deck;
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function startGame() {
+  let deck = shuffle(createDeck());
+  playerDeck = deck.slice(0, 26);
+  aiDeck = deck.slice(26);
+  score = 0;
+  state = 'playing';
+  message = '点击翻牌';
+  playerCard = null;
+  aiCard = null;
+  warPile = [];
+  roundResult = '';
+  clickEnabled = true;
+}
+
+function flipCards() {
+  if (!clickEnabled) return;
+  if (playerDeck.length === 0 || aiDeck.length === 0) { endGame(); return; }
+  clickEnabled = false;
+  flipAnim = 0;
+  playerCard = playerDeck.shift();
+  aiCard = aiDeck.shift();
+  state = 'flipping';
+}
+
+function resolveRound() {
+  if (playerCard.rank > aiCard.rank) {
+    playerDeck.push(playerCard, aiCard, ...warPile);
+    score += 1 + warPile.length;
+    roundResult = '你赢了这轮!';
+    message = '点击继续';
+    warPile = [];
+    state = 'playing';
+  } else if (aiCard.rank > playerCard.rank) {
+    aiDeck.push(playerCard, aiCard, ...warPile);
+    roundResult = 'AI赢了这轮';
+    message = '点击继续';
+    warPile = [];
+    state = 'playing';
+  } else {
+    // WAR!
+    roundResult = '战争! 平局!';
+    state = 'war';
+    message = '战争! 点击放置3张暗牌';
+  }
+  clickEnabled = true;
+  if (playerDeck.length === 0 || aiDeck.length === 0) endGame();
+}
+
+function doWar() {
+  if (!clickEnabled) return;
+  clickEnabled = false;
+  let pCount = Math.min(3, playerDeck.length);
+  let aCount = Math.min(3, aiDeck.length);
+  for (let i = 0; i < pCount; i++) warPile.push(playerDeck.shift());
+  for (let i = 0; i < aCount; i++) warPile.push(aiDeck.shift());
+  if (playerDeck.length === 0 || aiDeck.length === 0) { endGame(); return; }
+  flipAnim = 0;
+  playerCard = playerDeck.shift();
+  aiCard = aiDeck.shift();
+  state = 'flipping';
+}
+
+function endGame() {
+  state = 'gameover';
+  score = playerDeck.length;
+  message = playerDeck.length > aiDeck.length ? '你赢了!' : '你输了!';
+}
+
+function drawCard(x, y, card, faceDown) {
+  ctx.save();
+  ctx.fillStyle = faceDown ? '#2c3e50' : '#fff';
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y, 80, 112, 8);
+  ctx.fill();
+  ctx.stroke();
+  if (faceDown) {
+    ctx.fillStyle = '#1a5276';
+    ctx.beginPath();
+    ctx.roundRect(x + 8, y + 8, 64, 96, 4);
+    ctx.fill();
+    ctx.fillStyle = '#2980b9';
+    ctx.font = '28px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('✦', x + 40, y + 64);
+  } else if (card) {
+    const color = (card.suit === '♥' || card.suit === '♦') ? RED : BLACK;
+    ctx.fillStyle = color === RED ? '#c0392b' : '#2c3e50';
+    ctx.font = 'bold 22px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(card.name, x + 8, y + 26);
+    ctx.font = '18px serif';
+    ctx.fillText(card.suit, x + 8, y + 48);
+    ctx.font = '36px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(card.suit, x + 40, y + 78);
+    ctx.font = 'bold 22px monospace';
+    ctx.textAlign = 'right';
+    ctx.save();
+    ctx.translate(x + 72, y + 104);
+    ctx.rotate(Math.PI);
+    ctx.textAlign = 'left';
+    ctx.fillText(card.name, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function draw() {
+  // Background - casino green felt
+  ctx.fillStyle = '#1a472a';
+  ctx.fillRect(0, 0, 800, 480);
+  // Felt texture
+  ctx.fillStyle = 'rgba(0,0,0,0.1)';
+  for (let i = 0; i < 800; i += 4) ctx.fillRect(i, 0, 1, 480);
+
+  if (state === 'title') {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = 'bold 52px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('⚔️ 战争 ⚔️', 400, 160);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '20px sans-serif';
+    ctx.fillText('War Card Game', 400, 200);
+    ctx.font = '16px sans-serif';
+    ctx.fillStyle = '#bdc3c7';
+    ctx.fillText('规则: 双方各翻一张牌，大者赢得两张牌', 400, 260);
+    ctx.fillText('平局则进入"战争"：各放3张暗牌+1张明牌', 400, 290);
+    ctx.fillText('赢得所有52张牌即获胜', 400, 320);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('[ 点击开始游戏 ]', 400, 400);
+    return;
+  }
+
+  if (state === 'gameover') {
+    ctx.fillStyle = playerDeck.length >= 26 ? '#f1c40f' : '#e74c3c';
+    ctx.font = 'bold 48px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, 400, 180);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '24px sans-serif';
+    ctx.fillText(`你的牌: ${playerDeck.length} 张`, 400, 240);
+    ctx.fillText(`AI的牌: ${aiDeck.length} 张`, 400, 280);
+    ctx.fillText(`得分: ${score}`, 400, 330);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText('[ 点击重新开始 ]', 400, 410);
+    return;
+  }
+
+  // HUD
+  ctx.fillStyle = '#ecf0f1';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`你的牌: ${playerDeck.length}`, 20, 30);
+  ctx.textAlign = 'right';
+  ctx.fillText(`AI的牌: ${aiDeck.length}`, 780, 30);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f1c40f';
+  ctx.fillText(`得分: ${score}`, 400, 30);
+
+  // AI area
+  ctx.fillStyle = '#bdc3c7';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('AI', 400, 65);
+  if (aiCard && (state === 'playing' || state === 'war')) drawCard(360, 75, aiCard, false);
+  else drawCard(360, 75, null, true);
+
+  // Center message
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillText(roundResult || message, 400, 255);
+
+  // War pile indicator
+  if (warPile.length > 0) {
+    ctx.fillStyle = '#e67e22';
+    ctx.font = '14px sans-serif';
+    ctx.fillText(`战争牌堆: ${warPile.length} 张`, 400, 280);
+  }
+
+  // Player area
+  ctx.fillStyle = '#bdc3c7';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('你', 400, 320);
+  if (playerCard && (state === 'playing' || state === 'war')) drawCard(360, 330, playerCard, false);
+  else drawCard(360, 330, null, true);
+
+  // Deck visuals
+  ctx.fillStyle = '#2c3e50';
+  ctx.beginPath(); ctx.roundRect(60, 330, 80, 112, 8); ctx.fill();
+  ctx.strokeStyle = '#555'; ctx.stroke();
+  ctx.fillStyle = '#1a5276';
+  ctx.beginPath(); ctx.roundRect(68, 338, 64, 96, 4); ctx.fill();
+  ctx.fillStyle = '#ecf0f1';
+  ctx.font = '12px sans-serif';
+  ctx.fillText(`${playerDeck.length}`, 100, 395);
+
+  ctx.fillStyle = '#2c3e50';
+  ctx.beginPath(); ctx.roundRect(660, 75, 80, 112, 8); ctx.fill();
+  ctx.strokeStyle = '#555'; ctx.stroke();
+  ctx.fillStyle = '#1a5276';
+  ctx.beginPath(); ctx.roundRect(668, 83, 64, 96, 4); ctx.fill();
+  ctx.fillStyle = '#ecf0f1';
+  ctx.font = '12px sans-serif';
+  ctx.fillText(`${aiDeck.length}`, 700, 140);
+
+  // Instruction
+  ctx.fillStyle = '#95a5a6';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(message, 400, 468);
+}
+
+function update() {
+  if (state === 'flipping') {
+    flipAnim += 0.08;
+    if (flipAnim >= 1) {
+      resolveRound();
+    }
+  }
+}
+
+canvas.addEventListener('click', () => {
+  if (state === 'title') { startGame(); return; }
+  if (state === 'gameover') { state = 'title'; return; }
+  if (state === 'playing') { flipCards(); return; }
+  if (state === 'war') { doWar(); return; }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

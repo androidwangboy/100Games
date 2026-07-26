@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数独</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+// Game states
+const STATE_TITLE = 0, STATE_PLAY = 1, STATE_WIN = 2;
+let state = STATE_TITLE;
+let score = 0;
+
+// Sudoku data
+let solution = [];
+let puzzle = [];
+let notes = [];
+let selected = null;
+let difficulty = 1;
+let timer = 0;
+let timerInterval = null;
+let mistakes = 0;
+let notesMode = false;
+let errorCells = [];
+let hintUsed = 0;
+
+const CELL = 44;
+const GRID_X = 40;
+const GRID_Y = 20;
+
+// Difficulty settings: cells to remove
+const DIFF_NAMES = ['简单', '中等', '困难'];
+const DIFF_REMOVE = [35, 45, 55];
+
+// Colors
+const COL_BG = '#1a1a2e';
+const COL_GRID = '#444';
+const COL_GRID_BOLD = '#888';
+const COL_SELECTED = '#2a4a7f';
+const COL_HIGHLIGHT = '#1e2d4a';
+const COL_SAME = '#2a3a5a';
+const COL_GIVEN = '#e0e0e0';
+const COL_USER = '#5ba3f5';
+const COL_ERROR = '#ff4444';
+const COL_NOTE = '#888';
+const COL_BTN = '#333';
+const COL_BTN_HOVER = '#555';
+const COL_TEXT = '#eee';
+
+// Buttons
+let buttons = [];
+let hoverBtn = -1;
+
+function initButtons() {
+  buttons = [];
+  if (state === STATE_TITLE) {
+    for (let i = 0; i < 3; i++) {
+      buttons.push({ x: 300, y: 200 + i * 70, w: 200, h: 50, label: DIFF_NAMES[i], action: () => startGame(i) });
+    }
+  } else if (state === STATE_PLAY) {
+    buttons.push({ x: 560, y: 30, w: 100, h: 36, label: '新游戏', action: () => { state = STATE_TITLE; stopTimer(); } });
+    buttons.push({ x: 680, y: 30, w: 100, h: 36, label: '提示', action: giveHint });
+    buttons.push({ x: 560, y: 80, w: 220, h: 36, label: notesMode ? '笔记: 开' : '笔记: 关', action: toggleNotes });
+    // Number pad
+    for (let i = 0; i < 9; i++) {
+      const col = i % 3, row = Math.floor(i / 3);
+      buttons.push({ x: 560 + col * 75, y: 140 + row * 55, w: 65, h: 45, label: String(i + 1), action: () => inputNumber(i + 1) });
+    }
+    buttons.push({ x: 560, y: 305, w: 65, h: 45, label: '⌫', action: () => inputNumber(0) });
+    buttons.push({ x: 635, y: 305, w: 65, h: 45, label: '清除', action: () => inputNumber(0) });
+  } else if (state === STATE_WIN) {
+    buttons.push({ x: 300, y: 320, w: 200, h: 50, label: '再来一局', action: () => { state = STATE_TITLE; } });
+  }
+}
+
+// Sudoku generation using backtracking
+function generateSolution() {
+  let grid = Array.from({length: 9}, () => Array(9).fill(0));
+  fillGrid(grid);
+  return grid;
+}
+
+function fillGrid(grid) {
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      if (grid[r][c] === 0) {
+        let nums = shuffle([1,2,3,4,5,6,7,8,9]);
+        for (let n of nums) {
+          if (isValid(grid, r, c, n)) {
+            grid[r][c] = n;
+            if (fillGrid(grid)) return true;
+            grid[r][c] = 0;
+          }
+        }
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function isValid(grid, row, col, num) {
+  for (let i = 0; i < 9; i++) {
+    if (grid[row][i] === num) return false;
+    if (grid[i][col] === num) return false;
+  }
+  let br = Math.floor(row / 3) * 3, bc = Math.floor(col / 3) * 3;
+  for (let r = br; r < br + 3; r++)
+    for (let c = bc; c < bc + 3; c++)
+      if (grid[r][c] === num) return false;
+  return true;
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function createPuzzle(sol, remove) {
+  let puz = sol.map(r => [...r]);
+  let cells = [];
+  for (let r = 0; r < 9; r++)
+    for (let c = 0; c < 9; c++)
+      cells.push([r, c]);
+  shuffle(cells);
+  let removed = 0;
+  for (let [r, c] of cells) {
+    if (removed >= remove) break;
+    puz[r][c] = 0;
+    removed++;
+  }
+  return puz;
+}
+
+function startGame(diff) {
+  difficulty = diff;
+  solution = generateSolution();
+  puzzle = createPuzzle(solution, DIFF_REMOVE[diff]);
+  notes = Array.from({length: 9}, () => Array.from({length: 9}, () => new Set()));
+  errorCells = [];
+  selected = null;
+  mistakes = 0;
+  hintUsed = 0;
+  notesMode = false;
+  timer = 0;
+  state = STATE_PLAY;
+  startTimer();
+  initButtons();
+}
+
+function startTimer() {
+  stopTimer();
+  timerInterval = setInterval(() => { timer++; }, 1000);
+}
+
+function stopTimer() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+}
+
+function toggleNotes() {
+  notesMode = !notesMode;
+  initButtons();
+}
+
+function giveHint() {
+  if (!selected) return;
+  let [r, c] = selected;
+  if (puzzle[r][c] !== 0 && puzzle[r][c] === solution[r][c]) return;
+  puzzle[r][c] = solution[r][c];
+  notes[r][c].clear();
+  hintUsed++;
+  removeError(r, c);
+  checkWin();
+}
+
+function inputNumber(num) {
+  if (!selected) return;
+  let [r, c] = selected;
+  // Don't modify given cells (cells that were filled at start and match solution)
+  if (isGiven(r, c)) return;
+
+  if (notesMode && num !== 0) {
+    if (puzzle[r][c] !== 0) return;
+    if (notes[r][c].has(num)) notes[r][c].delete(num);
+    else notes[r][c].add(num);
+    return;
+  }
+
+  if (num === 0) {
+    puzzle[r][c] = 0;
+    notes[r][c].clear();
+    removeError(r, c);
+    return;
+  }
+
+  puzzle[r][c] = num;
+  notes[r][c].clear();
+
+  if (num !== solution[r][c]) {
+    mistakes++;
+    addError(r, c);
+  } else {
+    removeError(r, c);
+    // Remove notes in same row/col/box
+    clearRelatedNotes(r, c, num);
+  }
+  checkWin();
+}
+
+let givenMask = [];
+function markGivens() {
+  givenMask = Array.from({length: 9}, () => Array(9).fill(false));
+}
+
+function isGiven(r, c) {
+  // A cell is "given" if it was part of the original puzzle and hasn't been changed
+  // We track this by checking if the initial puzzle had a value
+  return initialPuzzle[r][c] !== 0;
+}
+
+let initialPuzzle = [];
+
+function addError(r, c) {
+  if (!errorCells.some(e => e[0] === r && e[1] === c))
+    errorCells.push([r, c]);
+}
+
+function removeError(r, c) {
+  errorCells = errorCells.filter(e => !(e[0] === r && e[1] === c));
+}
+
+function clearRelatedNotes(row, col, num) {
+  for (let i = 0; i < 9; i++) {
+    notes[row][i].delete(num);
+    notes[i][col].delete(num);
+  }
+  let br = Math.floor(row / 3) * 3, bc = Math.floor(col / 3) * 3;
+  for (let r = br; r < br + 3; r++)
+    for (let c = bc; c < bc + 3; c++)
+      notes[r][c].delete(num);
+}
+
+function checkWin() {
+  for (let r = 0; r < 9; r++)
+    for (let c = 0; c < 9; c++)
+      if (puzzle[r][c] !== solution[r][c]) return;
+  // Win!
+  stopTimer();
+  score = Math.max(0, 1000 - timer * 2 - mistakes * 50 - hintUsed * 30) + (2 - difficulty) * 200;
+  state = STATE_WIN;
+  initButtons();
+}
+
+function formatTime(s) {
+  let m = Math.floor(s / 60);
+  let sec = s % 60;
+  return `${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`;
+}
+
+// Drawing
+function draw() {
+  ctx.fillStyle = COL_BG;
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE_TITLE) drawTitle();
+  else if (state === STATE_PLAY) drawPlay();
+  else if (state === STATE_WIN) drawWin();
+
+  drawButtons();
+  requestAnimationFrame(draw);
+}
+
+function drawTitle() {
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('数 独', W/2, 100);
+  ctx.font = '18px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('选择难度开始游戏', W/2, 150);
+  ctx.fillText('操作: 点击选格 → 数字键/按钮输入 → Backspace清除', W/2, 440);
+  ctx.fillText('N键切换笔记模式 | ESC退出', W/2, 465);
+}
+
+function drawPlay() {
+  // Draw grid background highlights
+  if (selected) {
+    let [sr, sc] = selected;
+    let sbr = Math.floor(sr/3)*3, sbc = Math.floor(sc/3)*3;
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        let highlight = false;
+        if (r === sr || c === sc) highlight = true;
+        if (r >= sbr && r < sbr+3 && c >= sbc && c < sbc+3) highlight = true;
+        if (highlight) {
+          ctx.fillStyle = COL_HIGHLIGHT;
+          ctx.fillRect(GRID_X + c*CELL, GRID_Y + r*CELL, CELL, CELL);
+        }
+      }
+    }
+    // Highlight same numbers
+    let selVal = puzzle[sr][sc];
+    if (selVal !== 0) {
+      for (let r = 0; r < 9; r++)
+        for (let c = 0; c < 9; c++)
+          if (puzzle[r][c] === selVal && !(r===sr && c===sc)) {
+            ctx.fillStyle = COL_SAME;
+            ctx.fillRect(GRID_X + c*CELL, GRID_Y + r*CELL, CELL, CELL);
+          }
+    }
+    // Selected cell
+    ctx.fillStyle = COL_SELECTED;
+    ctx.fillRect(GRID_X + sc*CELL, GRID_Y + sr*CELL, CELL, CELL);
+  }
+
+  // Draw grid lines
+  for (let i = 0; i <= 9; i++) {
+    ctx.strokeStyle = (i % 3 === 0) ? COL_GRID_BOLD : COL_GRID;
+    ctx.lineWidth = (i % 3 === 0) ? 2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(GRID_X + i*CELL, GRID_Y);
+    ctx.lineTo(GRID_X + i*CELL, GRID_Y + 9*CELL);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(GRID_X, GRID_Y + i*CELL);
+    ctx.lineTo(GRID_X + 9*CELL, GRID_Y + i*CELL);
+    ctx.stroke();
+  }
+
+  // Draw numbers
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      let val = puzzle[r][c];
+      let cx = GRID_X + c*CELL + CELL/2;
+      let cy = GRID_Y + r*CELL + CELL/2;
+
+      if (val !== 0) {
+        let isError = errorCells.some(e => e[0]===r && e[1]===c);
+        if (isError) ctx.fillStyle = COL_ERROR;
+        else if (initialPuzzle[r][c] !== 0) ctx.fillStyle = COL_GIVEN;
+        else ctx.fillStyle = COL_USER;
+        ctx.font = 'bold 24px sans-serif';
+        ctx.fillText(String(val), cx, cy);
+      } else if (notes[r][c].size > 0) {
+        ctx.fillStyle = COL_NOTE;
+        ctx.font = '11px sans-serif';
+        for (let n = 1; n <= 9; n++) {
+          if (notes[r][c].has(n)) {
+            let nx = GRID_X + c*CELL + ((n-1)%3) * (CELL/3) + CELL/6;
+            let ny = GRID_Y + r*CELL + Math.floor((n-1)/3) * (CELL/3) + CELL/6;
+            ctx.fillText(String(n), nx, ny);
+          }
+        }
+      }
+    }
+  }
+
+  // Side panel info
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`难度: ${DIFF_NAMES[difficulty]}`, 560, 140 + 175);
+  ctx.fillText(`时间: ${formatTime(timer)}`, 560, 140 + 200);
+  ctx.fillText(`错误: ${mistakes}`, 560, 140 + 225);
+  ctx.fillText(`提示: ${hintUsed}`, 700, 140 + 200);
+  ctx.fillText(notesMode ? '[笔记模式]' : '', 700, 140 + 225);
+}
+
+function drawWin() {
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('恭喜完成!', W/2, 120);
+  ctx.font = '22px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText(`难度: ${DIFF_NAMES[difficulty]}`, W/2, 180);
+  ctx.fillText(`用时: ${formatTime(timer)}`, W/2, 220);
+  ctx.fillText(`错误: ${mistakes}  提示: ${hintUsed}`, W/2, 260);
+  ctx.fillStyle = '#5ba3f5';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(`得分: ${score}`, W/2, 300);
+}
+
+function drawButtons() {
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    ctx.fillStyle = (i === hoverBtn) ? COL_BTN_HOVER : COL_BTN;
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 1;
+    roundRect(b.x, b.y, b.w, b.h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COL_TEXT;
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// Input handling
+canvas.addEventListener('mousemove', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+  hoverBtn = -1;
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) {
+      hoverBtn = i;
+      break;
+    }
+  }
+  canvas.style.cursor = hoverBtn >= 0 ? 'pointer' : 'default';
+});
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  // Check buttons
+  for (let b of buttons) {
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) {
+      b.action();
+      return;
+    }
+  }
+
+  // Check grid click in play state
+  if (state === STATE_PLAY) {
+    let c = Math.floor((mx - GRID_X) / CELL);
+    let r = Math.floor((my - GRID_Y) / CELL);
+    if (r >= 0 && r < 9 && c >= 0 && c < 9) {
+      selected = [r, c];
+    }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (state !== STATE_PLAY) return;
+  if (e.code === 'Escape') return; // handled above
+
+  if (e.key >= '1' && e.key <= '9') {
+    inputNumber(parseInt(e.key));
+  } else if (e.code === 'Backspace' || e.code === 'Delete') {
+    inputNumber(0);
+    e.preventDefault();
+  } else if (e.key === 'n' || e.key === 'N') {
+    toggleNotes();
+  } else if (e.code === 'ArrowUp' && selected) {
+    selected[0] = (selected[0] + 8) % 9;
+  } else if (e.code === 'ArrowDown' && selected) {
+    selected[0] = (selected[0] + 1) % 9;
+  } else if (e.code === 'ArrowLeft' && selected) {
+    selected[1] = (selected[1] + 8) % 9;
+  } else if (e.code === 'ArrowRight' && selected) {
+    selected[1] = (selected[1] + 1) % 9;
+  }
+});
+
+// Override startGame to save initial puzzle
+const _startGame = startGame;
+startGame = function(diff) {
+  _startGame(diff);
+  initialPuzzle = puzzle.map(r => [...r]);
+};
+
+initButtons();
+draw();
+</script>
+</body>
+</html>

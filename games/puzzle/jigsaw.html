@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>拼图</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+const STATE_TITLE = 0, STATE_PLAY = 1, STATE_WIN = 2;
+let state = STATE_TITLE;
+let score = 0;
+
+// Puzzle config
+let gridSize = 3;
+let pieces = [];
+let imgCanvas = null;
+let pieceW = 0, pieceH = 0;
+let boardX = 0, boardY = 0;
+let boardSize = 360;
+let moves = 0;
+let timer = 0;
+let timerInterval = null;
+let showPreview = false;
+let dragPiece = -1;
+let dragOffX = 0, dragOffY = 0;
+let dragX = 0, dragY = 0;
+let swapTarget = -1;
+let correctCount = 0;
+let imageType = 0;
+
+const GRID_OPTIONS = [3, 4, 5];
+const GRID_NAMES = ['3×3 (简单)', '4×4 (中等)', '5×5 (困难)'];
+
+const COL_BG = '#1a1a2e';
+const COL_TEXT = '#eee';
+const COL_BTN = '#333';
+const COL_BTN_HOVER = '#555';
+const COL_CORRECT = 'rgba(76,175,80,0.3)';
+const COL_HIGHLIGHT = 'rgba(255,235,59,0.4)';
+const COL_BORDER = '#555';
+
+let buttons = [];
+let hoverBtn = -1;
+
+function initButtons() {
+  buttons = [];
+  if (state === STATE_TITLE) {
+    for (let i = 0; i < 3; i++) {
+      buttons.push({ x: 300, y: 180 + i * 65, w: 200, h: 50, label: GRID_NAMES[i], action: () => startGame(i) });
+    }
+    buttons.push({ x: 300, y: 390, w: 200, h: 40, label: '换一幅图', action: () => { imageType = (imageType + 1) % 4; } });
+  } else if (state === STATE_PLAY) {
+    buttons.push({ x: 640, y: 380, w: 130, h: 36, label: '预览 (P)', action: () => { showPreview = !showPreview; } });
+    buttons.push({ x: 640, y: 425, w: 130, h: 36, label: '重新开始', action: () => { state = STATE_TITLE; stopTimer(); initButtons(); } });
+  } else if (state === STATE_WIN) {
+    buttons.push({ x: 250, y: 380, w: 140, h: 45, label: '再来一局', action: () => { state = STATE_TITLE; initButtons(); } });
+    buttons.push({ x: 410, y: 380, w: 140, h: 45, label: '下一难度', action: () => { let next = Math.min(GRID_OPTIONS.indexOf(gridSize) + 1, 2); startGame(next); } });
+  }
+}
+
+// Procedural image generation
+function generateImage(size) {
+  imgCanvas = document.createElement('canvas');
+  imgCanvas.width = size;
+  imgCanvas.height = size;
+  let ictx = imgCanvas.getContext('2d');
+
+  switch (imageType % 4) {
+    case 0: drawLandscape(ictx, size); break;
+    case 1: drawAbstract(ictx, size); break;
+    case 2: drawSunset(ictx, size); break;
+    case 3: drawGeometric(ictx, size); break;
+  }
+}
+
+function drawLandscape(c, s) {
+  // Sky gradient
+  let sky = c.createLinearGradient(0, 0, 0, s * 0.6);
+  sky.addColorStop(0, '#1a237e');
+  sky.addColorStop(0.5, '#4fc3f7');
+  sky.addColorStop(1, '#b3e5fc');
+  c.fillStyle = sky;
+  c.fillRect(0, 0, s, s * 0.6);
+
+  // Sun
+  c.fillStyle = '#fff9c4';
+  c.beginPath();
+  c.arc(s * 0.75, s * 0.2, s * 0.08, 0, Math.PI * 2);
+  c.fill();
+
+  // Mountains
+  c.fillStyle = '#37474f';
+  c.beginPath();
+  c.moveTo(0, s * 0.6);
+  c.lineTo(s * 0.2, s * 0.3);
+  c.lineTo(s * 0.4, s * 0.55);
+  c.lineTo(s * 0.6, s * 0.25);
+  c.lineTo(s * 0.8, s * 0.5);
+  c.lineTo(s, s * 0.35);
+  c.lineTo(s, s * 0.6);
+  c.closePath();
+  c.fill();
+
+  // Snow caps
+  c.fillStyle = '#eceff1';
+  c.beginPath();
+  c.moveTo(s * 0.55, s * 0.28);
+  c.lineTo(s * 0.6, s * 0.25);
+  c.lineTo(s * 0.65, s * 0.3);
+  c.closePath();
+  c.fill();
+
+  // Ground
+  let ground = c.createLinearGradient(0, s * 0.6, 0, s);
+  ground.addColorStop(0, '#4caf50');
+  ground.addColorStop(1, '#1b5e20');
+  c.fillStyle = ground;
+  c.fillRect(0, s * 0.6, s, s * 0.4);
+
+  // Trees
+  for (let i = 0; i < 8; i++) {
+    let tx = s * (0.1 + Math.random() * 0.8);
+    let ty = s * (0.62 + Math.random() * 0.25);
+    let th = s * (0.06 + Math.random() * 0.06);
+    c.fillStyle = '#5d4037';
+    c.fillRect(tx - 2, ty, 4, th * 0.4);
+    c.fillStyle = '#2e7d32';
+    c.beginPath();
+    c.moveTo(tx, ty - th);
+    c.lineTo(tx - th * 0.4, ty);
+    c.lineTo(tx + th * 0.4, ty);
+    c.closePath();
+    c.fill();
+  }
+
+  // Clouds
+  c.fillStyle = 'rgba(255,255,255,0.7)';
+  for (let i = 0; i < 4; i++) {
+    let cx2 = s * (0.1 + Math.random() * 0.8);
+    let cy2 = s * (0.05 + Math.random() * 0.2);
+    for (let j = 0; j < 3; j++) {
+      c.beginPath();
+      c.arc(cx2 + j * 15 - 15, cy2, 12 + Math.random() * 8, 0, Math.PI * 2);
+      c.fill();
+    }
+  }
+}
+
+function drawAbstract(c, s) {
+  // Dark background
+  c.fillStyle = '#1a1a2e';
+  c.fillRect(0, 0, s, s);
+
+  // Colorful circles
+  let colors = ['#e91e63', '#9c27b0', '#3f51b5', '#00bcd4', '#4caf50', '#ff9800', '#ffeb3b'];
+  for (let i = 0; i < 20; i++) {
+    let x = Math.random() * s;
+    let y = Math.random() * s;
+    let r = 15 + Math.random() * 50;
+    c.globalAlpha = 0.4 + Math.random() * 0.4;
+    c.fillStyle = colors[Math.floor(Math.random() * colors.length)];
+    c.beginPath();
+    c.arc(x, y, r, 0, Math.PI * 2);
+    c.fill();
+  }
+  c.globalAlpha = 1;
+
+  // Flowing lines
+  for (let i = 0; i < 6; i++) {
+    c.strokeStyle = colors[i % colors.length];
+    c.lineWidth = 2 + Math.random() * 3;
+    c.beginPath();
+    let startX = Math.random() * s;
+    let startY = Math.random() * s;
+    c.moveTo(startX, startY);
+    for (let j = 0; j < 5; j++) {
+      c.quadraticCurveTo(
+        Math.random() * s, Math.random() * s,
+        Math.random() * s, Math.random() * s
+      );
+    }
+    c.stroke();
+  }
+}
+
+function drawSunset(c, s) {
+  // Sunset gradient
+  let grad = c.createLinearGradient(0, 0, 0, s);
+  grad.addColorStop(0, '#0d47a1');
+  grad.addColorStop(0.3, '#e65100');
+  grad.addColorStop(0.5, '#ff6f00');
+  grad.addColorStop(0.6, '#ffab00');
+  grad.addColorStop(0.65, '#1565c0');
+  grad.addColorStop(1, '#0d47a1');
+  c.fillStyle = grad;
+  c.fillRect(0, 0, s, s);
+
+  // Sun
+  let sunGrad = c.createRadialGradient(s*0.5, s*0.45, 0, s*0.5, s*0.45, s*0.15);
+  sunGrad.addColorStop(0, '#fff9c4');
+  sunGrad.addColorStop(0.7, '#ffcc02');
+  sunGrad.addColorStop(1, 'rgba(255,152,0,0)');
+  c.fillStyle = sunGrad;
+  c.beginPath();
+  c.arc(s*0.5, s*0.45, s*0.15, 0, Math.PI*2);
+  c.fill();
+
+  // Water reflection
+  c.fillStyle = 'rgba(255,183,77,0.3)';
+  for (let i = 0; i < 15; i++) {
+    let y = s * 0.65 + i * (s * 0.35 / 15);
+    let w = 20 + Math.random() * 60;
+    c.fillRect(s*0.5 - w/2 + (Math.random()-0.5)*30, y, w, 2);
+  }
+
+  // Birds
+  c.strokeStyle = '#222';
+  c.lineWidth = 1.5;
+  for (let i = 0; i < 5; i++) {
+    let bx = s * (0.2 + Math.random() * 0.6);
+    let by = s * (0.1 + Math.random() * 0.2);
+    c.beginPath();
+    c.arc(bx - 5, by, 5, Math.PI * 1.2, Math.PI * 1.8);
+    c.stroke();
+    c.beginPath();
+    c.arc(bx + 5, by, 5, Math.PI * 1.2, Math.PI * 1.8);
+    c.stroke();
+  }
+}
+
+function drawGeometric(c, s) {
+  c.fillStyle = '#212121';
+  c.fillRect(0, 0, s, s);
+
+  let colors = ['#f44336', '#2196f3', '#ffeb3b', '#4caf50', '#9c27b0', '#ff9800'];
+  let cellS = s / 6;
+
+  for (let r = 0; r < 6; r++) {
+    for (let col = 0; col < 6; col++) {
+      let x = col * cellS;
+      let y = r * cellS;
+      let type = Math.floor(Math.random() * 4);
+      c.fillStyle = colors[Math.floor(Math.random() * colors.length)];
+      c.globalAlpha = 0.7 + Math.random() * 0.3;
+
+      if (type === 0) {
+        c.fillRect(x + 4, y + 4, cellS - 8, cellS - 8);
+      } else if (type === 1) {
+        c.beginPath();
+        c.arc(x + cellS/2, y + cellS/2, cellS/2 - 4, 0, Math.PI * 2);
+        c.fill();
+      } else if (type === 2) {
+        c.beginPath();
+        c.moveTo(x + cellS/2, y + 4);
+        c.lineTo(x + cellS - 4, y + cellS - 4);
+        c.lineTo(x + 4, y + cellS - 4);
+        c.closePath();
+        c.fill();
+      } else {
+        c.beginPath();
+        c.moveTo(x + cellS/2, y + 4);
+        c.lineTo(x + cellS - 4, y + cellS/2);
+        c.lineTo(x + cellS/2, y + cellS - 4);
+        c.lineTo(x + 4, y + cellS/2);
+        c.closePath();
+        c.fill();
+      }
+    }
+  }
+  c.globalAlpha = 1;
+}
+
+function startGame(sizeIdx) {
+  gridSize = GRID_OPTIONS[sizeIdx];
+  boardSize = Math.min(360, H - 80);
+  pieceW = boardSize / gridSize;
+  pieceH = boardSize / gridSize;
+  boardX = 40;
+  boardY = (H - boardSize) / 2;
+
+  generateImage(boardSize);
+
+  // Create pieces in order then shuffle
+  pieces = [];
+  for (let i = 0; i < gridSize * gridSize; i++) {
+    pieces.push(i);
+  }
+  // Shuffle until not solved
+  do {
+    for (let i = pieces.length - 1; i > 0; i--) {
+      let j = Math.floor(Math.random() * (i + 1));
+      [pieces[i], pieces[j]] = [pieces[j], pieces[i]];
+    }
+  } while (isSolved());
+
+  moves = 0;
+  timer = 0;
+  showPreview = false;
+  dragPiece = -1;
+  correctCount = 0;
+  state = STATE_PLAY;
+  startTimer();
+  initButtons();
+}
+
+function startTimer() {
+  stopTimer();
+  timerInterval = setInterval(() => { timer++; }, 1000);
+}
+
+function stopTimer() {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+}
+
+function isSolved() {
+  for (let i = 0; i < pieces.length; i++) {
+    if (pieces[i] !== i) return false;
+  }
+  return true;
+}
+
+function countCorrect() {
+  let count = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    if (pieces[i] === i) count++;
+  }
+  return count;
+}
+
+function getPiecePos(idx) {
+  let col = idx % gridSize;
+  let row = Math.floor(idx / gridSize);
+  return { x: boardX + col * pieceW, y: boardY + row * pieceH };
+}
+
+function getSlotAt(mx, my) {
+  let col = Math.floor((mx - boardX) / pieceW);
+  let row = Math.floor((my - boardY) / pieceH);
+  if (col >= 0 && col < gridSize && row >= 0 && row < gridSize) {
+    return row * gridSize + col;
+  }
+  return -1;
+}
+
+function swapPieces(a, b) {
+  if (a === b) return;
+  [pieces[a], pieces[b]] = [pieces[b], pieces[a]];
+  moves++;
+  correctCount = countCorrect();
+  if (isSolved()) {
+    stopTimer();
+    score += Math.max(0, 1000 - timer * 2 - moves * 5) + (gridSize - 3) * 300;
+    state = STATE_WIN;
+    initButtons();
+  }
+}
+
+function formatTime(s) {
+  let m = Math.floor(s / 60);
+  let sec = s % 60;
+  return `${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`;
+}
+
+// Drawing
+function draw() {
+  ctx.fillStyle = COL_BG;
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE_TITLE) drawTitle();
+  else if (state === STATE_PLAY) drawPlay();
+  else if (state === STATE_WIN) drawWin();
+
+  drawButtons();
+  requestAnimationFrame(draw);
+}
+
+function drawTitle() {
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('拼 图', W/2, 80);
+  ctx.font = '18px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('Jigsaw Puzzle — 拖拽交换拼图块', W/2, 120);
+  ctx.fillText(`当前图片风格: ${['风景','抽象','日落','几何'][imageType % 4]}`, W/2, 150);
+
+  // Preview of current image
+  generateImage(120);
+  ctx.drawImage(imgCanvas, W/2 - 60, 340, 120, 120);
+  ctx.strokeStyle = '#555';
+  ctx.strokeRect(W/2 - 60, 340, 120, 120);
+}
+
+function drawPlay() {
+  // Draw board background
+  ctx.fillStyle = '#222240';
+  ctx.fillRect(boardX - 2, boardY - 2, boardSize + 4, boardSize + 4);
+
+  // Draw pieces
+  for (let slot = 0; slot < gridSize * gridSize; slot++) {
+    if (slot === dragPiece) continue; // skip dragged piece
+    let pos = getPiecePos(slot);
+    let pieceId = pieces[slot];
+    let srcCol = pieceId % gridSize;
+    let srcRow = Math.floor(pieceId / gridSize);
+
+    // Draw piece from source image
+    ctx.drawImage(imgCanvas, srcCol * pieceW, srcRow * pieceH, pieceW, pieceH, pos.x, pos.y, pieceW, pieceH);
+
+    // Border
+    ctx.strokeStyle = COL_BORDER;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pos.x, pos.y, pieceW, pieceH);
+
+    // Correct placement highlight
+    if (pieceId === slot) {
+      ctx.fillStyle = COL_CORRECT;
+      ctx.fillRect(pos.x, pos.y, pieceW, pieceH);
+    }
+
+    // Swap target highlight
+    if (slot === swapTarget && dragPiece >= 0) {
+      ctx.fillStyle = COL_HIGHLIGHT;
+      ctx.fillRect(pos.x, pos.y, pieceW, pieceH);
+    }
+  }
+
+  // Draw dragged piece
+  if (dragPiece >= 0) {
+    let pieceId = pieces[dragPiece];
+    let srcCol = pieceId % gridSize;
+    let srcRow = Math.floor(pieceId / gridSize);
+    ctx.globalAlpha = 0.85;
+    ctx.drawImage(imgCanvas, srcCol * pieceW, srcRow * pieceH, pieceW, pieceH, dragX, dragY, pieceW, pieceH);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#ffeb3b';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(dragX, dragY, pieceW, pieceH);
+  }
+
+  // Preview overlay
+  if (showPreview) {
+    ctx.globalAlpha = 0.7;
+    ctx.drawImage(imgCanvas, boardX, boardY, boardSize, boardSize);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(boardX, boardY, boardSize, boardSize);
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('预览中 (按P关闭)', boardX + boardSize/2, boardY - 10);
+  }
+
+  // Side panel
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  let px = 640;
+  ctx.fillText(`难度: ${gridSize}×${gridSize}`, px, 40);
+  ctx.fillText(`时间: ${formatTime(timer)}`, px, 70);
+  ctx.fillText(`步数: ${moves}`, px, 100);
+  ctx.fillText(`正确: ${correctCount}/${gridSize*gridSize}`, px, 130);
+
+  // Progress bar
+  let progress = correctCount / (gridSize * gridSize);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(px, 150, 130, 12);
+  ctx.fillStyle = '#4caf50';
+  ctx.fillRect(px, 150, 130 * progress, 12);
+  ctx.strokeStyle = '#555';
+  ctx.strokeRect(px, 150, 130, 12);
+
+  // Instructions
+  ctx.fillStyle = '#888';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('拖拽交换拼图块', px, 200);
+  ctx.fillText('P键: 预览原图', px, 225);
+  ctx.fillText('绿色=位置正确', px, 250);
+
+  // Mini reference image
+  ctx.drawImage(imgCanvas, px, 270, 100, 100);
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px, 270, 100, 100);
+}
+
+function drawWin() {
+  // Show completed image
+  let displaySize = 300;
+  let dx = (W - displaySize) / 2;
+  let dy = 40;
+  ctx.drawImage(imgCanvas, dx, dy, displaySize, displaySize);
+  ctx.strokeStyle = '#4caf50';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(dx, dy, displaySize, displaySize);
+
+  ctx.fillStyle = '#4caf50';
+  ctx.font = 'bold 32px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('拼图完成!', W/2, dy + displaySize + 40);
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = '18px sans-serif';
+  ctx.fillText(`用时: ${formatTime(timer)}  步数: ${moves}`, W/2, dy + displaySize + 75);
+  ctx.fillStyle = '#ffab40';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(`得分: ${score}`, W/2, dy + displaySize + 110);
+}
+
+function drawButtons() {
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    ctx.fillStyle = (i === hoverBtn) ? COL_BTN_HOVER : COL_BTN;
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 1;
+    roundRect(b.x, b.y, b.w, b.h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COL_TEXT;
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// Input
+canvas.addEventListener('mousemove', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  hoverBtn = -1;
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) { hoverBtn = i; break; }
+  }
+
+  if (dragPiece >= 0) {
+    dragX = mx - dragOffX;
+    dragY = my - dragOffY;
+    swapTarget = getSlotAt(mx, my);
+  }
+
+  canvas.style.cursor = (hoverBtn >= 0 || dragPiece >= 0) ? 'pointer' : 'default';
+});
+
+canvas.addEventListener('mousedown', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (state !== STATE_PLAY) return;
+
+  let slot = getSlotAt(mx, my);
+  if (slot >= 0) {
+    dragPiece = slot;
+    let pos = getPiecePos(slot);
+    dragOffX = mx - pos.x;
+    dragOffY = my - pos.y;
+    dragX = pos.x;
+    dragY = pos.y;
+    swapTarget = -1;
+  }
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (dragPiece >= 0 && swapTarget >= 0 && swapTarget !== dragPiece) {
+    swapPieces(dragPiece, swapTarget);
+  }
+  dragPiece = -1;
+  swapTarget = -1;
+});
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+  for (let b of buttons) {
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) { b.action(); return; }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') return;
+  if (state === STATE_PLAY && (e.key === 'p' || e.key === 'P')) {
+    showPreview = !showPreview;
+  }
+});
+
+initButtons();
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>反应测试</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let state = 'title'; // title, waiting, ready, early, result, over
+let score = 0;
+const TOTAL = 5;
+let round = 0, times = [], best = Infinity;
+let waitStart = 0, greenAt = 0, reactMs = 0, timer = 0;
+
+function reset() {
+  round = 0; times = []; best = Infinity; score = 0;
+  nextRound();
+}
+function nextRound() {
+  round++;
+  state = 'waiting';
+  waitStart = performance.now();
+  greenAt = waitStart + 1000 + Math.random() * 3000;
+}
+function avg() {
+  if (!times.length) return 0;
+  return Math.round(times.reduce((a, b) => a + b, 0) / times.length);
+}
+function rating(ms) {
+  if (ms < 200) return '闪电般!';
+  if (ms < 280) return '极快!';
+  if (ms < 380) return '不错!';
+  if (ms < 500) return '一般';
+  return '加油...';
+}
+
+function click() {
+  if (state === 'title') { reset(); return; }
+  if (state === 'waiting') {
+    state = 'early';
+    timer = performance.now();
+    return;
+  }
+  if (state === 'ready') {
+    reactMs = Math.round(performance.now() - greenAt);
+    times.push(reactMs);
+    if (reactMs < best) best = reactMs;
+    score = Math.max(score, Math.round(1000 - reactMs));
+    state = 'result';
+    timer = performance.now();
+    return;
+  }
+  if (state === 'early' || state === 'result') {
+    if (performance.now() - timer < 500) return;
+    if (round >= TOTAL) { state = 'over'; }
+    else nextRound();
+  }
+  if (state === 'over') { state = 'title'; }
+}
+cv.addEventListener('mousedown', click);
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); click(); }
+});
+
+function centerText(txt, y, size, color, weight) {
+  ctx.fillStyle = color;
+  ctx.font = (weight || 'bold') + ' ' + size + 'px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(txt, W / 2, y);
+}
+function bg(c) { ctx.fillStyle = c; ctx.fillRect(0, 0, W, H); }
+
+function drawTitle() {
+  bg('#111');
+  centerText('反应测试', 130, 64, '#00e5ff');
+  centerText('Reaction Timer', 185, 22, '#666', 'normal');
+  centerText('屏幕变绿后立刻点击！', 270, 26, '#eee', 'normal');
+  centerText('共 ' + TOTAL + ' 轮，记录最佳与平均反应时间', 310, 18, '#888', 'normal');
+  centerText('点击或按空格开始', 400, 24, '#ffd54f');
+}
+function drawWaiting(now) {
+  bg('#b71c1c');
+  centerText('等待变绿...', H / 2 - 20, 48, '#fff');
+  centerText('不要提前点击！', H / 2 + 40, 22, '#ffcdd2', 'normal');
+  if (now >= greenAt) { state = 'ready'; greenAt = performance.now(); }
+}
+function drawReady() {
+  bg('#1b5e20');
+  centerText('点击！', H / 2, 80, '#fff');
+}
+function drawEarly() {
+  bg('#4a148c');
+  centerText('太早了！', H / 2 - 20, 56, '#ff5252');
+  centerText('本轮作废，点击继续', H / 2 + 40, 22, '#e1bee7', 'normal');
+}
+function drawResult() {
+  bg('#111');
+  centerText(reactMs + ' ms', H / 2 - 40, 72, '#00e676');
+  centerText(rating(reactMs), H / 2 + 25, 30, '#ffd54f');
+  centerText('第 ' + round + ' / ' + TOTAL + ' 轮', H / 2 + 75, 20, '#888', 'normal');
+  centerText('点击继续', H - 50, 18, '#666', 'normal');
+}
+function drawOver() {
+  bg('#111');
+  centerText('完成！', 90, 54, '#00e5ff');
+  centerText('最佳: ' + (best === Infinity ? '-' : best + ' ms'), 180, 34, '#00e676');
+  centerText('平均: ' + avg() + ' ms', 230, 34, '#ffd54f');
+  ctx.font = 'normal 18px sans-serif'; ctx.fillStyle = '#aaa'; ctx.textAlign = 'center';
+  times.forEach((t, i) => ctx.fillText('第' + (i + 1) + '轮: ' + t + ' ms', W / 2, 290 + i * 26));
+  centerText('得分: ' + score, 430, 26, '#fff');
+  centerText('点击返回标题', H - 30, 16, '#666', 'normal');
+}
+
+function loop() {
+  const now = performance.now();
+  if (state === 'title') drawTitle();
+  else if (state === 'waiting') drawWaiting(now);
+  else if (state === 'ready') drawReady();
+  else if (state === 'early') drawEarly();
+  else if (state === 'result') drawResult();
+  else if (state === 'over') drawOver();
+  // HUD
+  if (state !== 'title' && state !== 'over') {
+    ctx.fillStyle = '#fff'; ctx.font = '16px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('轮次 ' + Math.min(round, TOTAL) + '/' + TOTAL + '   最佳 ' + (best === Infinity ? '-' : best + 'ms'), 16, 26);
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>直升机</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let state = 'title'; // title, play, over
+let score = 0, best = 0;
+let heli, scrollX, speed, ceiling, floor, thrust, lastTime, blade = 0;
+
+const SEG = 20; // width of each cave column segment
+
+function genPoint(x, phase) {
+  // cave center & gap vary with distance, narrowing over time
+  const diff = Math.min(1, x / 12000);
+  const gap = 230 - diff * 110; // 230 -> 120
+  const mid = H / 2 + Math.sin(x * 0.004 + phase) * (120 - diff * 40)
+            + Math.sin(x * 0.011) * 30;
+  return { top: mid - gap / 2, bot: mid + gap / 2 };
+}
+
+function reset() {
+  heli = { x: 160, y: H / 2, vy: 0, r: 12 };
+  scrollX = 0; speed = 200; thrust = false;
+  score = 0; lastTime = performance.now();
+  state = 'play';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state === 'play') thrust = true;
+    else reset();
+  }
+});
+document.addEventListener('keyup', e => { if (e.code === 'Space') thrust = false; });
+cv.addEventListener('mousedown', () => { if (state === 'play') thrust = true; else reset(); });
+cv.addEventListener('mouseup', () => { thrust = false; });
+
+function caveAt(worldX) { return genPoint(worldX, 0); }
+
+function update(dt) {
+  speed += dt * 4; // gradual acceleration
+  scrollX += speed * dt;
+  score = Math.floor(scrollX / 30);
+
+  const g = 900, lift = -1700;
+  heli.vy += (thrust ? lift : g) * dt;
+  heli.vy = Math.max(-420, Math.min(420, heli.vy));
+  heli.y += heli.vy * dt;
+  blade += dt * (thrust ? 40 : 20);
+
+  // collision with ceiling/floor at heli world position
+  const worldX = scrollX + heli.x;
+  const c = caveAt(worldX);
+  if (heli.y - heli.r < c.top || heli.y + heli.r > c.bot) {
+    die();
+  }
+  if (heli.y < -50 || heli.y > H + 50) die();
+}
+function die() {
+  if (score > best) best = score;
+  state = 'over';
+  thrust = false;
+}
+
+function centerText(t, y, s, c, w) {
+  ctx.fillStyle = c; ctx.font = (w || 'bold') + ' ' + s + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(t, W / 2, y);
+}
+
+function drawCave() {
+  ctx.fillStyle = '#1a2634';
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  for (let sx = 0; sx <= W; sx += SEG) {
+    const c = caveAt(scrollX + sx);
+    ctx.lineTo(sx, c.top);
+  }
+  ctx.lineTo(W, 0); ctx.closePath(); ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let sx = 0; sx <= W; sx += SEG) {
+    const c = caveAt(scrollX + sx);
+    ctx.lineTo(sx, c.bot);
+  }
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+
+  // glowing edges
+  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let sx = 0; sx <= W; sx += SEG) {
+    const c = caveAt(scrollX + sx);
+    sx === 0 ? ctx.moveTo(sx, c.top) : ctx.lineTo(sx, c.top);
+  }
+  ctx.stroke();
+  ctx.beginPath();
+  for (let sx = 0; sx <= W; sx += SEG) {
+    const c = caveAt(scrollX + sx);
+    sx === 0 ? ctx.moveTo(sx, c.bot) : ctx.lineTo(sx, c.bot);
+  }
+  ctx.stroke();
+}
+
+function drawHeli() {
+  const x = heli.x, y = heli.y;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(Math.max(-0.4, Math.min(0.4, heli.vy / 800)));
+  // body
+  ctx.fillStyle = '#ffd740';
+  ctx.beginPath(); ctx.ellipse(0, 0, 16, 10, 0, 0, Math.PI * 2); ctx.fill();
+  // tail
+  ctx.fillStyle = '#ffab00';
+  ctx.fillRect(-26, -3, 14, 5);
+  // cockpit
+  ctx.fillStyle = '#00e5ff';
+  ctx.beginPath(); ctx.arc(7, -1, 5, 0, Math.PI * 2); ctx.fill();
+  // rotor
+  ctx.strokeStyle = '#eee'; ctx.lineWidth = 3;
+  const rw = Math.abs(Math.cos(blade)) * 22 + 4;
+  ctx.beginPath(); ctx.moveTo(-rw, -12); ctx.lineTo(rw, -12); ctx.stroke();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.fillStyle = '#0a0f18'; ctx.fillRect(0, 0, W, H);
+
+  if (state === 'title') {
+    centerText('直升机', 130, 60, '#ffd740');
+    centerText('Helicopter', 185, 22, '#666', 'normal');
+    centerText('按住 空格 / 鼠标 上升，松开下落', 275, 24, '#eee', 'normal');
+    centerText('穿越不断变窄的洞穴', 315, 20, '#888', 'normal');
+    centerText('碰壁即坠毁，飞得越远分越高', 350, 18, '#888', 'normal');
+    centerText('按空格起飞', 425, 24, '#00e5ff');
+    return;
+  }
+
+  drawCave();
+  if (state === 'play') drawHeli();
+
+  ctx.fillStyle = '#fff'; ctx.font = '22px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('距离 ' + score, 16, 32);
+  ctx.textAlign = 'right'; ctx.fillText('最佳 ' + best, W - 16, 32);
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
+    centerText('坠毁！', 170, 60, '#ff5252');
+    centerText('飞行距离 ' + score, 250, 36, '#ffd740');
+    centerText('最佳 ' + best, 300, 24, '#69f0ae');
+    centerText('按空格重新起飞', 400, 22, '#888', 'normal');
+  }
+}
+
+function loop() {
+  const now = performance.now();
+  const dt = Math.min(0.033, (now - lastTime) / 1000);
+  lastTime = now;
+  if (state === 'play') update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+lastTime = performance.now();
+loop();
+</script>
+</body>
+</html>

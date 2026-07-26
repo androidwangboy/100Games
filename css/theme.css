@@ -1,0 +1,71 @@
+/* ===== 100 Games Collection — Global Theme ===== */
+:root {
+  /* Background */
+  --bg-primary: #0a0a1a;
+  --bg-secondary: #12122a;
+  --bg-card: #1a1a3e;
+  --bg-card-hover: #242450;
+  --bg-overlay: rgba(5, 5, 20, 0.92);
+
+  /* Text */
+  --text-primary: #e8e8f0;
+  --text-secondary: #9898b8;
+  --text-muted: #5a5a7a;
+
+  /* Accent */
+  --accent: #00d4ff;
+  --accent-hover: #00ff88;
+  --accent-dim: rgba(0, 212, 255, 0.15);
+  --danger: #ff4466;
+  --gold: #ffd700;
+
+  /* Category colors */
+  --cat-platformer: #ff6b6b;
+  --cat-arcade: #ffa94d;
+  --cat-puzzle: #69db7c;
+  --cat-card: #4dabf7;
+  --cat-action: #ff6b9d;
+  --cat-board: #b197fc;
+  --cat-word: #63e6be;
+  --cat-casino: #ffd43b;
+  --cat-physics: #74c0fc;
+  --cat-retro: #e599f7;
+
+  /* Layout */
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  --transition: 0.2s ease;
+
+  /* Font */
+  --font-main: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-game: 'Courier New', monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-main);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  height: 100vh;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}

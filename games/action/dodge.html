@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>躲避弹幕</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let state = 'title'; // title, play, over
+let score = 0, best = 0;
+let player, bullets, spawnT, elapsed, lastTime;
+const keys = {};
+
+function reset() {
+  player = { x: W / 2, y: H / 2, r: 7, speed: 280 };
+  bullets = [];
+  spawnT = 0; elapsed = 0; score = 0;
+  lastTime = performance.now();
+  state = 'play';
+}
+function spawnBullet() {
+  const side = Math.floor(Math.random() * 4);
+  let x, y;
+  if (side === 0) { x = Math.random() * W; y = -10; }
+  else if (side === 1) { x = W + 10; y = Math.random() * H; }
+  else if (side === 2) { x = Math.random() * W; y = H + 10; }
+  else { x = -10; y = Math.random() * H; }
+  // aim roughly at player with some spread
+  const ang = Math.atan2(player.y - y, player.x - x) + (Math.random() - 0.5) * 0.6;
+  const sp = 90 + Math.random() * 60 + elapsed * 4;
+  const hues = ['#ff5252', '#ffab40', '#e040fb', '#448aff', '#ffd740'];
+  bullets.push({
+    x, y,
+    vx: Math.cos(ang) * sp,
+    vy: Math.sin(ang) * sp,
+    r: 4 + Math.random() * 4,
+    c: hues[Math.floor(Math.random() * hues.length)]
+  });
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  keys[e.code] = true;
+  if ((state === 'title' || state === 'over') && (e.code === 'Space' || e.code === 'Enter')) reset();
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+cv.addEventListener('mousedown', () => { if (state === 'title' || state === 'over') reset(); });
+
+function update(dt) {
+  elapsed += dt;
+  score = Math.floor(elapsed * 10);
+  let dx = 0, dy = 0;
+  if (keys['ArrowLeft'] || keys['KeyA']) dx -= 1;
+  if (keys['ArrowRight'] || keys['KeyD']) dx += 1;
+  if (keys['ArrowUp'] || keys['KeyW']) dy -= 1;
+  if (keys['ArrowDown'] || keys['KeyS']) dy += 1;
+  const len = Math.hypot(dx, dy) || 1;
+  player.x += (dx / len) * player.speed * dt;
+  player.y += (dy / len) * player.speed * dt;
+  player.x = Math.max(player.r, Math.min(W - player.r, player.x));
+  player.y = Math.max(player.r, Math.min(H - player.r, player.y));
+
+  // spawn rate ramps up
+  const interval = Math.max(0.12, 0.7 - elapsed * 0.012);
+  spawnT += dt;
+  while (spawnT >= interval) { spawnT -= interval; spawnBullet(); }
+
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    if (b.x < -30 || b.x > W + 30 || b.y < -30 || b.y > H + 30) { bullets.splice(i, 1); continue; }
+    if (Math.hypot(b.x - player.x, b.y - player.y) < b.r + player.r) {
+      if (score > best) best = score;
+      state = 'over';
+    }
+  }
+}
+
+function centerText(t, y, s, c, w) {
+  ctx.fillStyle = c; ctx.font = (w || 'bold') + ' ' + s + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(t, W / 2, y);
+}
+function draw() {
+  ctx.fillStyle = '#0a0a12'; ctx.fillRect(0, 0, W, H);
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  if (state === 'title') {
+    centerText('躲避弹幕', 130, 60, '#00e5ff');
+    centerText('Dodge', 185, 22, '#666', 'normal');
+    centerText('方向键 / WASD 移动小白点', 270, 24, '#eee', 'normal');
+    centerText('躲避从四面八方飞来的弹幕', 310, 20, '#888', 'normal');
+    centerText('活得越久分数越高，难度不断上升', 345, 18, '#888', 'normal');
+    centerText('按空格开始', 420, 24, '#ffd54f');
+    return;
+  }
+  if (state === 'over') {
+    centerText('被击中了！', 150, 56, '#ff5252');
+    centerText('存活得分 ' + score, 235, 40, '#ffd54f');
+    centerText('最佳 ' + best, 290, 26, '#69f0ae');
+    centerText('坚持了 ' + (elapsed).toFixed(1) + ' 秒', 335, 22, '#aaa', 'normal');
+    centerText('按空格再来一次', 420, 22, '#888', 'normal');
+    return;
+  }
+
+  for (const b of bullets) {
+    ctx.fillStyle = b.c;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+  }
+  // player with glow ring
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(player.x, player.y, player.r + 5, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2); ctx.fill();
+
+  ctx.fillStyle = '#fff'; ctx.font = '20px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('得分 ' + score, 16, 30);
+  ctx.textAlign = 'right';
+  ctx.fillText(elapsed.toFixed(1) + 's', W - 16, 30);
+}
+
+function loop() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  if (state === 'play') update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+lastTime = performance.now();
+loop();
+</script>
+</body>
+</html>

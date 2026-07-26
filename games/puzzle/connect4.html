@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>四子棋</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+const STATE_TITLE = 0, STATE_PLAY = 1, STATE_WIN = 2, STATE_LOSE = 3, STATE_DRAW = 4;
+let state = STATE_TITLE;
+let score = 0;
+
+// Game constants
+const COLS = 7, ROWS = 6;
+const CELL = 60;
+const GRID_X = 170;
+const GRID_Y = 60;
+const EMPTY = 0, PLAYER = 1, AI = 2;
+
+// Game state
+let board = [];
+let currentPlayer = PLAYER;
+let winLine = [];
+let hoverCol = -1;
+let dropAnim = null; // {col, row, y, targetY, player}
+let aiThinking = false;
+let difficulty = 1; // 0=easy, 1=medium, 2=hard
+let aiDepth = [3, 4, 5];
+let playerScore = 0, aiScore = 0, drawCount = 0;
+let gameCount = 0;
+let message = '';
+
+const DIFF_NAMES = ['简单', '中等', '困难'];
+const COL_BG = '#1a1a2e';
+const COL_BOARD = '#1a3a6a';
+const COL_HOLE = '#111128';
+const COL_PLAYER = '#f44336';
+const COL_AI = '#ffeb3b';
+const COL_WIN = '#76ff03';
+const COL_TEXT = '#eee';
+const COL_BTN = '#333';
+const COL_BTN_HOVER = '#555';
+
+let buttons = [];
+let hoverBtn = -1;
+
+function initButtons() {
+  buttons = [];
+  if (state === STATE_TITLE) {
+    for (let i = 0; i < 3; i++) {
+      buttons.push({ x: 300, y: 200 + i * 65, w: 200, h: 50, label: `AI难度: ${DIFF_NAMES[i]}`, action: () => startGame(i) });
+    }
+  } else if (state === STATE_WIN || state === STATE_LOSE || state === STATE_DRAW) {
+    buttons.push({ x: 250, y: 380, w: 140, h: 45, label: '再来一局', action: () => startGame(difficulty) });
+    buttons.push({ x: 410, y: 380, w: 140, h: 45, label: '返回菜单', action: () => { state = STATE_TITLE; initButtons(); } });
+  }
+}
+
+function startGame(diff) {
+  difficulty = diff;
+  board = Array.from({length: ROWS}, () => Array(COLS).fill(EMPTY));
+  currentPlayer = PLAYER;
+  winLine = [];
+  dropAnim = null;
+  aiThinking = false;
+  message = '';
+  state = STATE_PLAY;
+  initButtons();
+}
+
+function getDropRow(col) {
+  for (let r = ROWS - 1; r >= 0; r--) {
+    if (board[r][col] === EMPTY) return r;
+  }
+  return -1;
+}
+
+function dropPiece(col, player) {
+  let row = getDropRow(col);
+  if (row < 0) return false;
+
+  // Start animation
+  let targetY = GRID_Y + row * CELL + CELL / 2;
+  dropAnim = { col, row, y: GRID_Y - CELL/2, targetY, player, done: false };
+  board[row][col] = player;
+  return true;
+}
+
+function playerMove(col) {
+  if (state !== STATE_PLAY || currentPlayer !== PLAYER || aiThinking || dropAnim) return;
+  if (getDropRow(col) < 0) return;
+
+  dropPiece(col, PLAYER);
+  currentPlayer = -1; // Lock input during animation
+}
+
+function afterDrop() {
+  let lastPlayer = dropAnim.player;
+  let row = dropAnim.row, col = dropAnim.col;
+  dropAnim = null;
+
+  let win = checkWin(board, lastPlayer);
+  if (win) {
+    winLine = win;
+    if (lastPlayer === PLAYER) {
+      playerScore++;
+      score += 100 + (difficulty + 1) * 50;
+      state = STATE_WIN;
+      message = '你赢了!';
+    } else {
+      aiScore++;
+      state = STATE_LOSE;
+      message = 'AI 获胜!';
+    }
+    gameCount++;
+    initButtons();
+    return;
+  }
+
+  if (isBoardFull()) {
+    drawCount++;
+    gameCount++;
+    state = STATE_DRAW;
+    message = '平局!';
+    initButtons();
+    return;
+  }
+
+  if (lastPlayer === PLAYER) {
+    currentPlayer = AI;
+    aiThinking = true;
+    setTimeout(aiMove, 300);
+  } else {
+    currentPlayer = PLAYER;
+  }
+}
+
+function aiMove() {
+  if (state !== STATE_PLAY) { aiThinking = false; return; }
+  let col = getBestMove();
+  dropPiece(col, AI);
+  aiThinking = false;
+}
+
+// Minimax with alpha-beta pruning
+function getBestMove() {
+  let depth = aiDepth[difficulty];
+  let bestScore = -Infinity;
+  let bestCol = 3;
+  let validCols = getValidCols(board);
+
+  // Order columns from center out for better pruning
+  validCols.sort((a, b) => Math.abs(a - 3) - Math.abs(b - 3));
+
+  for (let col of validCols) {
+    let row = getDropRow(col);
+    board[row][col] = AI;
+    let s = minimax(board, depth - 1, -Infinity, Infinity, false);
+    board[row][col] = EMPTY;
+    if (s > bestScore) {
+      bestScore = s;
+      bestCol = col;
+    }
+  }
+  return bestCol;
+}
+
+function getValidCols(bd) {
+  let cols = [];
+  for (let c = 0; c < COLS; c++)
+    if (bd[0][c] === EMPTY) cols.push(c);
+  return cols;
+}
+
+function minimax(bd, depth, alpha, beta, isMax) {
+  let winAI = checkWin(bd, AI);
+  let winP = checkWin(bd, PLAYER);
+  if (winAI) return 100000 + depth;
+  if (winP) return -100000 - depth;
+  if (depth === 0 || getValidCols(bd).length === 0) return evaluateBoard(bd);
+
+  let validCols = getValidCols(bd);
+  validCols.sort((a, b) => Math.abs(a - 3) - Math.abs(b - 3));
+
+  if (isMax) {
+    let maxEval = -Infinity;
+    for (let col of validCols) {
+      let row = getDropRow(col);
+      bd[row][col] = AI;
+      let ev = minimax(bd, depth - 1, alpha, beta, false);
+      bd[row][col] = EMPTY;
+      maxEval = Math.max(maxEval, ev);
+      alpha = Math.max(alpha, ev);
+      if (beta <= alpha) break;
+    }
+    return maxEval;
+  } else {
+    let minEval = Infinity;
+    for (let col of validCols) {
+      let row = getDropRow(col);
+      bd[row][col] = PLAYER;
+      let ev = minimax(bd, depth - 1, alpha, beta, true);
+      bd[row][col] = EMPTY;
+      minEval = Math.min(minEval, ev);
+      beta = Math.min(beta, ev);
+      if (beta <= alpha) break;
+    }
+    return minEval;
+  }
+}
+
+function evaluateBoard(bd) {
+  let sc = 0;
+  // Center column preference
+  for (let r = 0; r < ROWS; r++) {
+    if (bd[r][3] === AI) sc += 3;
+    else if (bd[r][3] === PLAYER) sc -= 3;
+  }
+  // Evaluate all windows of 4
+  sc += evaluateWindows(bd, AI) - evaluateWindows(bd, PLAYER) * 1.1;
+  return sc;
+}
+
+function evaluateWindows(bd, player) {
+  let sc = 0;
+  let opp = player === AI ? PLAYER : AI;
+  // Horizontal
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c <= COLS - 4; c++)
+      sc += scoreWindow(bd, r, c, 0, 1, player, opp);
+  // Vertical
+  for (let r = 0; r <= ROWS - 4; r++)
+    for (let c = 0; c < COLS; c++)
+      sc += scoreWindow(bd, r, c, 1, 0, player, opp);
+  // Diagonal down-right
+  for (let r = 0; r <= ROWS - 4; r++)
+    for (let c = 0; c <= COLS - 4; c++)
+      sc += scoreWindow(bd, r, c, 1, 1, player, opp);
+  // Diagonal down-left
+  for (let r = 0; r <= ROWS - 4; r++)
+    for (let c = 3; c < COLS; c++)
+      sc += scoreWindow(bd, r, c, 1, -1, player, opp);
+  return sc;
+}
+
+function scoreWindow(bd, r, c, dr, dc, player, opp) {
+  let mine = 0, theirs = 0, empty = 0;
+  for (let i = 0; i < 4; i++) {
+    let v = bd[r + dr*i][c + dc*i];
+    if (v === player) mine++;
+    else if (v === opp) theirs++;
+    else empty++;
+  }
+  if (theirs > 0 && mine > 0) return 0;
+  if (mine === 4) return 10000;
+  if (mine === 3 && empty === 1) return 100;
+  if (mine === 2 && empty === 2) return 10;
+  if (theirs === 3 && empty === 1) return -80;
+  return 0;
+}
+
+function checkWin(bd, player) {
+  // Horizontal
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c <= COLS - 4; c++)
+      if (bd[r][c]===player && bd[r][c+1]===player && bd[r][c+2]===player && bd[r][c+3]===player)
+        return [[r,c],[r,c+1],[r,c+2],[r,c+3]];
+  // Vertical
+  for (let r = 0; r <= ROWS - 4; r++)
+    for (let c = 0; c < COLS; c++)
+      if (bd[r][c]===player && bd[r+1][c]===player && bd[r+2][c]===player && bd[r+3][c]===player)
+        return [[r,c],[r+1,c],[r+2,c],[r+3,c]];
+  // Diagonal \
+  for (let r = 0; r <= ROWS - 4; r++)
+    for (let c = 0; c <= COLS - 4; c++)
+      if (bd[r][c]===player && bd[r+1][c+1]===player && bd[r+2][c+2]===player && bd[r+3][c+3]===player)
+        return [[r,c],[r+1,c+1],[r+2,c+2],[r+3,c+3]];
+  // Diagonal /
+  for (let r = 0; r <= ROWS - 4; r++)
+    for (let c = 3; c < COLS; c++)
+      if (bd[r][c]===player && bd[r+1][c-1]===player && bd[r+2][c-2]===player && bd[r+3][c-3]===player)
+        return [[r,c],[r+1,c-1],[r+2,c-2],[r+3,c-3]];
+  return null;
+}
+
+function isBoardFull() {
+  return board[0].every(c => c !== EMPTY);
+}
+
+// Drawing
+function draw() {
+  ctx.fillStyle = COL_BG;
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE_TITLE) drawTitle();
+  else drawGame();
+
+  drawButtons();
+  update();
+  requestAnimationFrame(draw);
+}
+
+function update() {
+  if (dropAnim) {
+    dropAnim.y += 12;
+    if (dropAnim.y >= dropAnim.targetY) {
+      dropAnim.y = dropAnim.targetY;
+      afterDrop();
+    }
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('四 子 棋', W/2, 90);
+  ctx.font = '18px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('Connect Four — 人机对战', W/2, 130);
+  ctx.fillText('点击列投放棋子，四子连线获胜', W/2, 160);
+  if (gameCount > 0) {
+    ctx.fillText(`战绩 — 胜: ${playerScore}  负: ${aiScore}  平: ${drawCount}`, W/2, 440);
+  }
+}
+
+function drawGame() {
+  // Board background
+  ctx.fillStyle = COL_BOARD;
+  roundRect(GRID_X - 10, GRID_Y - 10, COLS * CELL + 20, ROWS * CELL + 20, 12);
+  ctx.fill();
+
+  // Hover indicator
+  if (state === STATE_PLAY && currentPlayer === PLAYER && !dropAnim && hoverCol >= 0 && getDropRow(hoverCol) >= 0) {
+    ctx.fillStyle = 'rgba(244,67,54,0.3)';
+    ctx.beginPath();
+    ctx.arc(GRID_X + hoverCol * CELL + CELL/2, GRID_Y - 25, 12, 0, Math.PI * 2);
+    ctx.fill();
+    // Column highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(GRID_X + hoverCol * CELL, GRID_Y, CELL, ROWS * CELL);
+  }
+
+  // Draw holes and pieces
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let cx = GRID_X + c * CELL + CELL/2;
+      let cy = GRID_Y + r * CELL + CELL/2;
+      let radius = CELL/2 - 6;
+
+      // Hole background
+      ctx.fillStyle = COL_HOLE;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Piece
+      if (board[r][c] !== EMPTY) {
+        // Skip animated piece position
+        if (dropAnim && dropAnim.row === r && dropAnim.col === c) continue;
+        let isWin = winLine.some(w => w[0] === r && w[1] === c);
+        ctx.fillStyle = board[r][c] === PLAYER ? COL_PLAYER : COL_AI;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+        if (isWin) {
+          ctx.strokeStyle = COL_WIN;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius + 2, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Inner shading
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // Draw drop animation
+  if (dropAnim) {
+    let cx = GRID_X + dropAnim.col * CELL + CELL/2;
+    let radius = CELL/2 - 6;
+    ctx.fillStyle = dropAnim.player === PLAYER ? COL_PLAYER : COL_AI;
+    ctx.beginPath();
+    ctx.arc(cx, dropAnim.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.beginPath();
+    ctx.arc(cx, dropAnim.y, radius * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Win line glow
+  if (winLine.length > 0) {
+    ctx.strokeStyle = COL_WIN;
+    ctx.lineWidth = 4;
+    ctx.shadowColor = COL_WIN;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    let [r0, c0] = winLine[0];
+    let [r3, c3] = winLine[3];
+    ctx.moveTo(GRID_X + c0*CELL + CELL/2, GRID_Y + r0*CELL + CELL/2);
+    ctx.lineTo(GRID_X + c3*CELL + CELL/2, GRID_Y + r3*CELL + CELL/2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // Status text
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'center';
+  if (state === STATE_PLAY) {
+    if (aiThinking) ctx.fillText('AI 思考中...', W/2, H - 20);
+    else ctx.fillText('你的回合 — 点击列投放', W/2, H - 20);
+  } else {
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillStyle = state === STATE_WIN ? COL_WIN : state === STATE_LOSE ? COL_PLAYER : '#aaa';
+    ctx.fillText(message, W/2, H - 50);
+    ctx.font = '16px sans-serif';
+    ctx.fillStyle = '#aaa';
+    ctx.fillText(`战绩 — 胜: ${playerScore}  负: ${aiScore}  平: ${drawCount}`, W/2, H - 20);
+  }
+
+  // Side info
+  ctx.textAlign = 'left';
+  ctx.font = '14px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText(`难度: ${DIFF_NAMES[difficulty]}`, 20, 30);
+  ctx.fillStyle = COL_PLAYER;
+  ctx.fillText('● 你 (红)', 20, 60);
+  ctx.fillStyle = COL_AI;
+  ctx.fillText('● AI (黄)', 20, 85);
+}
+
+function drawButtons() {
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    ctx.fillStyle = (i === hoverBtn) ? COL_BTN_HOVER : COL_BTN;
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 1;
+    roundRect(b.x, b.y, b.w, b.h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COL_TEXT;
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// Input
+canvas.addEventListener('mousemove', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+  hoverBtn = -1;
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) { hoverBtn = i; break; }
+  }
+  // Column hover
+  hoverCol = -1;
+  if (state === STATE_PLAY) {
+    let c = Math.floor((mx - GRID_X) / CELL);
+    if (c >= 0 && c < COLS && my >= GRID_Y - 30 && my <= GRID_Y + ROWS * CELL) {
+      hoverCol = c;
+    }
+  }
+  canvas.style.cursor = (hoverBtn >= 0 || hoverCol >= 0) ? 'pointer' : 'default';
+});
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  for (let b of buttons) {
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) { b.action(); return; }
+  }
+
+  if (state === STATE_PLAY && currentPlayer === PLAYER && !dropAnim) {
+    let c = Math.floor((mx - GRID_X) / CELL);
+    if (c >= 0 && c < COLS) playerMove(c);
+  }
+});
+
+initButtons();
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>播棋 - Mancala</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+// Board layout: indices 0-5 = player pits (bottom, left to right)
+// 6 = player mancala (right), 7-12 = AI pits (top, right to left), 13 = AI mancala (left)
+let gameState = 'title';
+let board = [];
+let currentTurn = 'player';
+let score = 0;
+let message = '';
+let winner = '';
+let selectedPit = -1;
+let animating = false;
+let animStones = [];
+let animStep = 0;
+let highlightPits = [];
+
+function initBoard() {
+  board = [4,4,4,4,4,4, 0, 4,4,4,4,4,4, 0];
+  currentTurn = 'player';
+  score = 0;
+  winner = '';
+  selectedPit = -1;
+  animating = false;
+  animStones = [];
+  message = '你的回合 - 选择一个坑位';
+  highlightPits = [0,1,2,3,4,5].filter(i => board[i] > 0);
+}
+
+function getMancala(turn) { return turn === 'player' ? 6 : 13; }
+function getPits(turn) { return turn === 'player' ? [0,1,2,3,4,5] : [7,8,9,10,11,12]; }
+function oppositePit(idx) { return 12 - idx; }
+
+function sow(brd, pitIdx, turn) {
+  const nb = [...brd];
+  let stones = nb[pitIdx];
+  nb[pitIdx] = 0;
+  let idx = pitIdx;
+  const skipMancala = turn === 'player' ? 13 : 6;
+  let lastIdx = -1;
+  while (stones > 0) {
+    idx = (idx + 1) % 14;
+    if (idx === skipMancala) continue;
+    nb[idx]++;
+    stones--;
+    lastIdx = idx;
+  }
+  return { board: nb, lastIdx };
+}
+
+function checkExtraTurn(lastIdx, turn) {
+  return lastIdx === getMancala(turn);
+}
+
+function checkCapture(brd, lastIdx, turn) {
+  const pits = getPits(turn);
+  if (pits.includes(lastIdx) && brd[lastIdx] === 1) {
+    const opp = oppositePit(lastIdx);
+    if (brd[opp] > 0) {
+      const captured = brd[opp] + 1;
+      brd[getMancala(turn)] += captured;
+      brd[opp] = 0;
+      brd[lastIdx] = 0;
+      return captured;
+    }
+  }
+  return 0;
+}
+
+function isGameOver(brd) {
+  const playerEmpty = [0,1,2,3,4,5].every(i => brd[i] === 0);
+  const aiEmpty = [7,8,9,10,11,12].every(i => brd[i] === 0);
+  return playerEmpty || aiEmpty;
+}
+
+function collectRemaining(brd) {
+  const nb = [...brd];
+  for (let i = 0; i <= 5; i++) { nb[6] += nb[i]; nb[i] = 0; }
+  for (let i = 7; i <= 12; i++) { nb[13] += nb[i]; nb[i] = 0; }
+  return nb;
+}
+
+function evaluate(brd) {
+  return brd[13] - brd[6];
+}
+
+function getValidMoves(brd, turn) {
+  return getPits(turn).filter(i => brd[i] > 0);
+}
+
+function minimax(brd, depth, alpha, beta, isMax) {
+  if (depth === 0 || isGameOver(brd)) {
+    if (isGameOver(brd)) {
+      const final = collectRemaining(brd);
+      return evaluate(final) * 2;
+    }
+    return evaluate(brd);
+  }
+  const turn = isMax ? 'ai' : 'player';
+  const moves = getValidMoves(brd, turn);
+  if (moves.length === 0) return evaluate(brd);
+
+  if (isMax) {
+    let best = -Infinity;
+    for (const pit of moves) {
+      const result = sow(brd, pit, 'ai');
+      let nb = result.board;
+      checkCapture(nb, result.lastIdx, 'ai');
+      let val;
+      if (checkExtraTurn(result.lastIdx, 'ai')) {
+        val = minimax(nb, depth, alpha, beta, true);
+      } else {
+        val = minimax(nb, depth - 1, alpha, beta, false);
+      }
+      best = Math.max(best, val);
+      alpha = Math.max(alpha, val);
+      if (beta <= alpha) break;
+    }
+    return best;
+  } else {
+    let best = Infinity;
+    for (const pit of moves) {
+      const result = sow(brd, pit, 'player');
+      let nb = result.board;
+      checkCapture(nb, result.lastIdx, 'player');
+      let val;
+      if (checkExtraTurn(result.lastIdx, 'player')) {
+        val = minimax(nb, depth, alpha, beta, false);
+      } else {
+        val = minimax(nb, depth - 1, alpha, beta, true);
+      }
+      best = Math.min(best, val);
+      beta = Math.min(beta, val);
+      if (beta <= alpha) break;
+    }
+    return best;
+  }
+}
+
+function aiMove() {
+  if (gameState !== 'playing') return;
+  const moves = getValidMoves(board, 'ai');
+  if (moves.length === 0) { endGame(); return; }
+  let bestPit = moves[0], bestVal = -Infinity;
+  for (const pit of moves) {
+    const result = sow(board, pit, 'ai');
+    const nb = result.board;
+    checkCapture(nb, result.lastIdx, 'ai');
+    let val;
+    if (checkExtraTurn(result.lastIdx, 'ai')) {
+      val = minimax(nb, 4, -Infinity, Infinity, true) + 3;
+    } else {
+      val = minimax(nb, 3, -Infinity, Infinity, false);
+    }
+    if (val > bestVal) { bestVal = val; bestPit = pit; }
+  }
+  // Animate AI move
+  animating = true;
+  message = 'AI回合...';
+  setTimeout(() => {
+    const result = sow(board, bestPit, 'ai');
+    board = result.board;
+    const captured = checkCapture(board, result.lastIdx, 'ai');
+    if (captured > 0) message = `AI捕获了${captured}颗棋子！`;
+    animating = false;
+    if (isGameOver(board)) { endGame(); return; }
+    if (checkExtraTurn(result.lastIdx, 'ai')) {
+      message = 'AI获得额外回合';
+      setTimeout(aiMove, 800);
+    } else {
+      currentTurn = 'player';
+      highlightPits = getValidMoves(board, 'player');
+      if (highlightPits.length === 0) { endGame(); return; }
+      message = '你的回合 - 选择一个坑位';
+    }
+  }, 600);
+}
+
+function playerMove(pitIdx) {
+  if (animating || currentTurn !== 'player') return;
+  if (board[pitIdx] === 0) return;
+  const result = sow(board, pitIdx, 'player');
+  board = result.board;
+  const captured = checkCapture(board, result.lastIdx, 'player');
+  score = board[6];
+  if (captured > 0) message = `你捕获了${captured}颗棋子！`;
+  if (isGameOver(board)) { endGame(); return; }
+  if (checkExtraTurn(result.lastIdx, 'player')) {
+    highlightPits = getValidMoves(board, 'player');
+    if (highlightPits.length === 0) { endGame(); return; }
+    message = '额外回合！再选一个坑位';
+  } else {
+    currentTurn = 'ai';
+    highlightPits = [];
+    setTimeout(aiMove, 600);
+  }
+}
+
+function endGame() {
+  board = collectRemaining(board);
+  score = board[6];
+  gameState = 'gameover';
+  if (board[6] > board[13]) { winner = 'player'; message = '你赢了！'; }
+  else if (board[13] > board[6]) { winner = 'ai'; message = 'AI赢了！'; }
+  else { winner = 'draw'; message = '平局！'; }
+}
+
+// Layout constants
+const PIT_R = 30;
+const STORE_W = 50, STORE_H = 120;
+const BOARD_CX = W / 2, BOARD_CY = H / 2;
+const PIT_SPACING = 80;
+
+function getPitPos(idx) {
+  if (idx === 6) return { x: BOARD_CX + PIT_SPACING * 3 + 40, y: BOARD_CY, isStore: true };
+  if (idx === 13) return { x: BOARD_CX - PIT_SPACING * 3 - 40, y: BOARD_CY, isStore: true };
+  if (idx >= 0 && idx <= 5) {
+    return { x: BOARD_CX + (idx - 2.5) * PIT_SPACING, y: BOARD_CY + 70, isStore: false };
+  }
+  // AI pits 7-12 displayed right to left on top
+  const aiIdx = idx - 7;
+  return { x: BOARD_CX + (2.5 - aiIdx) * PIT_SPACING, y: BOARD_CY - 70, isStore: false };
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 330 && my < 380) {
+      gameState = 'playing'; initBoard();
+    }
+    return;
+  }
+  if (gameState === 'gameover') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 340 && my < 390) {
+      gameState = 'playing'; initBoard();
+    }
+    return;
+  }
+  if (gameState !== 'playing' || currentTurn !== 'player' || animating) return;
+
+  for (let i = 0; i <= 5; i++) {
+    const pos = getPitPos(i);
+    const dist = Math.sqrt((mx - pos.x)**2 + (my - pos.y)**2);
+    if (dist < PIT_R + 5 && board[i] > 0) {
+      playerMove(i);
+      return;
+    }
+  }
+});
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#e6a817';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('播 棋', W/2, 130);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('Mancala - 人机对战', W/2, 180);
+  ctx.fillText('规则：选择坑位播种，最后落入己方大坑可再播一次', W/2, 225);
+  ctx.fillText('最后落入己方空坑可捕获对面棋子', W/2, 255);
+  ctx.fillText('大坑中棋子多者获胜', W/2, 285);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 330, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('开始游戏', W/2, 362);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = winner === 'player' ? '#4ecdc4' : (winner === 'ai' ? '#e94560' : '#ffd700');
+  ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W/2, 170);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '22px sans-serif';
+  ctx.fillText(`你: ${board[6]}  AI: ${board[13]}`, W/2, 230);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 340, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('再来一局', W/2, 372);
+}
+
+function drawPit(x, y, stones, highlight, isPlayer) {
+  ctx.beginPath();
+  ctx.ellipse(x, y, PIT_R, PIT_R * 0.8, 0, 0, Math.PI * 2);
+  ctx.fillStyle = highlight ? '#3d5a3d' : '#2a2a3e';
+  ctx.fill();
+  ctx.strokeStyle = highlight ? '#4ecdc4' : '#555';
+  ctx.lineWidth = highlight ? 3 : 2;
+  ctx.stroke();
+  // Draw stones
+  if (stones > 0) {
+    const cols = Math.min(stones, 4);
+    const rows = Math.ceil(stones / 4);
+    for (let i = 0; i < stones && i < 12; i++) {
+      const col = i % 4, row = Math.floor(i / 4);
+      const sx = x - 12 + col * 8;
+      const sy = y - (rows-1)*4 + row * 8;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = isPlayer ? '#e6a817' : '#7a88cc';
+      ctx.fill();
+    }
+  }
+  // Count
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(stones, x, y + PIT_R + 16);
+}
+
+function drawStore(x, y, stones, label) {
+  ctx.fillStyle = '#2a2a3e';
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(x - STORE_W/2, y - STORE_H/2, STORE_W, STORE_H, 15);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(stones, x, y + 8);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '12px sans-serif';
+  ctx.fillText(label, x, y + STORE_H/2 + 16);
+}
+
+function drawGame() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  // Board background
+  ctx.fillStyle = '#22223a';
+  ctx.beginPath();
+  ctx.roundRect(BOARD_CX - 310, BOARD_CY - 130, 620, 260, 20);
+  ctx.fill();
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // AI pits (top)
+  for (let i = 7; i <= 12; i++) {
+    const pos = getPitPos(i);
+    drawPit(pos.x, pos.y, board[i], false, false);
+  }
+  // Player pits (bottom)
+  for (let i = 0; i <= 5; i++) {
+    const pos = getPitPos(i);
+    const hl = highlightPits.includes(i) && currentTurn === 'player';
+    drawPit(pos.x, pos.y, board[i], hl, true);
+  }
+  // Stores
+  const pStore = getPitPos(6);
+  const aStore = getPitPos(13);
+  drawStore(pStore.x, pStore.y, board[6], '你的大坑');
+  drawStore(aStore.x, aStore.y, board[13], 'AI大坑');
+
+  // Labels
+  ctx.fillStyle = '#888';
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('AI', BOARD_CX, BOARD_CY - 115);
+  ctx.fillText('你', BOARD_CX, BOARD_CY + 125);
+
+  // HUD
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(message, W/2, H - 15);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#888';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('ESC 退出', W - 10, 20);
+  ctx.textAlign = 'left';
+  ctx.fillText(`得分: ${score}`, 10, 20);
+}
+
+function gameLoop() {
+  if (gameState === 'title') drawTitle();
+  else if (gameState === 'playing') drawGame();
+  else if (gameState === 'gameover') { drawGame(); drawGameOver(); }
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

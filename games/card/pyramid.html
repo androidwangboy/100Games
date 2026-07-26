@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>金字塔 (Pyramid)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let gameState = 'title';
+let deck = [], stock = [], waste = [];
+let pyramid = []; // array of rows, each row has cards
+let selected = null; // {source, index}
+let pairsRemoved = 0;
+let message = '';
+let titlePulse = 0;
+let gameOver = false;
+let gameWon = false;
+let removeAnim = [];
+
+const SUITS = ['♠', '♥', '♦', '♣'];
+const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+const CARD_W = 52, CARD_H = 72;
+
+function createDeck() {
+  deck = [];
+  for (let s of SUITS) for (let r of RANKS) deck.push({ suit: s, rank: r, removed: false });
+  for (let i = deck.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+}
+
+function rankValue(rank) {
+  if (rank === 'A') return 1;
+  if (rank === 'J') return 11;
+  if (rank === 'Q') return 12;
+  if (rank === 'K') return 13;
+  return parseInt(rank);
+}
+
+function isRed(s) { return s === '♥' || s === '♦'; }
+
+function setupGame() {
+  createDeck();
+  pyramid = [];
+  stock = [];
+  waste = [];
+  selected = null;
+  pairsRemoved = 0;
+  message = '选择两张点数和为13的牌消除';
+  gameOver = false;
+  gameWon = false;
+  removeAnim = [];
+
+  // Deal pyramid: 7 rows (1+2+3+4+5+6+7 = 28 cards)
+  for (let row = 0; row < 7; row++) {
+    pyramid[row] = [];
+    for (let col = 0; col <= row; col++) {
+      pyramid[row].push({ card: deck.pop(), removed: false });
+    }
+  }
+  // Remaining 24 cards go to stock
+  stock = deck.splice(0);
+}
+
+function isUncovered(row, col) {
+  if (row === 6) return true; // bottom row always uncovered
+  // A card is covered if either child below it exists and is not removed
+  let leftChild = pyramid[row + 1][col];
+  let rightChild = pyramid[row + 1][col + 1];
+  let leftCovers = leftChild && !leftChild.removed;
+  let rightCovers = rightChild && !rightChild.removed;
+  return !leftCovers && !rightCovers;
+}
+
+function getPyramidCardPos(row, col) {
+  let rowWidth = (row + 1) * (CARD_W + 6) - 6;
+  let startX = W / 2 - rowWidth / 2;
+  let x = startX + col * (CARD_W + 6);
+  let y = 30 + row * (CARD_H * 0.38);
+  return { x, y };
+}
+
+function canRemovePair(card1, card2) {
+  if (!card1 || !card2) return false;
+  return rankValue(card1.rank) + rankValue(card2.rank) === 13;
+}
+
+function checkWin() {
+  for (let row = 0; row < 7; row++) {
+    for (let col = 0; col <= row; col++) {
+      if (!pyramid[row][col].removed) return false;
+    }
+  }
+  return true;
+}
+
+function hasValidMoves() {
+  let available = [];
+  // Pyramid available cards
+  for (let row = 0; row < 7; row++) {
+    for (let col = 0; col <= row; col++) {
+      if (!pyramid[row][col].removed && isUncovered(row, col)) {
+        available.push({ source: 'pyramid', row, col, card: pyramid[row][col].card });
+      }
+    }
+  }
+  // Waste top card
+  if (waste.length > 0) {
+    available.push({ source: 'waste', card: waste[waste.length - 1] });
+  }
+  // Check Kings (auto-remove)
+  for (let a of available) {
+    if (rankValue(a.card.rank) === 13) return true;
+  }
+  // Check pairs
+  for (let i = 0; i < available.length; i++) {
+    for (let j = i + 1; j < available.length; j++) {
+      if (canRemovePair(available[i].card, available[j].card)) return true;
+    }
+  }
+  return false;
+}
+
+function removeCard(source, row, col) {
+  if (source === 'pyramid') {
+    pyramid[row][col].removed = true;
+  } else if (source === 'waste') {
+    waste.pop();
+  }
+}
+
+function trySelect(source, row, col, card) {
+  if (rankValue(card.rank) === 13) {
+    // King removes itself
+    removeCard(source, row, col);
+    pairsRemoved++;
+    score += 10;
+    message = 'K 自动消除! +10分';
+    selected = null;
+    if (checkWin()) { gameWon = true; gameOver = true; message = '恭喜! 你赢了!'; score += 100; }
+    return;
+  }
+  if (!selected) {
+    selected = { source, row, col, card };
+    message = '已选择 ' + card.rank + card.suit + '，再选一张和为13的牌';
+  } else {
+    if (selected.source === source && selected.row === row && selected.col === col) {
+      selected = null;
+      message = '取消选择';
+      return;
+    }
+    if (canRemovePair(selected.card, card)) {
+      removeCard(selected.source, selected.row, selected.col);
+      removeCard(source, row, col);
+      pairsRemoved++;
+      score += 10;
+      message = '消除成功! ' + selected.card.rank + '+' + card.rank + ' = 13  +10分';
+      selected = null;
+      if (checkWin()) { gameWon = true; gameOver = true; message = '恭喜! 金字塔已清空! +100分'; score += 100; }
+      else if (!hasValidMoves() && stock.length === 0) { gameOver = true; message = '没有可用的配对了，游戏结束'; }
+    } else {
+      message = '两张牌之和不是13!';
+      selected = { source, row, col, card };
+    }
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawCardShape(x, y, card, faceUp, highlight, dimmed) {
+  ctx.save();
+  if (dimmed) ctx.globalAlpha = 0.5;
+  ctx.shadowColor = highlight ? 'rgba(255,215,0,0.6)' : 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = highlight ? 10 : 4;
+  ctx.fillStyle = faceUp ? '#fff' : '#1a3a6b';
+  ctx.strokeStyle = highlight ? '#ffd700' : '#555';
+  ctx.lineWidth = highlight ? 2.5 : 1;
+  roundRect(x, y, CARD_W, CARD_H, 5);
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+  if (!faceUp) {
+    ctx.fillStyle = '#2a5aab';
+    roundRect(x + 4, y + 4, CARD_W - 8, CARD_H - 8, 3);
+    ctx.fill();
+    return;
+  }
+  let color = isRed(card.suit) ? '#d32f2f' : '#222';
+  ctx.fillStyle = color;
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(card.rank, x + 4, y + 15);
+  ctx.font = '11px Arial';
+  ctx.fillText(card.suit, x + 4, y + 28);
+  ctx.font = '22px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(card.suit, x + CARD_W / 2, y + CARD_H / 2 + 8);
+}
+
+function drawBackground() {
+  let grad = ctx.createRadialGradient(W / 2, H / 2, 50, W / 2, H / 2, 450);
+  grad.addColorStop(0, '#1b5e20');
+  grad.addColorStop(1, '#0a2e10');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawTitle() {
+  drawBackground();
+  titlePulse += 0.03;
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 46px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('金字塔', W / 2, 100);
+  ctx.fillStyle = '#aaffaa';
+  ctx.font = '20px Arial';
+  ctx.fillText('PYRAMID SOLITAIRE', W / 2, 135);
+  // Demo pyramid
+  let demoRows = 4;
+  for (let r = 0; r < demoRows; r++) {
+    for (let c = 0; c <= r; c++) {
+      let rw = (r + 1) * 40 - 6;
+      let sx = W / 2 - rw / 2 + c * 40;
+      let sy = 170 + r * 30;
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = '#888';
+      ctx.lineWidth = 1;
+      roundRect(sx, sy, 34, 24, 3);
+      ctx.fill(); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(titlePulse);
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px Arial';
+  ctx.fillText('点击开始游戏', W / 2, 340);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px Arial';
+  ctx.fillText('规则：消除点数和为13的牌对 (K=13可单独消除)', W / 2, 390);
+  ctx.fillText('Q+A=13, J+2=13, 10+3=13 ... | 按 ESC 退出', W / 2, 415);
+}
+
+function drawGame() {
+  drawBackground();
+  // Draw pyramid
+  for (let row = 0; row < 7; row++) {
+    for (let col = 0; col <= row; col++) {
+      let entry = pyramid[row][col];
+      if (entry.removed) continue;
+      let pos = getPyramidCardPos(row, col);
+      let uncovered = isUncovered(row, col);
+      let isSel = selected && selected.source === 'pyramid' && selected.row === row && selected.col === col;
+      drawCardShape(pos.x, pos.y, entry.card, true, isSel, !uncovered);
+    }
+  }
+
+  // Stock pile
+  let stockX = 30, stockY = H - CARD_H - 20;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '12px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('牌堆 (' + stock.length + ')', stockX + CARD_W / 2, stockY - 8);
+  if (stock.length > 0) {
+    drawCardShape(stockX, stockY, stock[stock.length - 1], false, false, false);
+  } else {
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    roundRect(stockX, stockY, CARD_W, CARD_H, 5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#555';
+    ctx.font = '11px Arial';
+    ctx.fillText('空', stockX + CARD_W / 2, stockY + CARD_H / 2 + 4);
+  }
+
+  // Waste pile
+  let wasteX = 120, wasteY = H - CARD_H - 20;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '12px Arial';
+  ctx.fillText('废牌堆', wasteX + CARD_W / 2, wasteY - 8);
+  if (waste.length > 0) {
+    let topWaste = waste[waste.length - 1];
+    let isSel = selected && selected.source === 'waste';
+    drawCardShape(wasteX, wasteY, topWaste, true, isSel, false);
+  } else {
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    roundRect(wasteX, wasteY, CARD_W, CARD_H, 5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Score and info
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText('分数: ' + score, W - 20, 30);
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.fillText('消除: ' + pairsRemoved + ' 对', W - 20, 55);
+
+  // Message bar
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  roundRect(W / 2 - 250, H - 35, 500, 28, 6);
+  ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '13px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W / 2, H - 16);
+
+  // Hint about values
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  roundRect(W - 170, 70, 160, 50, 5);
+  ctx.fill();
+  ctx.fillStyle = '#ccc';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('A=1, J=11, Q=12, K=13', W - 160, 90);
+  ctx.fillText('两张牌之和=13即可消除', W - 160, 108);
+
+  // Game over overlay
+  if (gameOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = gameWon ? '#ffd700' : '#ff5555';
+    ctx.font = 'bold 36px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(gameWon ? '恭喜通关!' : '游戏结束', W / 2, H / 2 - 40);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.fillText('最终得分: ' + score, W / 2, H / 2 + 10);
+    ctx.fillText('消除配对: ' + pairsRemoved, W / 2, H / 2 + 40);
+    ctx.fillStyle = '#aaffaa';
+    ctx.font = '16px Arial';
+    ctx.fillText('点击重新开始', W / 2, H / 2 + 90);
+  }
+}
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') { gameState = 'playing'; setupGame(); return; }
+  if (gameOver) { setupGame(); return; }
+
+  // Check stock click
+  let stockX = 30, stockY = H - CARD_H - 20;
+  if (mx >= stockX && mx <= stockX + CARD_W && my >= stockY && my <= stockY + CARD_H) {
+    if (stock.length > 0) {
+      waste.push(stock.pop());
+      selected = null;
+      message = '翻出一张牌: ' + waste[waste.length - 1].rank + waste[waste.length - 1].suit;
+      if (!hasValidMoves() && stock.length === 0) {
+        gameOver = true;
+        message = '没有可用的配对了，游戏结束';
+      }
+    }
+    return;
+  }
+
+  // Check waste click
+  let wasteX = 120, wasteY = H - CARD_H - 20;
+  if (waste.length > 0 && mx >= wasteX && mx <= wasteX + CARD_W && my >= wasteY && my <= wasteY + CARD_H) {
+    trySelect('waste', -1, -1, waste[waste.length - 1]);
+    return;
+  }
+
+  // Check pyramid cards
+  for (let row = 6; row >= 0; row--) {
+    for (let col = 0; col <= row; col++) {
+      let entry = pyramid[row][col];
+      if (entry.removed) continue;
+      if (!isUncovered(row, col)) continue;
+      let pos = getPyramidCardPos(row, col);
+      if (mx >= pos.x && mx <= pos.x + CARD_W && my >= pos.y && my <= pos.y + CARD_H) {
+        trySelect('pyramid', row, col, entry.card);
+        return;
+      }
+    }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({ type: 'EXIT_GAME', score: score }, '*'); }
+  if (gameState === 'title' && e.code === 'Enter') { gameState = 'playing'; setupGame(); }
+  if (gameState === 'playing' && e.code === 'Space') {
+    if (stock.length > 0) {
+      waste.push(stock.pop());
+      selected = null;
+    }
+  }
+});
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (gameState === 'title') drawTitle();
+  else drawGame();
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

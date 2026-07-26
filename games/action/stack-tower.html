@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>堆塔</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let state = 'title'; // title, play, over
+let score = 0, best = 0;
+let blocks = []; // settled blocks: {x, w, y, color}
+let moving = null; // {x, w, dir, speed, color}
+let falling = []; // cut-off pieces {x, w, y, vy, color}
+let camY = 0, targetCamY = 0;
+const BH = 34;
+let lastTime;
+
+function colorFor(i) {
+  const hue = (i * 24 + 180) % 360;
+  return 'hsl(' + hue + ',70%,55%)';
+}
+function reset() {
+  blocks = []; falling = [];
+  const baseW = 240;
+  blocks.push({ x: W / 2 - baseW / 2, w: baseW, y: H - BH, color: colorFor(0) });
+  score = 0; camY = 0; targetCamY = 0;
+  spawnMoving();
+  state = 'play';
+  lastTime = performance.now();
+}
+function topBlock() { return blocks[blocks.length - 1]; }
+function spawnMoving() {
+  const t = topBlock();
+  const y = t.y - BH;
+  const speed = 220 + blocks.length * 8;
+  const startLeft = Math.random() < 0.5;
+  moving = {
+    x: startLeft ? -t.w : W,
+    w: t.w,
+    dir: startLeft ? 1 : -1,
+    speed,
+    color: colorFor(blocks.length)
+  };
+}
+function drop() {
+  if (state !== 'play' || !moving) return;
+  const t = topBlock();
+  const overlapL = Math.max(moving.x, t.x);
+  const overlapR = Math.min(moving.x + moving.w, t.x + t.w);
+  const overlap = overlapR - overlapL;
+  if (overlap <= 0) {
+    // missed entirely -> game over, let it fall
+    falling.push({ x: moving.x, w: moving.w, y: moving.y, vy: 0, color: moving.color });
+    moving = null;
+    if (score > best) best = score;
+    state = 'over';
+    return;
+  }
+  // cut off the overhanging part
+  const cutLeft = moving.x < t.x;
+  const cutW = moving.w - overlap;
+  if (cutW > 1) {
+    const cx = cutLeft ? moving.x : overlapR;
+    falling.push({ x: cx, w: cutW, y: moving.y, vy: 0, color: moving.color });
+  }
+  // perfect placement bonus
+  const perfect = cutW < 4;
+  const newY = moving.y;
+  blocks.push({ x: overlapL, w: overlap, y: newY, color: moving.color });
+  score++;
+  if (perfect) score++; // bonus point for perfect stack
+  // camera scroll up as tower grows
+  if (newY - camY < 180) targetCamY = newY - 180;
+  spawnMoving();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space' || e.code === 'Enter') {
+    e.preventDefault();
+    if (state === 'play') drop();
+    else reset();
+  }
+});
+cv.addEventListener('mousedown', () => { if (state === 'play') drop(); else reset(); });
+
+function update(dt) {
+  if (moving) {
+    moving.x += moving.dir * moving.speed * dt;
+    if (moving.x > W) { moving.x = W; moving.dir = -1; }
+    if (moving.x + moving.w < 0) { moving.x = -moving.w; moving.dir = 1; }
+  }
+  for (let i = falling.length - 1; i >= 0; i--) {
+    const f = falling[i];
+    f.vy += 1400 * dt; f.y += f.vy * dt;
+    if (f.y - camY > H + 100) falling.splice(i, 1);
+  }
+  camY += (targetCamY - camY) * Math.min(1, dt * 6);
+}
+
+function centerText(t, y, s, c, w) {
+  ctx.fillStyle = c; ctx.font = (w || 'bold') + ' ' + s + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(t, W / 2, y);
+}
+function drawBlock(b) {
+  const y = b.y - camY;
+  ctx.fillStyle = b.color;
+  ctx.fillRect(b.x, y, b.w, BH - 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillRect(b.x, y, b.w, 5);
+}
+
+function draw() {
+  // background gradient (flat dark)
+  ctx.fillStyle = '#0d1117'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,0.03)';
+  for (let i = 0; i < 40; i++) {
+    const sx = (i * 97) % W, sy = (i * 53 - camY * 0.3) % H;
+    ctx.fillRect(sx, (sy + H) % H, 2, 2);
+  }
+
+  if (state === 'title') {
+    centerText('堆塔', 130, 64, '#00e5ff');
+    centerText('Stack Tower', 188, 22, '#666', 'normal');
+    centerText('方块左右滑动，按 空格 / 点击 放置', 275, 24, '#eee', 'normal');
+    centerText('悬空部分会被切掉，方块越来越小', 315, 20, '#888', 'normal');
+    centerText('完美对齐有额外加分！', 350, 18, '#ffd54f', 'normal');
+    centerText('按空格开始', 425, 24, '#ffd54f');
+    return;
+  }
+
+  for (const b of blocks) drawBlock(b);
+  for (const f of falling) drawBlock(f);
+  if (moving) {
+    drawBlock(moving);
+    // guide line
+    const t = topBlock();
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(t.x, 0); ctx.lineTo(t.x, H);
+    ctx.moveTo(t.x + t.w, 0); ctx.lineTo(t.x + t.w, H); ctx.stroke();
+  }
+
+  ctx.fillStyle = '#fff'; ctx.font = '24px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('层数 ' + score, 16, 34);
+  ctx.textAlign = 'right'; ctx.fillText('最佳 ' + best, W - 16, 34);
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, W, H);
+    centerText('塔倒了！', 165, 58, '#ff5252');
+    centerText('堆了 ' + score + ' 层', 245, 36, '#ffd54f');
+    centerText('最佳 ' + best, 295, 24, '#69f0ae');
+    centerText('按空格重新开始', 400, 22, '#888', 'normal');
+  }
+}
+
+function loop() {
+  const now = performance.now();
+  const dt = Math.min(0.033, (now - lastTime) / 1000);
+  lastTime = now;
+  if (state === 'play') update(dt);
+  else if (state === 'over') update(dt); // let pieces keep falling
+  draw();
+  requestAnimationFrame(loop);
+}
+lastTime = performance.now();
+loop();
+</script>
+</body>
+</html>

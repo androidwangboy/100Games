@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数织</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ---- 谜题数据 (# 填充, . 空) ----
+const PUZZLES = [
+  { name: '爱心', size: 5, map: [
+    ".#.#.",
+    "#####",
+    "#####",
+    ".###.",
+    "..#.."
+  ]},
+  { name: '叉号', size: 5, map: [
+    "#...#",
+    ".#.#.",
+    "..#..",
+    ".#.#.",
+    "#...#"
+  ]},
+  { name: '松树', size: 10, map: [
+    "....##....",
+    "...####...",
+    "...####...",
+    "..######..",
+    "..######..",
+    ".########.",
+    ".########.",
+    "....##....",
+    "....##....",
+    "...####..."
+  ]},
+  { name: '小屋', size: 10, map: [
+    "....##....",
+    "...####...",
+    "..######..",
+    ".########.",
+    "##########",
+    "##.####.##",
+    "##.####.##",
+    "##.####.##",
+    "##.####.##",
+    "##########"
+  ]},
+  { name: '钻石', size: 10, map: [
+    "....##....",
+    "...####...",
+    "..######..",
+    ".########.",
+    "##########",
+    "##########",
+    ".########.",
+    "..######..",
+    "...####...",
+    "....##...."
+  ]},
+  { name: '大爱心', size: 15, map: [
+    "..###.....###..",
+    ".#####...#####.",
+    "#######.#######",
+    "###############",
+    "###############",
+    "###############",
+    "###############",
+    ".#############.",
+    "..###########..",
+    "...#########...",
+    "....#######....",
+    ".....#####.....",
+    "......###......",
+    ".......#.......",
+    "..............."
+  ]}
+];
+
+let score = 0;
+let state = 'title'; // title | select | playing | win | revealed
+let puzzleIndex = 0;
+let checkErrors = true;
+
+// 运行时
+let rows, cols, solution, player; // player: 0 未知 1 填充 2 标记X
+let rowClues, colClues, maxRowLen, maxColLen;
+let cell, GX, GY, HCELL;
+let mistakes, startTime, elapsed;
+let hoverR = -1, hoverC = -1;
+let paintMode = 0; // 0 无 1 填充 2 标记
+let flash = null; // {r,c,t} 错误闪烁
+let confetti = [];
+
+function computeClues(line) {
+  const res = [];
+  let run = 0;
+  for (const ch of line) {
+    if (ch === '#') run++;
+    else if (run > 0) { res.push(run); run = 0; }
+  }
+  if (run > 0) res.push(run);
+  return res.length ? res : [0];
+}
+
+function loadPuzzle(i) {
+  puzzleIndex = i;
+  const p = PUZZLES[i];
+  rows = p.size; cols = p.size;
+  solution = p.map.map(row => row.split('').map(ch => ch === '#' ? 1 : 0));
+  player = [];
+  for (let r = 0; r < rows; r++) player.push(new Array(cols).fill(0));
+  rowClues = []; colClues = [];
+  for (let r = 0; r < rows; r++) rowClues.push(computeClues(p.map[r]));
+  for (let c = 0; c < cols; c++) {
+    let line = '';
+    for (let r = 0; r < rows; r++) line += solution[r][c] ? '#' : '.';
+    colClues.push(computeClues(line));
+  }
+  maxRowLen = Math.max(...rowClues.map(a => a.length));
+  maxColLen = Math.max(...colClues.map(a => a.length));
+
+  // 计算格子尺寸
+  const cellH = Math.floor(430 / (rows + maxColLen));
+  const cellW = Math.floor(520 / (cols + maxRowLen));
+  cell = Math.max(14, Math.min(cellH, cellW, 40));
+  HCELL = Math.max(16, Math.min(cell, 26));
+  GX = 24 + maxRowLen * HCELL + 8;
+  GY = 14 + maxColLen * HCELL + 8;
+
+  mistakes = 0; startTime = performance.now(); elapsed = 0;
+  flash = null; confetti = [];
+  state = 'playing';
+}
+
+function checkWin() {
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      if (solution[r][c] && player[r][c] !== 1) return false;
+      if (!solution[r][c] && player[r][c] === 1) return false;
+    }
+  return true;
+}
+
+function applyCell(r, c, mode) {
+  if (state !== 'playing') return;
+  if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+  if (mode === 1) {
+    if (checkErrors && !solution[r][c]) {
+      // 错误
+      mistakes++;
+      flash = { r, c, t: 0 };
+      player[r][c] = 0;
+      return;
+    }
+    player[r][c] = player[r][c] === 1 ? 0 : 1;
+  } else {
+    player[r][c] = player[r][c] === 2 ? 0 : 2;
+  }
+  if (checkWin()) {
+    state = 'win';
+    elapsed = (performance.now() - startTime) / 1000;
+    const gain = Math.max(100, rows * cols * 20 - mistakes * 30 - Math.floor(elapsed) * 2);
+    score += gain;
+    makeConfetti();
+  }
+}
+
+function revealSolution() {
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      player[r][c] = solution[r][c] ? 1 : 2;
+  state = 'revealed';
+}
+
+function makeConfetti() {
+  confetti = [];
+  for (let i = 0; i < 80; i++) {
+    confetti.push({
+      x: Math.random() * 800, y: Math.random() * -480,
+      vy: 1 + Math.random() * 3, vx: (Math.random() - 0.5) * 2,
+      color: `hsl(${Math.random() * 360}, 75%, 60%)`,
+      size: 5 + Math.random() * 7
+    });
+  }
+}
+
+// ---- 输入 ----
+function cellFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  const c = Math.floor((mx - GX) / cell);
+  const r = Math.floor((my - GY) / cell);
+  return { r, c, mx, my };
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousemove', e => {
+  const { r, c } = cellFromEvent(e);
+  hoverR = (r >= 0 && r < rows) ? r : -1;
+  hoverC = (c >= 0 && c < cols) ? c : -1;
+  if (paintMode && state === 'playing' && hoverR >= 0 && hoverC >= 0) {
+    applyCell(hoverR, hoverC, paintMode);
+  }
+});
+
+canvas.addEventListener('mousedown', e => {
+  const { r, c, mx, my } = cellFromEvent(e);
+  if (state === 'title') {
+    // 错误检查开关
+    if (mx > 280 && mx < 520 && my > 250 && my < 292) { checkErrors = !checkErrors; return; }
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) state = 'select';
+    return;
+  }
+  if (state === 'select') {
+    for (let i = 0; i < PUZZLES.length; i++) {
+      const bx = 130 + (i % 3) * 190;
+      const by = 160 + Math.floor(i / 3) * 120;
+      if (mx > bx && mx < bx + 160 && my > by && my < by + 90) { loadPuzzle(i); return; }
+    }
+    if (mx > 320 && mx < 480 && my > 415 && my < 460) state = 'title';
+    return;
+  }
+  if (state === 'win' || state === 'revealed') {
+    if (mx > 230 && mx < 390 && my > 350 && my < 405) state = 'select';
+    if (mx > 410 && mx < 570 && my > 350 && my < 405) loadPuzzle(puzzleIndex);
+    return;
+  }
+  if (state !== 'playing') return;
+  // 按钮
+  if (my > 430 && my < 470) {
+    if (mx > 560 && mx < 660) { loadPuzzle(puzzleIndex); return; }
+    if (mx > 670 && mx < 780) { revealSolution(); return; }
+  }
+  if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+  if (e.button === 2) { paintMode = 2; applyCell(r, c, 2); }
+  else { paintMode = 1; applyCell(r, c, 1); }
+});
+
+canvas.addEventListener('mouseup', () => { paintMode = 0; });
+canvas.addEventListener('mouseleave', () => { paintMode = 0; hoverR = hoverC = -1; });
+
+document.addEventListener('keydown', e => {
+  if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) state = 'select';
+  else if (state === 'playing' && e.code === 'KeyR') loadPuzzle(puzzleIndex);
+});
+
+// ---- 绘制 ----
+function drawClues() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // 行提示
+  for (let r = 0; r < rows; r++) {
+    const clue = rowClues[r];
+    const cy = GY + r * cell + cell / 2;
+    const done = isRowSolved(r);
+    ctx.fillStyle = done ? '#4a7' : '#cfd8dc';
+    ctx.font = 'bold ' + Math.min(16, cell * 0.7) + 'px sans-serif';
+    for (let j = 0; j < clue.length; j++) {
+      const pos = maxRowLen - clue.length + j;
+      const cx = 24 + pos * HCELL + HCELL / 2;
+      ctx.fillText(clue[j].toString(), cx, cy);
+    }
+  }
+  // 列提示
+  for (let c = 0; c < cols; c++) {
+    const clue = colClues[c];
+    const cx = GX + c * cell + cell / 2;
+    const done = isColSolved(c);
+    ctx.fillStyle = done ? '#4a7' : '#cfd8dc';
+    ctx.font = 'bold ' + Math.min(16, cell * 0.7) + 'px sans-serif';
+    for (let j = 0; j < clue.length; j++) {
+      const pos = maxColLen - clue.length + j;
+      const cy = 14 + pos * HCELL + HCELL / 2;
+      ctx.fillText(clue[j].toString(), cx, cy);
+    }
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function isRowSolved(r) {
+  let filled = 0, need = 0;
+  for (let c = 0; c < cols; c++) { if (solution[r][c]) need++; if (player[r][c] === 1) filled++; }
+  if (filled !== need) return false;
+  for (let c = 0; c < cols; c++) if (solution[r][c] && player[r][c] !== 1) return false;
+  return true;
+}
+function isColSolved(c) {
+  let filled = 0, need = 0;
+  for (let r = 0; r < rows; r++) { if (solution[r][c]) need++; if (player[r][c] === 1) filled++; }
+  if (filled !== need) return false;
+  for (let r = 0; r < rows; r++) if (solution[r][c] && player[r][c] !== 1) return false;
+  return true;
+}
+
+function drawGrid() {
+  // 高亮行列
+  if (hoverR >= 0) {
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(GX, GY + hoverR * cell, cols * cell, cell);
+  }
+  if (hoverC >= 0) {
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(GX + hoverC * cell, GY, cell, rows * cell);
+  }
+
+  // 单元格
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = GX + c * cell, y = GY + r * cell;
+      ctx.fillStyle = (r + c) % 2 === 0 ? '#20202c' : '#252532';
+      ctx.fillRect(x, y, cell, cell);
+      const v = player[r][c];
+      if (v === 1) {
+        ctx.fillStyle = state === 'revealed' && !solution[r][c] ? '#e57373' : '#4fc3f7';
+        ctx.fillRect(x + 1, y + 1, cell - 2, cell - 2);
+      } else if (v === 2) {
+        ctx.strokeStyle = '#90a4ae';
+        ctx.lineWidth = 2;
+        const p = cell * 0.28;
+        ctx.beginPath();
+        ctx.moveTo(x + p, y + p); ctx.lineTo(x + cell - p, y + cell - p);
+        ctx.moveTo(x + cell - p, y + p); ctx.lineTo(x + p, y + cell - p);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // 错误闪烁
+  if (flash) {
+    flash.t += 16;
+    const a = 1 - flash.t / 500;
+    if (a <= 0) flash = null;
+    else {
+      ctx.fillStyle = `rgba(229,57,53,${a * 0.7})`;
+      ctx.fillRect(GX + flash.c * cell, GY + flash.r * cell, cell, cell);
+    }
+  }
+
+  // 网格线
+  ctx.strokeStyle = '#3a3a4a';
+  ctx.lineWidth = 1;
+  for (let r = 0; r <= rows; r++) {
+    ctx.lineWidth = (r % 5 === 0) ? 2 : 1;
+    ctx.strokeStyle = (r % 5 === 0) ? '#6a6a80' : '#3a3a4a';
+    ctx.beginPath();
+    ctx.moveTo(GX, GY + r * cell);
+    ctx.lineTo(GX + cols * cell, GY + r * cell);
+    ctx.stroke();
+  }
+  for (let c = 0; c <= cols; c++) {
+    ctx.lineWidth = (c % 5 === 0) ? 2 : 1;
+    ctx.strokeStyle = (c % 5 === 0) ? '#6a6a80' : '#3a3a4a';
+    ctx.beginPath();
+    ctx.moveTo(GX + c * cell, GY);
+    ctx.lineTo(GX + c * cell, GY + rows * cell);
+    ctx.stroke();
+  }
+
+  // 悬停边框
+  if (hoverR >= 0 && hoverC >= 0 && state === 'playing') {
+    ctx.strokeStyle = '#ffd54f';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(GX + hoverC * cell + 1, GY + hoverR * cell + 1, cell - 2, cell - 2);
+  }
+}
+
+function drawHUD() {
+  const px = 580;
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('数织', px, 60);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(PUZZLES[puzzleIndex].name + '  ' + rows + '×' + cols, px, 88);
+
+  if (state === 'playing') elapsed = (performance.now() - startTime) / 1000;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '15px sans-serif';
+  ctx.fillText('用时', px, 130);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText(Math.floor(elapsed) + ' 秒', px, 158);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '15px sans-serif';
+  ctx.fillText('错误', px, 200);
+  ctx.fillStyle = mistakes > 0 ? '#ff5252' : '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText(mistakes.toString(), px, 228);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '15px sans-serif';
+  ctx.fillText('总分', px, 270);
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText(score.toString(), px, 298);
+
+  ctx.fillStyle = '#666';
+  ctx.font = '13px sans-serif';
+  const tips = ['左键 填充', '右键 标记 X', '可拖动涂画', 'R 重开'];
+  tips.forEach((t, i) => ctx.fillText(t, px, 340 + i * 20));
+
+  // 按钮
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.roundRect(560, 432, 100, 36, 6); ctx.fill();
+  ctx.fillStyle = '#7a4';
+  ctx.beginPath(); ctx.roundRect(670, 432, 110, 36, 6); ctx.fill();
+  ctx.fillStyle = '#ddd';
+  ctx.font = '15px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('重开', 610, 455);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('看答案', 725, 455);
+  ctx.textAlign = 'left';
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = 'bold 56px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('数织', 400, 130);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('Nonogram · 按行列提示涂出隐藏图案', 400, 180);
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('左键填充  ·  右键标记  ·  共 ' + PUZZLES.length + ' 个谜题', 400, 220);
+
+  // 错误检查开关
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.roundRect(280, 250, 240, 42, 8); ctx.fill();
+  ctx.strokeStyle = checkErrors ? '#66bb6a' : '#555';
+  ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = checkErrors ? '#66bb6a' : '#aaa';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('错误检查：' + (checkErrors ? '开' : '关'), 400, 277);
+
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath(); ctx.roundRect(300, 320, 200, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('选择谜题', 400, 358);
+}
+
+function drawSelect() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = 'bold 34px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('选择谜题', 400, 90);
+  for (let i = 0; i < PUZZLES.length; i++) {
+    const bx = 130 + (i % 3) * 190;
+    const by = 160 + Math.floor(i / 3) * 120;
+    ctx.fillStyle = '#23232f';
+    ctx.beginPath(); ctx.roundRect(bx, by, 160, 90, 8); ctx.fill();
+    ctx.strokeStyle = '#4fc3f7';
+    ctx.lineWidth = 2; ctx.stroke();
+    // 缩略图
+    const p = PUZZLES[i];
+    const tn = 4;
+    const ox = bx + 12, oy = by + 12;
+    for (let r = 0; r < p.size; r++)
+      for (let c = 0; c < p.size; c++)
+        if (p.map[r][c] === '#') {
+          ctx.fillStyle = '#4fc3f7';
+          ctx.fillRect(ox + c * tn, oy + r * tn, tn - 0.5, tn - 0.5);
+        }
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(p.name, bx + 12 + p.size * tn + 10, by + 40);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '15px sans-serif';
+    ctx.fillText(p.size + '×' + p.size, bx + 12 + p.size * tn + 10, by + 65);
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.roundRect(320, 415, 160, 44, 8); ctx.fill();
+  ctx.fillStyle = '#ddd';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('返回标题', 400, 443);
+}
+
+function drawEnd() {
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(0, 0, 800, 480);
+  if (state === 'win') {
+    for (const p of confetti) {
+      p.y += p.vy; p.x += p.vx;
+      if (p.y > 480) { p.y = -10; p.x = Math.random() * 800; }
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, p.size, p.size);
+    }
+    ctx.fillStyle = '#76ff03';
+    ctx.font = 'bold 50px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('完成！', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px sans-serif';
+    ctx.fillText('用时 ' + Math.floor(elapsed) + ' 秒  ·  错误 ' + mistakes, 400, 220);
+    ctx.fillText('总分 ' + score, 400, 258);
+  } else {
+    ctx.fillStyle = '#ffab40';
+    ctx.font = 'bold 46px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('答案揭晓', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '22px sans-serif';
+    ctx.fillText('别灰心，再试一次吧！', 400, 220);
+  }
+  ctx.fillStyle = '#1565c0';
+  ctx.beginPath(); ctx.roundRect(230, 350, 160, 55, 8); ctx.fill();
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath(); ctx.roundRect(410, 350, 160, 55, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('选关', 310, 385);
+  ctx.fillText('重玩', 490, 385);
+}
+
+// ---- 主循环 ----
+function render() {
+  if (state === 'title') drawTitle();
+  else if (state === 'select') drawSelect();
+  else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, 800, 480);
+    drawClues();
+    drawGrid();
+    drawHUD();
+    if (state === 'win' || state === 'revealed') drawEnd();
+  }
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

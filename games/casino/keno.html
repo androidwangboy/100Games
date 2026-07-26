@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>基诺 (Keno)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 100; // credits
+let state = 'title'; // title, picking, drawing, result
+let picks = [];
+let drawn = [];
+let drawIndex = 0;
+let drawTimer = 0;
+let hits = 0;
+let bet = 10;
+let message = '';
+let lastWin = 0;
+let flashCells = [];
+
+const COLS = 10, ROWS = 8;
+const CELL_W = 68, CELL_H = 44;
+const GRID_X = 60, GRID_Y = 60;
+
+const PAYOUTS = {
+  1: [0,3], 2: [0,1,9], 3: [0,1,2,16], 4: [0,1,2,6,25],
+  5: [0,1,2,3,12,50], 6: [0,0,2,3,8,20,80], 7: [0,0,1,2,5,12,50,150],
+  8: [0,0,1,2,3,8,20,80,250], 9: [0,0,1,2,3,5,12,40,120,400],
+  10:[0,0,0,2,3,4,10,30,100,300,750]
+};
+
+function cellPos(n) {
+  const idx = n - 1;
+  return { x: GRID_X + (idx % COLS) * CELL_W, y: GRID_Y + Math.floor(idx / COLS) * CELL_H };
+}
+
+function startRound() {
+  if (score < bet) { state = 'title'; return; }
+  picks = [];
+  drawn = [];
+  drawIndex = 0;
+  hits = 0;
+  lastWin = 0;
+  flashCells = [];
+  state = 'picking';
+  message = `选择最多10个数字 (已选: 0)`;
+}
+
+function startDraw() {
+  if (picks.length === 0) return;
+  score -= bet;
+  state = 'drawing';
+  drawn = [];
+  drawIndex = 0;
+  drawTimer = 0;
+  // Generate 20 unique random numbers
+  let pool = [];
+  for (let i = 1; i <= 80; i++) pool.push(i);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  drawn = pool.slice(0, 20);
+  drawIndex = 0;
+  message = '开奖中...';
+}
+
+function finishDraw() {
+  hits = picks.filter(p => drawn.includes(p)).length;
+  const table = PAYOUTS[picks.length];
+  const mult = table ? (table[hits] || 0) : 0;
+  lastWin = bet * mult;
+  score += lastWin;
+  state = 'result';
+  if (lastWin > 0) {
+    message = `命中 ${hits} 个! 赢得 ${lastWin} 积分!`;
+    flashCells = picks.filter(p => drawn.includes(p));
+  } else {
+    message = `命中 ${hits} 个, 未中奖`;
+  }
+}
+
+function drawGrid() {
+  for (let n = 1; n <= 80; n++) {
+    const {x, y} = cellPos(n);
+    const isPick = picks.includes(n);
+    const isDrawn = drawn.slice(0, drawIndex).includes(n);
+    const isHit = isPick && isDrawn;
+    const isFlash = flashCells.includes(n) && Math.floor(Date.now()/300) % 2 === 0;
+
+    if (isHit || isFlash) ctx.fillStyle = '#f1c40f';
+    else if (isPick) ctx.fillStyle = '#2980b9';
+    else if (isDrawn) ctx.fillStyle = '#c0392b';
+    else ctx.fillStyle = '#2c3e50';
+
+    ctx.beginPath();
+    ctx.roundRect(x + 2, y + 2, CELL_W - 4, CELL_H - 4, 5);
+    ctx.fill();
+    ctx.strokeStyle = '#4a6741';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = (isHit || isFlash) ? '#111' : '#ecf0f1';
+    ctx.font = isPick ? 'bold 16px monospace' : '15px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n, x + CELL_W/2, y + CELL_H/2);
+  }
+}
+
+function drawButton(x, y, w, h, text, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x+w/2, y+h/2);
+}
+
+function draw() {
+  ctx.fillStyle = '#1a472a';
+  ctx.fillRect(0, 0, 800, 480);
+
+  if (state === 'title') {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = 'bold 46px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🎱 基诺 Keno', 400, 120);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('从1-80中选择最多10个数字', 400, 180);
+    ctx.fillText('系统随机开出20个数字', 400, 215);
+    ctx.fillText('命中越多，奖金越高!', 400, 250);
+    ctx.fillStyle = '#bdc3c7';
+    ctx.font = '15px sans-serif';
+    ctx.fillText('选10个全中 = 750倍投注!', 400, 300);
+    ctx.fillText('初始积分: 100', 400, 330);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('[ 点击开始 ]', 400, 400);
+    return;
+  }
+
+  // HUD
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`积分: ${score}`, 15, 25);
+  ctx.textAlign = 'right';
+  ctx.fillText(`投注: ${bet}`, 785, 25);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ecf0f1';
+  ctx.font = '14px sans-serif';
+  ctx.fillText(message, 400, 25);
+
+  // Grid
+  drawGrid();
+
+  // Bottom controls
+  const by = 430;
+  if (state === 'picking') {
+    drawButton(200, by, 100, 36, '投注-5', '#7f8c8d');
+    drawButton(320, by, 100, 36, '投注+5', '#7f8c8d');
+    drawButton(450, by, 120, 36, '开始开奖', '#27ae60');
+    drawButton(600, by, 100, 36, '清空', '#c0392b');
+    ctx.fillStyle = '#95a5a6';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(`已选: ${picks.length}/10`, 400, 475);
+  } else if (state === 'drawing') {
+    ctx.fillStyle = '#e67e22';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(`已开出: ${drawIndex}/20`, 400, by + 18);
+  } else if (state === 'result') {
+    if (lastWin > 0) {
+      ctx.fillStyle = '#2ecc71';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillText(`🎉 赢得 ${lastWin} 积分!`, 400, by + 10);
+    }
+    drawButton(320, by + 20, 160, 36, '再来一局', '#2980b9');
+    if (score < bet) {
+      ctx.fillStyle = '#e74c3c';
+      ctx.font = '16px sans-serif';
+      ctx.fillText('积分不足!', 400, by - 10);
+    }
+  }
+}
+
+function update() {
+  if (state === 'drawing') {
+    drawTimer++;
+    if (drawTimer % 8 === 0 && drawIndex < 20) {
+      drawIndex++;
+      if (drawIndex >= 20) setTimeout(finishDraw, 400);
+    }
+  }
+}
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') { score = 100; startRound(); return; }
+
+  if (state === 'picking') {
+    // Check grid click
+    for (let n = 1; n <= 80; n++) {
+      const {x, y} = cellPos(n);
+      if (mx >= x+2 && mx <= x+CELL_W-2 && my >= y+2 && my <= y+CELL_H-2) {
+        if (picks.includes(n)) picks = picks.filter(p => p !== n);
+        else if (picks.length < 10) picks.push(n);
+        message = `选择最多10个数字 (已选: ${picks.length})`;
+        return;
+      }
+    }
+    const by = 430;
+    if (mx >= 200 && mx <= 300 && my >= by && my <= by+36) { bet = Math.max(5, bet-5); return; }
+    if (mx >= 320 && mx <= 420 && my >= by && my <= by+36) { bet = Math.min(50, bet+5); return; }
+    if (mx >= 450 && mx <= 570 && my >= by && my <= by+36) { startDraw(); return; }
+    if (mx >= 600 && mx <= 700 && my >= by && my <= by+36) { picks = []; message = '已清空'; return; }
+  }
+
+  if (state === 'result') {
+    const by = 430;
+    if (mx >= 320 && mx <= 480 && my >= by+20 && my <= by+56) {
+      if (score >= bet) startRound();
+      else state = 'title';
+    }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

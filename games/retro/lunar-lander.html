@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>月球着陆</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+const STATE = { TITLE: 0, PLAYING: 1, LANDED: 2, CRASHED: 3, GAME_OVER: 4 };
+let state = STATE.TITLE;
+let score = 0;
+let level = 0;
+let fuel = 100;
+let lander = { x: 0, y: 0, vx: 0, vy: 0, angle: 0, thrusting: false };
+let terrain = [];
+let landingPads = [];
+let particles = [];
+let stars = [];
+let explosionParts = [];
+let messageTimer = 0;
+let message = '';
+let totalFuelBonus = 0;
+let attempts = 3;
+
+const GRAVITY = 0.04;
+const THRUST = 0.12;
+const ROTATE_SPEED = 0.04;
+const MAX_SAFE_VY = 2.0;
+const MAX_SAFE_VX = 1.5;
+const MAX_SAFE_ANGLE = 0.3;
+const FUEL_USE = 0.3;
+
+// Generate stars
+for (let i = 0; i < 120; i++) {
+  stars.push({
+    x: Math.random() * W,
+    y: Math.random() * H * 0.8,
+    size: Math.random() * 2 + 0.5,
+    twinkle: Math.random() * Math.PI * 2
+  });
+}
+
+function generateTerrain(lvl) {
+  terrain = [];
+  landingPads = [];
+  const segments = 40;
+  const segWidth = W / segments;
+  const baseHeight = H - 80;
+  const roughness = 30 + lvl * 10;
+
+  // Generate height map
+  let heights = [];
+  let h = baseHeight - Math.random() * 40;
+  for (let i = 0; i <= segments; i++) {
+    h += (Math.random() - 0.5) * roughness;
+    h = Math.max(H - 180, Math.min(H - 40, h));
+    heights.push(h);
+  }
+
+  // Create flat landing pads (2-3 per level)
+  const padCount = Math.max(2, 3 - Math.floor(lvl / 3));
+  const padPositions = [];
+  for (let p = 0; p < padCount; p++) {
+    let pos;
+    do {
+      pos = Math.floor(Math.random() * (segments - 6)) + 3;
+    } while (padPositions.some(pp => Math.abs(pp - pos) < 8));
+    padPositions.push(pos);
+
+    const padWidth = Math.max(3, 5 - Math.floor(lvl / 2));
+    const padHeight = heights[pos];
+    for (let i = pos; i < pos + padWidth && i <= segments; i++) {
+      heights[i] = padHeight;
+    }
+    landingPads.push({
+      x1: pos * segWidth,
+      x2: (pos + padWidth) * segWidth,
+      y: padHeight,
+      multiplier: padWidth <= 3 ? 3 : padWidth <= 4 ? 2 : 1
+    });
+  }
+
+  // Build terrain points
+  for (let i = 0; i <= segments; i++) {
+    terrain.push({ x: i * segWidth, y: heights[i] });
+  }
+}
+
+function loadLevel(lvl) {
+  generateTerrain(lvl);
+  lander.x = 100 + Math.random() * 200;
+  lander.y = 50;
+  lander.vx = (Math.random() - 0.3) * 1.5;
+  lander.vy = 0;
+  lander.angle = 0;
+  lander.thrusting = false;
+  fuel = Math.max(50, 100 - lvl * 5);
+  particles = [];
+  explosionParts = [];
+}
+
+function getTerrainYAt(x) {
+  for (let i = 0; i < terrain.length - 1; i++) {
+    if (x >= terrain[i].x && x <= terrain[i + 1].x) {
+      const t = (x - terrain[i].x) / (terrain[i + 1].x - terrain[i].x);
+      return terrain[i].y + t * (terrain[i + 1].y - terrain[i].y);
+    }
+  }
+  return H;
+}
+
+function isOnPad(x) {
+  for (let pad of landingPads) {
+    if (x >= pad.x1 && x <= pad.x2) return pad;
+  }
+  return null;
+}
+
+function explode() {
+  for (let i = 0; i < 40; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = Math.random() * 5 + 1;
+    explosionParts.push({
+      x: lander.x, y: lander.y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 2,
+      life: 1,
+      decay: 0.01 + Math.random() * 0.02,
+      color: `hsl(${Math.random() * 50 + 10}, 100%, ${40 + Math.random() * 40}%)`,
+      size: Math.random() * 5 + 2
+    });
+  }
+  // Debris
+  for (let i = 0; i < 12; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = Math.random() * 3 + 1;
+    explosionParts.push({
+      x: lander.x, y: lander.y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 3,
+      life: 1,
+      decay: 0.008 + Math.random() * 0.01,
+      color: '#888',
+      size: Math.random() * 4 + 3,
+      debris: true,
+      angle: Math.random() * Math.PI * 2,
+      angVel: (Math.random() - 0.5) * 0.2
+    });
+  }
+}
+
+function spawnThrustParticle() {
+  const backAngle = lander.angle + Math.PI / 2;
+  particles.push({
+    x: lander.x + Math.sin(lander.angle) * 12,
+    y: lander.y + Math.cos(lander.angle) * 12,
+    vx: Math.sin(lander.angle) * (2 + Math.random() * 2) + (Math.random() - 0.5),
+    vy: Math.cos(lander.angle) * (2 + Math.random() * 2),
+    life: 1,
+    decay: 0.05 + Math.random() * 0.05,
+    size: Math.random() * 3 + 1
+  });
+}
+
+function update() {
+  if (state !== STATE.PLAYING) {
+    // Still update particles for visual
+    updateParticles();
+    return;
+  }
+
+  // Rotation
+  if (keys['ArrowLeft']) lander.angle -= ROTATE_SPEED;
+  if (keys['ArrowRight']) lander.angle += ROTATE_SPEED;
+
+  // Thrust
+  lander.thrusting = false;
+  if (keys['ArrowUp'] && fuel > 0) {
+    lander.thrusting = true;
+    lander.vx -= Math.sin(lander.angle) * THRUST;
+    lander.vy -= Math.cos(lander.angle) * THRUST;
+    fuel -= FUEL_USE;
+    if (fuel < 0) fuel = 0;
+    // Thrust particles
+    if (Math.random() > 0.3) spawnThrustParticle();
+  }
+
+  // Gravity
+  lander.vy += GRAVITY;
+
+  // Move
+  lander.x += lander.vx;
+  lander.y += lander.vy;
+
+  // Wrap horizontally
+  if (lander.x < -20) lander.x = W + 20;
+  if (lander.x > W + 20) lander.x = -20;
+
+  // Ceiling
+  if (lander.y < 10) { lander.y = 10; lander.vy = Math.abs(lander.vy) * 0.3; }
+
+  // Ground collision
+  const groundY = getTerrainYAt(lander.x);
+  if (lander.y + 10 >= groundY) {
+    const pad = isOnPad(lander.x);
+    const speed = Math.sqrt(lander.vx * lander.vx + lander.vy * lander.vy);
+    const safeAngle = Math.abs(lander.angle) < MAX_SAFE_ANGLE;
+    const safeSpeed = lander.vy < MAX_SAFE_VY && Math.abs(lander.vx) < MAX_SAFE_VX;
+
+    if (pad && safeSpeed && safeAngle) {
+      // Successful landing!
+      lander.y = groundY - 10;
+      lander.vx = 0;
+      lander.vy = 0;
+      const fuelBonus = Math.floor(fuel * 10);
+      const padBonus = pad.multiplier * 50;
+      const levelScore = fuelBonus + padBonus + 100;
+      score += levelScore;
+      totalFuelBonus += fuelBonus;
+      state = STATE.LANDED;
+      message = `着陆成功! +${levelScore} (燃料奖励:${fuelBonus} 平台x${pad.multiplier})`;
+      messageTimer = 180;
+      // Celebration particles
+      for (let i = 0; i < 20; i++) {
+        particles.push({
+          x: lander.x + (Math.random() - 0.5) * 30,
+          y: lander.y - 10,
+          vx: (Math.random() - 0.5) * 3,
+          vy: -Math.random() * 4 - 1,
+          life: 1, decay: 0.015,
+          size: Math.random() * 3 + 1,
+          color: `hsl(${Math.random() * 360}, 80%, 60%)`
+        });
+      }
+    } else {
+      // Crash!
+      explode();
+      attempts--;
+      if (attempts <= 0) {
+        state = STATE.GAME_OVER;
+      } else {
+        state = STATE.CRASHED;
+        message = !pad ? '必须降落在平坦平台上!' :
+                  !safeAngle ? '着陆角度太大!' : '速度太快!';
+        messageTimer = 120;
+      }
+    }
+  }
+
+  updateParticles();
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    if (!p.color) p.vy += 0.05;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  for (let i = explosionParts.length - 1; i >= 0; i--) {
+    const p = explosionParts[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.08;
+    p.life -= p.decay;
+    if (p.debris) p.angle += p.angVel;
+    if (p.life <= 0) explosionParts.splice(i, 1);
+  }
+  if (messageTimer > 0) messageTimer--;
+}
+
+function draw() {
+  // Space background
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#000011');
+  grad.addColorStop(1, '#0a0a2a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  const t = Date.now() / 1000;
+  for (let s of stars) {
+    const alpha = 0.4 + Math.sin(t * 2 + s.twinkle) * 0.3;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Earth in background
+  ctx.fillStyle = '#2244aa';
+  ctx.beginPath();
+  ctx.arc(680, 60, 25, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#33aa55';
+  ctx.beginPath();
+  ctx.arc(675, 55, 10, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(690, 68, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (state === STATE.TITLE) { drawTitle(); return; }
+
+  // Terrain
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let p of terrain) {
+    ctx.lineTo(p.x, p.y);
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fillStyle = '#3a3a4a';
+  ctx.fill();
+  ctx.strokeStyle = '#6a6a8a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < terrain.length; i++) {
+    i === 0 ? ctx.moveTo(terrain[i].x, terrain[i].y) : ctx.lineTo(terrain[i].x, terrain[i].y);
+  }
+  ctx.stroke();
+
+  // Landing pads
+  for (let pad of landingPads) {
+    ctx.fillStyle = pad.multiplier >= 3 ? '#ff4444' : pad.multiplier >= 2 ? '#ffaa00' : '#44ff44';
+    ctx.fillRect(pad.x1, pad.y - 3, pad.x2 - pad.x1, 6);
+    // Blinking lights
+    const blink = Math.sin(t * 4) > 0;
+    if (blink) {
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(pad.x1 + 3, pad.y - 5, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(pad.x2 - 3, pad.y - 5, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Multiplier label
+    ctx.fillStyle = '#fff';
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`x${pad.multiplier}`, (pad.x1 + pad.x2) / 2, pad.y + 16);
+  }
+
+  // Lander
+  if (state === STATE.PLAYING || state === STATE.LANDED) {
+    drawLander();
+  }
+
+  // Thrust/exhaust particles
+  for (let p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color || `hsl(${30 + p.life * 20}, 100%, ${50 + p.life * 30}%)`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Explosion debris
+  for (let p of explosionParts) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    if (p.debris) {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.angle);
+      ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size * 0.6);
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // HUD
+  if (state !== STATE.TITLE) drawHUD();
+
+  // Message
+  if (messageTimer > 0 && message) {
+    ctx.globalAlpha = Math.min(1, messageTimer / 30);
+    ctx.fillStyle = state === STATE.LANDED ? '#4ecdc4' : '#e74c3c';
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, W / 2, H / 2 - 80);
+    ctx.globalAlpha = 1;
+  }
+
+  // Overlays
+  if (state === STATE.LANDED) {
+    ctx.fillStyle = '#aaa';
+    ctx.font = '18px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('按 空格键 进入下一关', W / 2, H / 2 - 50);
+  }
+  if (state === STATE.CRASHED) {
+    ctx.fillStyle = '#aaa';
+    ctx.font = '18px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`剩余机会: ${attempts}  按 R 重试`, W / 2, H / 2 - 50);
+  }
+  if (state === STATE.GAME_OVER) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#e74c3c';
+    ctx.font = 'bold 42px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('任务失败', W / 2, H / 2 - 40);
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px Arial';
+    ctx.fillText(`最终得分: ${score}`, W / 2, H / 2 + 10);
+    ctx.fillText(`到达关卡: ${level + 1}`, W / 2, H / 2 + 45);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '18px Arial';
+    ctx.fillText('按 R 重新开始', W / 2, H / 2 + 90);
+  }
+}
+
+function drawLander() {
+  ctx.save();
+  ctx.translate(lander.x, lander.y);
+  ctx.rotate(lander.angle);
+
+  // Body
+  ctx.fillStyle = '#ccc';
+  ctx.beginPath();
+  ctx.moveTo(0, -12);
+  ctx.lineTo(-8, 4);
+  ctx.lineTo(-6, 10);
+  ctx.lineTo(6, 10);
+  ctx.lineTo(8, 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#999';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Window
+  ctx.fillStyle = '#44aaff';
+  ctx.beginPath();
+  ctx.arc(0, -3, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Legs
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-6, 10);
+  ctx.lineTo(-10, 16);
+  ctx.moveTo(6, 10);
+  ctx.lineTo(10, 16);
+  ctx.stroke();
+  // Feet
+  ctx.beginPath();
+  ctx.moveTo(-13, 16);
+  ctx.lineTo(-7, 16);
+  ctx.moveTo(7, 16);
+  ctx.lineTo(13, 16);
+  ctx.stroke();
+
+  // Thrust flame
+  if (lander.thrusting) {
+    const flicker = Math.random() * 6;
+    ctx.fillStyle = '#ff6600';
+    ctx.beginPath();
+    ctx.moveTo(-4, 10);
+    ctx.lineTo(0, 18 + flicker);
+    ctx.lineTo(4, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ffff00';
+    ctx.beginPath();
+    ctx.moveTo(-2, 10);
+    ctx.lineTo(0, 14 + flicker * 0.5);
+    ctx.lineTo(2, 10);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawHUD() {
+  // Panel background
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(5, 5, 200, 100);
+  ctx.strokeStyle = '#444';
+  ctx.strokeRect(5, 5, 200, 100);
+
+  ctx.textAlign = 'left';
+  ctx.font = '13px Arial';
+
+  // Fuel gauge
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('燃料:', 12, 22);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(55, 12, 100, 12);
+  const fuelColor = fuel > 50 ? '#4ecdc4' : fuel > 25 ? '#f9ca24' : '#e74c3c';
+  ctx.fillStyle = fuelColor;
+  ctx.fillRect(55, 12, fuel, 12);
+  ctx.strokeStyle = '#666';
+  ctx.strokeRect(55, 12, 100, 12);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`${Math.floor(fuel)}%`, 160, 22);
+
+  // Velocity
+  const vyColor = lander.vy < MAX_SAFE_VY ? '#4ecdc4' : '#e74c3c';
+  const vxColor = Math.abs(lander.vx) < MAX_SAFE_VX ? '#4ecdc4' : '#e74c3c';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('垂直速度:', 12, 42);
+  ctx.fillStyle = vyColor;
+  ctx.fillText(`${lander.vy.toFixed(2)}`, 85, 42);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('水平速度:', 12, 60);
+  ctx.fillStyle = vxColor;
+  ctx.fillText(`${lander.vx.toFixed(2)}`, 85, 60);
+
+  // Angle
+  const angColor = Math.abs(lander.angle) < MAX_SAFE_ANGLE ? '#4ecdc4' : '#e74c3c';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('倾斜角:', 12, 78);
+  ctx.fillStyle = angColor;
+  ctx.fillText(`${(lander.angle * 180 / Math.PI).toFixed(1)}°`, 85, 78);
+
+  // Altitude
+  const alt = getTerrainYAt(lander.x) - lander.y - 10;
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('高度:', 12, 96);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`${Math.max(0, Math.floor(alt))}m`, 85, 96);
+
+  // Right side info
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(W - 155, 5, 150, 55);
+  ctx.strokeStyle = '#444';
+  ctx.strokeRect(W - 155, 5, 150, 55);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.fillText(`关卡: ${level + 1}`, W - 12, 24);
+  ctx.fillText(`得分: ${score}`, W - 12, 44);
+  ctx.fillStyle = '#f88';
+  ctx.fillText(`机会: ${'♥'.repeat(attempts)}`, W - 12, 58);
+
+  // Safe landing indicator
+  const safe = lander.vy < MAX_SAFE_VY && Math.abs(lander.vx) < MAX_SAFE_VX && Math.abs(lander.angle) < MAX_SAFE_ANGLE;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillStyle = safe ? '#4ecdc4' : '#e74c3c';
+  ctx.fillText(safe ? '✓ 可安全着陆' : '✗ 状态危险', W / 2, 20);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 44px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('月球着陆', W / 2, H / 2 - 100);
+
+  ctx.font = '18px Arial';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('在月球表面安全着陆!', W / 2, H / 2 - 55);
+
+  ctx.font = '15px Arial';
+  ctx.fillStyle = '#8f8';
+  ctx.fillText('↑ - 主推进器    ← / → - 旋转姿态', W / 2, H / 2 - 10);
+  ctx.fillText(`安全着陆条件: 垂直速度 < ${MAX_SAFE_VY}, 水平速度 < ${MAX_SAFE_VX}`, W / 2, H / 2 + 20);
+  ctx.fillText(`倾斜角 < ${(MAX_SAFE_ANGLE * 180 / Math.PI).toFixed(0)}°, 必须降落在彩色平台上`, W / 2, H / 2 + 50);
+  ctx.fillText('剩余燃料越多，奖励分越高!', W / 2, H / 2 + 80);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText('按 空格键 开始任务', W / 2, H / 2 + 130);
+
+  // Animated lander
+  const t = Date.now() / 1000;
+  ctx.save();
+  ctx.translate(W / 2, H / 2 + 175 + Math.sin(t * 2) * 5);
+  ctx.fillStyle = '#ccc';
+  ctx.beginPath();
+  ctx.moveTo(0, -10);
+  ctx.lineTo(-7, 3);
+  ctx.lineTo(7, 3);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#ff6600';
+  const fl = Math.random() * 5;
+  ctx.beginPath();
+  ctx.moveTo(-3, 5);
+  ctx.lineTo(0, 12 + fl);
+  ctx.lineTo(3, 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// Input
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+    e.preventDefault();
+  }
+
+  if (state === STATE.TITLE && e.code === 'Space') {
+    state = STATE.PLAYING;
+    level = 0;
+    score = 0;
+    attempts = 3;
+    loadLevel(0);
+  }
+  if (state === STATE.LANDED && e.code === 'Space') {
+    level++;
+    loadLevel(level);
+    state = STATE.PLAYING;
+  }
+  if (state === STATE.CRASHED && e.code === 'KeyR') {
+    loadLevel(level);
+    state = STATE.PLAYING;
+  }
+  if (state === STATE.GAME_OVER && e.code === 'KeyR') {
+    state = STATE.PLAYING;
+    level = 0;
+    score = 0;
+    attempts = 3;
+    loadLevel(0);
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Game loop
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

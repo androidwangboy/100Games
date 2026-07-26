@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>珠玑妙算 - Mastermind</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (gameState !== 'playing') return;
+  if (e.code >= 'Digit1' && e.code <= 'Digit6') {
+    const colorIdx = parseInt(e.code.charAt(5)) - 1;
+    currentGuess[selectedSlot] = colorIdx;
+    if (selectedSlot < CODE_LEN - 1) selectedSlot++;
+  }
+  if (e.code === 'Enter') submitGuess();
+  if (e.code === 'Backspace') {
+    currentGuess[selectedSlot] = 0;
+    if (selectedSlot > 0) selectedSlot--;
+  }
+  if (e.code === 'ArrowLeft' && selectedSlot > 0) selectedSlot--;
+  if (e.code === 'ArrowRight' && selectedSlot < CODE_LEN - 1) selectedSlot++;
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+const COLORS = ['#e94560', '#4ecdc4', '#ffd700', '#4a90d9', '#9b59b6', '#2ecc71'];
+const COLOR_NAMES = ['红', '青', '金', '蓝', '紫', '绿'];
+const CODE_LEN = 4;
+const MAX_GUESSES = 10;
+const PEG_R = 18;
+
+let gameState = 'title';
+let secretCode = [];
+let currentGuess = [0, 0, 0, 0];
+let selectedSlot = 0;
+let guessHistory = [];
+let guessCount = 0;
+let score = 0;
+let message = '';
+let winner = '';
+let hoverColor = -1;
+let submitFlash = 0;
+let bestScore = 0;
+
+function initGame() {
+  secretCode = [];
+  for (let i = 0; i < CODE_LEN; i++) {
+    secretCode.push(Math.floor(Math.random() * 6));
+  }
+  currentGuess = [0, 0, 0, 0];
+  selectedSlot = 0;
+  guessHistory = [];
+  guessCount = 0;
+  score = 0;
+  winner = '';
+  message = '选择颜色，破解密码！';
+}
+
+function evaluateGuess(guess, secret) {
+  let black = 0, white = 0;
+  const secretUsed = Array(CODE_LEN).fill(false);
+  const guessUsed = Array(CODE_LEN).fill(false);
+  // Black pegs: correct color and position
+  for (let i = 0; i < CODE_LEN; i++) {
+    if (guess[i] === secret[i]) {
+      black++;
+      secretUsed[i] = true;
+      guessUsed[i] = true;
+    }
+  }
+  // White pegs: correct color, wrong position
+  for (let i = 0; i < CODE_LEN; i++) {
+    if (guessUsed[i]) continue;
+    for (let j = 0; j < CODE_LEN; j++) {
+      if (secretUsed[j]) continue;
+      if (guess[i] === secret[j]) {
+        white++;
+        secretUsed[j] = true;
+        break;
+      }
+    }
+  }
+  return { black, white };
+}
+
+function submitGuess() {
+  const result = evaluateGuess(currentGuess, secretCode);
+  guessHistory.push({
+    guess: [...currentGuess],
+    black: result.black,
+    white: result.white
+  });
+  guessCount++;
+  score = guessCount;
+  if (result.black === CODE_LEN) {
+    winner = 'player';
+    gameState = 'gameover';
+    message = `恭喜！你用${guessCount}次猜中了密码！`;
+    score = MAX_GUESSES - guessCount + 1;
+    return;
+  }
+  if (guessCount >= MAX_GUESSES) {
+    winner = 'ai';
+    gameState = 'gameover';
+    message = '机会用尽，密码未破解！';
+    score = 0;
+    return;
+  }
+  message = `第${guessCount}次: ${result.black}黑 ${result.white}白 | 剩余${MAX_GUESSES - guessCount}次`;
+  selectedSlot = 0;
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+  hoverColor = -1;
+  if (gameState !== 'playing') return;
+  const paletteY = H - 70;
+  const paletteStartX = W/2 - (6 * 55) / 2;
+  for (let i = 0; i < 6; i++) {
+    const cx = paletteStartX + i * 55 + 25;
+    const dist = Math.sqrt((mx - cx)**2 + (my - paletteY)**2);
+    if (dist < 22) { hoverColor = i; break; }
+  }
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 340 && my < 390) {
+      gameState = 'playing'; initGame();
+    }
+    return;
+  }
+  if (gameState === 'gameover') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 350 && my < 400) {
+      gameState = 'playing'; initGame();
+    }
+    return;
+  }
+  if (gameState !== 'playing') return;
+
+  // Color palette (bottom area)
+  const paletteY = H - 70;
+  const paletteStartX = W/2 - (6 * 55) / 2;
+  for (let i = 0; i < 6; i++) {
+    const cx = paletteStartX + i * 55 + 25;
+    const cy = paletteY;
+    const dist = Math.sqrt((mx - cx)**2 + (my - cy)**2);
+    if (dist < 22) {
+      currentGuess[selectedSlot] = i;
+      if (selectedSlot < CODE_LEN - 1) selectedSlot++;
+      return;
+    }
+  }
+
+  // Current guess slots (click to select)
+  const slotY = H - 130;
+  const slotStartX = W/2 - (CODE_LEN * 55) / 2;
+  for (let i = 0; i < CODE_LEN; i++) {
+    const cx = slotStartX + i * 55 + 25;
+    const dist = Math.sqrt((mx - cx)**2 + (my - slotY)**2);
+    if (dist < PEG_R + 5) {
+      selectedSlot = i;
+      return;
+    }
+  }
+
+  // Submit button
+  const btnX = W/2 + 150, btnY = slotY;
+  if (mx > btnX - 40 && mx < btnX + 40 && my > btnY - 20 && my < btnY + 20) {
+    submitGuess();
+  }
+});
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  // Decorative color pegs at top
+  for (let i = 0; i < 6; i++) {
+    ctx.beginPath();
+    ctx.arc(W/2 - 125 + i * 50, 60, 15, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS[i];
+    ctx.fill();
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#9b59b6';
+  ctx.font = 'bold 46px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('珠玑妙算', W/2, 120);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('Mastermind - 密码破解', W/2, 165);
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('AI生成4位密码（6种颜色可重复）', W/2, 205);
+  ctx.fillText('每次猜测后获得反馈：', W/2, 235);
+  // Feedback legend
+  ctx.beginPath(); ctx.arc(W/2 - 100, 265, 9, 0, Math.PI*2);
+  ctx.fillStyle = '#111'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('= 颜色和位置都正确', W/2 - 80, 270);
+  ctx.beginPath(); ctx.arc(W/2 - 100, 293, 9, 0, Math.PI*2);
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = '#ccc';
+  ctx.fillText('= 颜色正确但位置错误', W/2 - 80, 298);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#888';
+  ctx.font = '14px sans-serif';
+  ctx.fillText(`最多${MAX_GUESSES}次机会，越少次猜中得分越高`, W/2, 325);
+  ctx.fillText('操作: 点击/数字键1-6选色 | 左右键切换位置 | Enter提交', W/2, 348);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 365, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('开始游戏', W/2, 397);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = winner === 'player' ? '#4ecdc4' : '#e94560';
+  ctx.font = 'bold 38px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W/2, 150);
+  // Reveal secret code
+  ctx.fillStyle = '#ccc';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('密码是：', W/2, 210);
+  const revealX = W/2 - (CODE_LEN * 50) / 2;
+  for (let i = 0; i < CODE_LEN; i++) {
+    ctx.beginPath();
+    ctx.arc(revealX + i * 50 + 25, 250, PEG_R, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS[secretCode[i]];
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '20px sans-serif';
+  ctx.fillText(`得分: ${score}`, W/2, 310);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 350, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('再来一局', W/2, 382);
+}
+
+function drawGame() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+
+  // Title bar
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`第 ${guessCount + 1}/${MAX_GUESSES} 次猜测`, 15, 22);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#888';
+  ctx.fillText('ESC 退出', W - 10, 22);
+
+  // History area
+  const histStartY = 40;
+  const histRowH = 36;
+  const pegAreaX = W/2 - 130;
+  const fbAreaX = W/2 + 80;
+
+  ctx.fillStyle = '#555';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('猜测记录', W/2, histStartY - 2);
+
+  for (let i = 0; i < guessHistory.length; i++) {
+    const h = guessHistory[i];
+    const y = histStartY + 15 + i * histRowH;
+    // Row number
+    ctx.fillStyle = '#666';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${i + 1}.`, pegAreaX - 15, y + 5);
+    // Guess pegs
+    for (let j = 0; j < CODE_LEN; j++) {
+      ctx.beginPath();
+      ctx.arc(pegAreaX + j * 42 + 15, y, 13, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS[h.guess[j]];
+      ctx.fill();
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    // Feedback pegs
+    let fbIdx = 0;
+    for (let b = 0; b < h.black; b++) {
+      const fx = fbAreaX + (fbIdx % 2) * 22;
+      const fy = y - 8 + Math.floor(fbIdx / 2) * 18;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#111';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      fbIdx++;
+    }
+    for (let w = 0; w < h.white; w++) {
+      const fx = fbAreaX + (fbIdx % 2) * 22;
+      const fy = y - 8 + Math.floor(fbIdx / 2) * 18;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.strokeStyle = '#999';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      fbIdx++;
+    }
+  }
+
+  // Separator line
+  const sepY = H - 165;
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(50, sepY);
+  ctx.lineTo(W - 50, sepY);
+  ctx.stroke();
+
+  // Current guess slots
+  const slotY = H - 130;
+  const slotStartX = W/2 - (CODE_LEN * 55) / 2;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('当前猜测（点击选择位置）', W/2, slotY - 30);
+
+  for (let i = 0; i < CODE_LEN; i++) {
+    const cx = slotStartX + i * 55 + 25;
+    ctx.beginPath();
+    ctx.arc(cx, slotY, PEG_R, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS[currentGuess[i]];
+    ctx.fill();
+    if (i === selectedSlot) {
+      ctx.strokeStyle = '#ffd700';
+      ctx.lineWidth = 3;
+    } else {
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 2;
+    }
+    ctx.stroke();
+    // Slot number
+    ctx.fillStyle = '#888';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(`${i+1}`, cx, slotY + PEG_R + 14);
+  }
+
+  // Submit button
+  const btnX = W/2 + 150, btnY = slotY;
+  ctx.fillStyle = '#0f3460';
+  ctx.beginPath();
+  ctx.roundRect(btnX - 40, btnY - 20, 80, 40, 8);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('提交', btnX, btnY + 6);
+
+  // Color palette
+  const paletteY = H - 55;
+  const paletteStartX = W/2 - (6 * 55) / 2;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('点击选择颜色（或按数字键1-6）', W/2, paletteY - 30);
+  for (let i = 0; i < 6; i++) {
+    const cx = paletteStartX + i * 55 + 25;
+    const isHover = hoverColor === i;
+    const radius = isHover ? 23 : 20;
+    ctx.beginPath();
+    ctx.arc(cx, paletteY, radius, 0, Math.PI * 2);
+    ctx.fillStyle = COLORS[i];
+    ctx.fill();
+    ctx.strokeStyle = isHover ? '#fff' : '#666';
+    ctx.lineWidth = isHover ? 3 : 2;
+    ctx.stroke();
+    ctx.fillStyle = '#ccc';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(COLOR_NAMES[i], cx, paletteY + 33);
+    ctx.fillStyle = '#666';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(`${i+1}`, cx, paletteY - 26);
+  }
+
+  // Progress bar showing remaining guesses
+  const progX = W - 160, progY = 45;
+  const progW = 140, progH = 12;
+  ctx.fillStyle = '#555';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('剩余机会:', progX, progY - 5);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(progX, progY, progW, progH);
+  const remaining = MAX_GUESSES - guessCount;
+  const ratio = remaining / MAX_GUESSES;
+  ctx.fillStyle = ratio > 0.5 ? '#2ecc71' : (ratio > 0.2 ? '#f39c12' : '#e94560');
+  ctx.fillRect(progX, progY, progW * ratio, progH);
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(progX, progY, progW, progH);
+  ctx.fillStyle = '#aaa';
+  ctx.textAlign = 'right';
+  ctx.fillText(`${remaining}/${MAX_GUESSES}`, progX + progW, progY - 5);
+
+  // Message
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '15px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W/2, sepY - 8);
+
+  // Keyboard hints
+  ctx.fillStyle = '#555';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('← → 切换位置 | Backspace 清除 | Enter 提交', 15, H - 8);
+}
+
+function gameLoop() {
+  if (gameState === 'title') drawTitle();
+  else if (gameState === 'playing') drawGame();
+  else if (gameState === 'gameover') { drawGame(); drawGameOver(); }
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

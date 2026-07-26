@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>炸弹人</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0, lives = 3, level = 1;
+let keys = {};
+let player, enemies, bombs, explosions, powerups, exitDoor;
+let grid = [], COLS = 15, ROWS = 13, TILE = 32;
+let OFFSET_X = 40, OFFSET_Y = 32;
+let levelClear = false, clearTimer = 0;
+
+document.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault(); });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Tile types: 0=empty, 1=solid, 2=destructible
+function generateLevel() {
+  grid = [];
+  for (let r = 0; r < ROWS; r++) {
+    grid[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      if (r === 0 || r === ROWS-1 || c === 0 || c === COLS-1) grid[r][c] = 1;
+      else if (r % 2 === 0 && c % 2 === 0) grid[r][c] = 1;
+      else grid[r][c] = 0;
+    }
+  }
+  // Add destructible walls
+  let density = 0.35 + level * 0.03;
+  for (let r = 1; r < ROWS-1; r++) {
+    for (let c = 1; c < COLS-1; c++) {
+      if (grid[r][c] !== 0) continue;
+      // Keep spawn area clear
+      if (r <= 2 && c <= 2) continue;
+      if (Math.random() < density) grid[r][c] = 2;
+    }
+  }
+  // Place exit door under a random destructible wall
+  let candidates = [];
+  for (let r = 1; r < ROWS-1; r++) {
+    for (let c = 1; c < COLS-1; c++) {
+      if (grid[r][c] === 2 && !(r <= 2 && c <= 2)) candidates.push({r, c});
+    }
+  }
+  let doorPos = candidates[Math.floor(Math.random() * candidates.length)];
+  exitDoor = { r: doorPos.r, c: doorPos.c, revealed: false };
+
+  // Player
+  player = {
+    r: 1, c: 1, x: 1 * TILE, y: 1 * TILE,
+    speed: 2.2, maxBombs: 1, bombRange: 2, bombsPlaced: 0,
+    invincible: 0, alive: true
+  };
+
+  // Enemies
+  enemies = [];
+  let numEnemies = 2 + level;
+  let spots = [];
+  for (let r = 1; r < ROWS-1; r++) {
+    for (let c = 1; c < COLS-1; c++) {
+      if (grid[r][c] === 0 && (r > 3 || c > 3)) spots.push({r, c});
+    }
+  }
+  for (let i = 0; i < numEnemies && spots.length > 0; i++) {
+    let idx = Math.floor(Math.random() * spots.length);
+    let sp = spots.splice(idx, 1)[0];
+    enemies.push({
+      x: sp.c * TILE, y: sp.r * TILE, r: sp.r, c: sp.c,
+      dir: Math.floor(Math.random() * 4), speed: 1 + level * 0.2,
+      moveTimer: 0, alive: true, chaseChance: 0.3 + level * 0.05
+    });
+  }
+
+  bombs = []; explosions = []; powerups = [];
+  levelClear = false; clearTimer = 0;
+}
+
+function tileAt(px, py) {
+  let c = Math.floor(px / TILE), r = Math.floor(py / TILE);
+  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return 1;
+  return grid[r][c];
+}
+
+function canMove(px, py, size) {
+  let s = size || 10;
+  return tileAt(px + s, py + s) === 0 && tileAt(px + TILE - 1 - s, py + s) === 0 &&
+         tileAt(px + s, py + TILE - 1 - s) === 0 && tileAt(px + TILE - 1 - s, py + TILE - 1 - s) === 0;
+}
+
+function placeBomb() {
+  if (player.bombsPlaced >= player.maxBombs) return;
+  let r = Math.floor((player.y + TILE/2) / TILE);
+  let c = Math.floor((player.x + TILE/2) / TILE);
+  if (bombs.some(b => b.r === r && b.c === c)) return;
+  bombs.push({ r: r, c: c, timer: 120, range: player.bombRange });
+  player.bombsPlaced++;
+}
+
+function explodeBomb(bomb) {
+  player.bombsPlaced--;
+  explosions.push({ r: bomb.r, c: bomb.c, timer: 30 });
+  let dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+  for (let [dr, dc] of dirs) {
+    for (let i = 1; i <= bomb.range; i++) {
+      let nr = bomb.r + dr * i, nc = bomb.c + dc * i;
+      if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) break;
+      if (grid[nr][nc] === 1) break;
+      if (grid[nr][nc] === 2) {
+        grid[nr][nc] = 0;
+        explosions.push({ r: nr, c: nc, timer: 30 });
+        // Reveal exit
+        if (exitDoor && nr === exitDoor.r && nc === exitDoor.c) exitDoor.revealed = true;
+        // Drop powerup
+        if (Math.random() < 0.25) {
+          let types = ['bomb', 'range', 'speed'];
+          powerups.push({ r: nr, c: nc, type: types[Math.floor(Math.random() * 3)] });
+        }
+        break;
+      }
+      explosions.push({ r: nr, c: nc, timer: 30 });
+      // Chain reaction
+      let chainBomb = bombs.find(b => b.r === nr && b.c === nc);
+      if (chainBomb) chainBomb.timer = 1;
+    }
+  }
+}
+
+function update() {
+  if (state !== 'playing') return;
+  if (levelClear) { clearTimer++; if (clearTimer > 90) { level++; generateLevel(); } return; }
+
+  if (player.invincible > 0) player.invincible--;
+
+  // Player movement
+  let dx = 0, dy = 0;
+  if (keys['ArrowLeft']) dx = -player.speed;
+  if (keys['ArrowRight']) dx = player.speed;
+  if (keys['ArrowUp']) dy = -player.speed;
+  if (keys['ArrowDown']) dy = player.speed;
+
+  if (dx !== 0 && canMove(player.x + dx, player.y)) player.x += dx;
+  if (dy !== 0 && canMove(player.x, player.y + dy)) player.y += dy;
+  player.x = Math.max(TILE, Math.min((COLS-2) * TILE, player.x));
+  player.y = Math.max(TILE, Math.min((ROWS-2) * TILE, player.y));
+  player.r = Math.floor((player.y + TILE/2) / TILE);
+  player.c = Math.floor((player.x + TILE/2) / TILE);
+
+  if (keys['Space']) { placeBomb(); keys['Space'] = false; }
+
+  // Bombs
+  for (let i = bombs.length - 1; i >= 0; i--) {
+    bombs[i].timer--;
+    if (bombs[i].timer <= 0) { explodeBomb(bombs[i]); bombs.splice(i, 1); }
+  }
+
+  // Explosions
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    explosions[i].timer--;
+    if (explosions[i].timer <= 0) explosions.splice(i, 1);
+  }
+
+  // Explosion hits player
+  if (player.invincible <= 0) {
+    for (let ex of explosions) {
+      if (ex.r === player.r && ex.c === player.c) { loseLife(); break; }
+    }
+  }
+
+  // Explosion hits enemies
+  for (let e of enemies) {
+    if (!e.alive) continue;
+    let er = Math.floor((e.y + TILE/2) / TILE), ec = Math.floor((e.x + TILE/2) / TILE);
+    for (let ex of explosions) {
+      if (ex.r === er && ex.c === ec) { e.alive = false; score += 200; break; }
+    }
+  }
+
+  // Enemies movement
+  for (let e of enemies) {
+    if (!e.alive) continue;
+    e.moveTimer++;
+    if (e.moveTimer < 3) continue;
+    e.moveTimer = 0;
+
+    let dirs = [[0,-1],[0,1],[-1,0],[1,0]]; // up,down,left,right
+    // Chase logic
+    let chase = Math.random() < e.chaseChance;
+    let nextDir = e.dir;
+    if (chase) {
+      let pr = player.r, pc = player.c;
+      let er = Math.floor((e.y + TILE/2) / TILE), ec = Math.floor((e.x + TILE/2) / TILE);
+      if (Math.abs(pr - er) > Math.abs(pc - ec)) nextDir = pr > er ? 1 : 0;
+      else nextDir = pc > ec ? 3 : 2;
+    } else if (Math.random() < 0.2) {
+      nextDir = Math.floor(Math.random() * 4);
+    }
+
+    let nx = e.x + dirs[nextDir][1] * e.speed * 3;
+    let ny = e.y + dirs[nextDir][0] * e.speed * 3;
+    if (canMove(nx, ny)) { e.x = nx; e.y = ny; e.dir = nextDir; }
+    else { e.dir = Math.floor(Math.random() * 4); }
+
+    // Enemy hits player
+    if (player.invincible <= 0) {
+      if (Math.abs(e.x - player.x) < TILE * 0.7 && Math.abs(e.y - player.y) < TILE * 0.7) {
+        loseLife();
+      }
+    }
+  }
+
+  // Powerups
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    let p = powerups[i];
+    if (p.r === player.r && p.c === player.c) {
+      if (p.type === 'bomb') player.maxBombs++;
+      else if (p.type === 'range') player.bombRange++;
+      else if (p.type === 'speed') player.speed += 0.4;
+      score += 50;
+      powerups.splice(i, 1);
+    }
+  }
+
+  // Check exit
+  if (exitDoor && exitDoor.revealed && player.r === exitDoor.r && player.c === exitDoor.c) {
+    if (enemies.every(e => !e.alive) || true) { // Can exit anytime once revealed
+      levelClear = true; clearTimer = 0; score += 500;
+    }
+  }
+}
+
+function loseLife() {
+  lives--;
+  if (lives <= 0) { state = 'gameover'; return; }
+  player.invincible = 120;
+  player.x = TILE; player.y = TILE;
+}
+
+function draw() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'gameover') { drawGameOver(); return; }
+
+  ctx.save();
+  ctx.translate(OFFSET_X, OFFSET_Y);
+
+  // Draw grid
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let x = c * TILE, y = r * TILE;
+      if (grid[r][c] === 0) {
+        ctx.fillStyle = '#2a3a2a';
+        ctx.fillRect(x, y, TILE, TILE);
+        ctx.strokeStyle = '#223322';
+        ctx.strokeRect(x, y, TILE, TILE);
+      } else if (grid[r][c] === 1) {
+        ctx.fillStyle = '#556';
+        ctx.fillRect(x, y, TILE, TILE);
+        ctx.fillStyle = '#445';
+        ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
+      } else if (grid[r][c] === 2) {
+        ctx.fillStyle = '#864';
+        ctx.fillRect(x, y, TILE, TILE);
+        ctx.fillStyle = '#753';
+        ctx.fillRect(x + 3, y + 3, TILE - 6, TILE - 6);
+        ctx.strokeStyle = '#642';
+        ctx.strokeRect(x + 6, y + 6, TILE - 12, TILE - 12);
+      }
+    }
+  }
+
+  // Exit door
+  if (exitDoor && exitDoor.revealed) {
+    let x = exitDoor.c * TILE, y = exitDoor.r * TILE;
+    ctx.fillStyle = '#0a0';
+    ctx.fillRect(x + 4, y + 2, TILE - 8, TILE - 4);
+    ctx.fillStyle = '#0f0';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('EXIT', x + TILE/2, y + TILE/2 + 4);
+    ctx.textAlign = 'left';
+  }
+
+  // Powerups
+  for (let p of powerups) {
+    let x = p.c * TILE, y = p.r * TILE;
+    ctx.fillStyle = p.type === 'bomb' ? '#f80' : p.type === 'range' ? '#f44' : '#4af';
+    ctx.fillRect(x + 8, y + 8, TILE - 16, TILE - 16);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.type === 'bomb' ? 'B' : p.type === 'range' ? 'R' : 'S', x + TILE/2, y + TILE/2 + 4);
+    ctx.textAlign = 'left';
+  }
+
+  // Bombs
+  for (let b of bombs) {
+    let x = b.c * TILE + TILE/2, y = b.r * TILE + TILE/2;
+    let pulse = Math.sin(b.timer * 0.2) * 3;
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(x, y, 10 + pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = b.timer < 40 ? '#f00' : '#f80';
+    ctx.beginPath();
+    ctx.arc(x, y - 12, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Explosions
+  for (let ex of explosions) {
+    let x = ex.c * TILE, y = ex.r * TILE;
+    let alpha = ex.timer / 30;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#fa0';
+    ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
+    ctx.fillStyle = '#ff0';
+    ctx.fillRect(x + 6, y + 6, TILE - 12, TILE - 12);
+    ctx.globalAlpha = 1;
+  }
+
+  // Enemies
+  for (let e of enemies) {
+    if (!e.alive) continue;
+    ctx.fillStyle = '#e44';
+    ctx.beginPath();
+    ctx.arc(e.x + TILE/2, e.y + TILE/2, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(e.x + 9, e.y + 10, 5, 5);
+    ctx.fillRect(e.x + 18, e.y + 10, 5, 5);
+    ctx.fillStyle = '#800';
+    ctx.fillRect(e.x + 8, e.y + 20, 16, 4);
+  }
+
+  // Player
+  if (player.invincible <= 0 || Math.floor(player.invincible / 4) % 2 === 0) {
+    ctx.fillStyle = '#4cf';
+    ctx.beginPath();
+    ctx.arc(player.x + TILE/2, player.y + TILE/2, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(player.x + 9, player.y + 10, 5, 5);
+    ctx.fillRect(player.x + 18, player.y + 10, 5, 5);
+    ctx.fillStyle = '#28a';
+    ctx.fillRect(player.x + 10, player.y + 20, 12, 3);
+  }
+
+  ctx.restore();
+
+  // HUD
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, 28);
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px monospace';
+  ctx.fillText('分数: ' + score, 10, 19);
+  ctx.fillText('生命: ' + '♥'.repeat(lives), 150, 19);
+  ctx.fillText('关卡: ' + level, 300, 19);
+  ctx.fillText('炸弹: ' + player.maxBombs + '  范围: ' + player.bombRange, 420, 19);
+  let aliveCount = enemies.filter(e => e.alive).length;
+  ctx.fillText('敌人: ' + aliveCount, 620, 19);
+
+  if (levelClear) {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#0f0';
+    ctx.font = 'bold 36px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('关卡 ' + level + ' 完成!', W/2, H/2);
+    ctx.textAlign = 'left';
+  }
+
+  // Controls hint
+  ctx.fillStyle = '#555';
+  ctx.font = '12px monospace';
+  ctx.fillText('方向键移动 | 空格放炸弹 | 炸开墙壁找出口', 10, H - 8);
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f80';
+  ctx.font = 'bold 48px monospace';
+  ctx.fillText('炸弹人', W/2, 130);
+  ctx.fillStyle = '#888';
+  ctx.font = '18px monospace';
+  ctx.fillText('BOMBERMAN', W/2, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px monospace';
+  ctx.fillText('在迷宫中放置炸弹，炸开墙壁找到出口', W/2, 230);
+  ctx.fillText('消灭敌人获得分数，收集道具强化能力', W/2, 260);
+  ctx.fillText('方向键移动 | 空格放炸弹', W/2, 300);
+  ctx.fillStyle = '#f80'; ctx.fillText('B = 额外炸弹', W/2 - 120, 340);
+  ctx.fillStyle = '#f44'; ctx.fillText('R = 爆炸范围', W/2, 340);
+  ctx.fillStyle = '#4af'; ctx.fillText('S = 加速', W/2 + 120, 340);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '20px monospace';
+  ctx.fillText('按 ENTER 开始游戏', W/2, 420);
+  ctx.textAlign = 'left';
+}
+
+function drawGameOver() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f33';
+  ctx.font = 'bold 48px monospace';
+  ctx.fillText('游戏结束', W/2, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px monospace';
+  ctx.fillText('最终分数: ' + score, W/2, 240);
+  ctx.fillText('到达关卡: ' + level, W/2, 280);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '18px monospace';
+  ctx.fillText('按 ENTER 重新开始', W/2, 380);
+  ctx.textAlign = 'left';
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Enter') {
+    if (state === 'title') { score = 0; lives = 3; level = 1; generateLevel(); state = 'playing'; }
+    else if (state === 'gameover') { state = 'title'; }
+  }
+});
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

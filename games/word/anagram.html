@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>字母重排 Anagram</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+
+const WORDS = [
+  ['CAT','猫'],['DOG','狗'],['SUN','太阳'],['MOON','月亮'],['STAR','星星'],
+  ['FISH','鱼'],['BIRD','鸟'],['TREE','树'],['BOOK','书'],['CAKE','蛋糕'],
+  ['MILK','牛奶'],['BREAD','面包'],['WATER','水'],['HOUSE','房子'],['MUSIC','音乐'],
+  ['HAPPY','快乐'],['ANGRY','生气'],['SMILE','微笑'],['DREAM','梦想'],['LIGHT','光'],
+  ['CLOUD','云'],['STONE','石头'],['RIVER','河流'],['HORSE','马'],['SHEEP','羊'],
+  ['TRAIN','火车'],['PLANE','飞机'],['WATCH','手表'],['PHONE','电话'],['CHAIR','椅子'],
+  ['TABLE','桌子'],['PENCIL','铅笔'],['FLOWER','花'],['GARDEN','花园'],['WINDOW','窗户'],
+  ['BANANA','香蕉'],['ORANGE','橙子'],['PURPLE','紫色'],['SILVER','银色'],['GOLDEN','金色'],
+  ['ROCKET','火箭'],['DRAGON','龙'],['CASTLE','城堡'],['WIZARD','巫师']
+];
+
+let state = 'start';
+let target = '', hint = '', scrambled = [];
+let answer = [];      // indices into scrambled chosen by player
+let timeLeft = 60, lastT = 0;
+let usedIdx = [];
+let feedback = '', fbT = 0, fbColor = '#4caf50';
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function newWord() {
+  if (usedIdx.length >= WORDS.length) usedIdx = [];
+  let pool = WORDS.map((w, i) => i).filter(i => !usedIdx.includes(i));
+  const idx = pool[Math.floor(Math.random() * pool.length)];
+  usedIdx.push(idx);
+  target = WORDS[idx][0]; hint = WORDS[idx][1];
+  scrambled = shuffle(target.split(''));
+  // ensure not already solved
+  if (scrambled.join('') === target) scrambled.reverse();
+  answer = [];
+}
+
+function checkAnswer() {
+  const guess = answer.map(i => scrambled[i]).join('');
+  if (guess === target) {
+    score += 10;
+    feedback = '正确! +10'; fbColor = '#4caf50'; fbT = 60;
+    setTimeout(() => { if (state === 'play') newWord(); }, 400);
+  } else {
+    score = Math.max(0, score - 2);
+    feedback = '错误 -2'; fbColor = '#ff5555'; fbT = 50;
+    answer = [];
+  }
+}
+
+function skipWord() {
+  score = Math.max(0, score - 5);
+  feedback = '跳过 -5'; fbColor = '#ffaa33'; fbT = 50;
+  newWord();
+}
+
+// layout
+const TILE = 56, GAP = 10;
+function scrRect(i) {
+  const total = scrambled.length * (TILE + GAP) - GAP;
+  const sx = (W - total) / 2;
+  return { x: sx + i * (TILE + GAP), y: 300, w: TILE, h: TILE };
+}
+function ansRect(i) {
+  const total = target.length * (TILE + GAP) - GAP;
+  const sx = (W - total) / 2;
+  return { x: sx + i * (TILE + GAP), y: 170, w: TILE, h: TILE };
+}
+
+function drawTile(r, letter, color, used) {
+  ctx.fillStyle = used ? '#222' : color;
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 2;
+  ctx.strokeRect(r.x, r.y, r.w, r.h);
+  if (letter) {
+    ctx.fillStyle = used ? '#444' : '#fff';
+    ctx.font = 'bold 30px Arial'; ctx.textAlign = 'center';
+    ctx.fillText(letter, r.x + r.w / 2, r.y + 39);
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+
+  if (state === 'start') {
+    ctx.fillStyle = '#7ec8ff'; ctx.font = 'bold 52px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('字母重排 ANAGRAM', W / 2, 150);
+    ctx.fillStyle = '#ccc'; ctx.font = '20px Arial';
+    ctx.fillText('打乱的字母，点击拼出正确单词', W / 2, 200);
+    ctx.fillText('60 秒限时 · 正确+10 · 错误-2 · 跳过-5', W / 2, 235);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(W / 2 - 100, 290, 200, 60);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 26px Arial';
+    ctx.fillText('开始游戏', W / 2, 330);
+    ctx.fillStyle = '#777'; ctx.font = '14px Arial';
+    ctx.fillText('按 ESC 退出', W / 2, 420);
+    return;
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = '#ffd54a'; ctx.font = 'bold 50px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('时间到!', W / 2, 170);
+    ctx.fillStyle = '#fff'; ctx.font = '30px Arial';
+    ctx.fillText('最终得分: ' + score, W / 2, 230);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(W / 2 - 100, 290, 200, 60);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 24px Arial';
+    ctx.fillText('再来一次', W / 2, 328);
+    return;
+  }
+
+  // HUD
+  ctx.textAlign = 'left'; ctx.font = 'bold 24px Arial';
+  ctx.fillStyle = '#ffd54a'; ctx.fillText('得分: ' + score, 20, 40);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = timeLeft <= 10 ? '#ff5555' : '#7ec8ff';
+  ctx.fillText('时间: ' + Math.ceil(timeLeft) + 's', W - 20, 40);
+  // timer bar
+  ctx.fillStyle = '#333'; ctx.fillRect(20, 55, W - 40, 8);
+  ctx.fillStyle = timeLeft <= 10 ? '#ff5555' : '#4caf50';
+  ctx.fillRect(20, 55, (W - 40) * (timeLeft / 60), 8);
+
+  // hint
+  ctx.textAlign = 'center'; ctx.fillStyle = '#7ec8ff'; ctx.font = '22px Arial';
+  ctx.fillText('提示: ' + hint + '   (' + target.length + ' 个字母)', W / 2, 120);
+
+  // answer slots
+  for (let i = 0; i < target.length; i++) {
+    const r = ansRect(i);
+    const letter = answer[i] !== undefined ? scrambled[answer[i]] : '';
+    drawTile(r, letter, '#3a4a6a', false);
+  }
+
+  // scrambled tiles
+  scrambled.forEach((l, i) => {
+    const r = scrRect(i);
+    drawTile(r, l, '#5a3a6a', answer.includes(i));
+  });
+
+  // buttons
+  ctx.fillStyle = '#3a6a4a'; ctx.fillRect(W / 2 - 200, 400, 120, 45);
+  ctx.fillStyle = '#6a4a3a'; ctx.fillRect(W / 2 + 80, 400, 120, 45);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 18px Arial'; ctx.textAlign = 'center';
+  ctx.fillText('清除', W / 2 - 140, 429);
+  ctx.fillText('跳过 -5', W / 2 + 140, 429);
+
+  if (fbT > 0) {
+    ctx.fillStyle = fbColor; ctx.font = 'bold 34px Arial';
+    ctx.globalAlpha = Math.min(1, fbT / 20);
+    ctx.fillText(feedback, W / 2, 260);
+    ctx.globalAlpha = 1; fbT--;
+  }
+}
+
+function loop(t) {
+  if (state === 'play') {
+    if (!lastT) lastT = t;
+    timeLeft -= (t - lastT) / 1000;
+    lastT = t;
+    if (timeLeft <= 0) { timeLeft = 0; state = 'over'; }
+  } else lastT = 0;
+  draw();
+  requestAnimationFrame(loop);
+}
+
+cv.addEventListener('click', e => {
+  const rect = cv.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (state === 'start') {
+    if (mx > W / 2 - 100 && mx < W / 2 + 100 && my > 290 && my < 350) {
+      score = 0; timeLeft = 60; usedIdx = []; newWord(); state = 'play';
+    }
+    return;
+  }
+  if (state === 'over') {
+    if (mx > W / 2 - 100 && mx < W / 2 + 100 && my > 290 && my < 350) {
+      score = 0; timeLeft = 60; usedIdx = []; newWord(); state = 'play';
+    }
+    return;
+  }
+  if (state !== 'play') return;
+
+  // scrambled tiles
+  scrambled.forEach((l, i) => {
+    const r = scrRect(i);
+    if (mx > r.x && mx < r.x + r.w && my > r.y && my < r.y + r.h) {
+      if (!answer.includes(i) && answer.length < target.length) {
+        answer.push(i);
+        if (answer.length === target.length) checkAnswer();
+      }
+    }
+  });
+  // answer tiles - click to remove last matching
+  for (let i = 0; i < answer.length; i++) {
+    const r = ansRect(i);
+    if (mx > r.x && mx < r.x + r.w && my > r.y && my < r.y + r.h) {
+      answer.splice(i, 1); break;
+    }
+  }
+  // buttons
+  if (mx > W / 2 - 200 && mx < W / 2 - 80 && my > 400 && my < 445) answer = [];
+  if (mx > W / 2 + 80 && mx < W / 2 + 200 && my > 400 && my < 445) skipWord();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (state === 'start' && e.code === 'Enter') {
+    score = 0; timeLeft = 60; usedIdx = []; newWord(); state = 'play'; return;
+  }
+  if (state === 'over' && e.code === 'Enter') {
+    score = 0; timeLeft = 60; usedIdx = []; newWord(); state = 'play'; return;
+  }
+  if (state !== 'play') return;
+  if (e.code === 'Backspace') { answer.pop(); return; }
+  const k = e.key.toUpperCase();
+  if (/^[A-Z]$/.test(k)) {
+    for (let i = 0; i < scrambled.length; i++) {
+      if (scrambled[i] === k && !answer.includes(i) && answer.length < target.length) {
+        answer.push(i);
+        if (answer.length === target.length) checkAnswer();
+        break;
+      }
+    }
+  }
+});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>2048</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ---- 常量 ----
+const SIZE = 4;
+const CELL = 96, GAP = 12;
+const BOARD = SIZE * CELL + (SIZE + 1) * GAP;
+const BX = 60, BY = 90;
+let score = 0, best = 0;
+let state = 'title'; // title | playing | win | over
+let won = false, keepGoing = false;
+
+// 方块颜色
+const COLORS = {
+  2:    { bg: '#3a3a4a', fg: '#f0f0f0' },
+  4:    { bg: '#4a4a5e', fg: '#f0f0f0' },
+  8:    { bg: '#f2a35c', fg: '#fff' },
+  16:   { bg: '#f08a3c', fg: '#fff' },
+  32:   { bg: '#f06a3c', fg: '#fff' },
+  64:   { bg: '#f04a2c', fg: '#fff' },
+  128:  { bg: '#edcf5c', fg: '#fff' },
+  256:  { bg: '#edc850', fg: '#fff' },
+  512:  { bg: '#edc22e', fg: '#fff' },
+  1024: { bg: '#3cb8f0', fg: '#fff' },
+  2048: { bg: '#2c9cf0', fg: '#fff' }
+};
+function colorFor(v) { return COLORS[v] || { bg: '#1c6cf0', fg: '#fff' }; }
+
+// ---- 方块对象 ----
+// tile: { id, value, r, c, fromR, fromC, isNew, merged, mergeFrom:[] }
+let tiles = [];
+let grid = []; // grid[r][c] = tile or null
+let nextId = 1;
+let anim = null; // { start, dur }
+let history = []; // 撤销栈
+let popups = []; // 合并得分弹出
+
+function emptyGrid() {
+  const g = [];
+  for (let r = 0; r < SIZE; r++) g.push(new Array(SIZE).fill(null));
+  return g;
+}
+
+function rebuildGrid() {
+  grid = emptyGrid();
+  for (const t of tiles) grid[t.r][t.c] = t;
+}
+
+function emptyCells() {
+  const cells = [];
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      if (!grid[r][c]) cells.push([r, c]);
+  return cells;
+}
+
+function spawnTile() {
+  const cells = emptyCells();
+  if (cells.length === 0) return;
+  const [r, c] = cells[Math.floor(Math.random() * cells.length)];
+  const value = Math.random() < 0.9 ? 2 : 4;
+  const t = { id: nextId++, value, r, c, fromR: r, fromC: c, isNew: true, merged: false };
+  tiles.push(t);
+  grid[r][c] = t;
+}
+
+function snapshot() {
+  return {
+    tiles: tiles.map(t => ({ value: t.value, r: t.r, c: t.c })),
+    score
+  };
+}
+
+function restore(snap) {
+  tiles = snap.tiles.map(t => ({
+    id: nextId++, value: t.value, r: t.r, c: t.c,
+    fromR: t.r, fromC: t.c, isNew: false, merged: false
+  }));
+  score = snap.score;
+  rebuildGrid();
+}
+
+function initGame() {
+  tiles = []; grid = emptyGrid(); nextId = 1;
+  score = 0; won = false; keepGoing = false;
+  history = []; popups = []; anim = null;
+  spawnTile(); spawnTile();
+  state = 'playing';
+}
+
+// ---- 移动逻辑 ----
+function traversals(dir) {
+  // dir: 0=上 1=右 2=下 3=左
+  const rows = [0, 1, 2, 3], cols = [0, 1, 2, 3];
+  if (dir === 2) rows.reverse();
+  if (dir === 1) cols.reverse();
+  return { rows, cols };
+}
+
+function vector(dir) {
+  return [[-1, 0], [0, 1], [1, 0], [0, -1]][dir];
+}
+
+function findFarthest(r, c, dr, dc) {
+  let pr = r, pc = c;
+  let nr = r + dr, nc = c + dc;
+  while (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && !grid[nr][nc]) {
+    pr = nr; pc = nc;
+    nr += dr; nc += dc;
+  }
+  return { far: [pr, pc], next: [nr, nc] };
+}
+
+function move(dir) {
+  if (anim) return false;
+  const before = snapshot();
+  const [dr, dc] = vector(dir);
+  const { rows, cols } = traversals(dir);
+  let moved = false;
+  const mergedThisMove = new Set();
+  popups = [];
+
+  // 清除标记
+  for (const t of tiles) { t.fromR = t.r; t.fromC = t.c; t.isNew = false; t.merged = false; }
+  rebuildGrid();
+
+  for (const r of rows) {
+    for (const c of cols) {
+      const tile = grid[r][c];
+      if (!tile) continue;
+      grid[r][c] = null;
+      const { far, next } = findFarthest(r, c, dr, dc);
+      const [nr, nc] = next;
+      const target = (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE) ? grid[nr][nc] : null;
+      if (target && target.value === tile.value && !mergedThisMove.has(target.id)) {
+        // 合并
+        target.value *= 2;
+        target.merged = true;
+        target.fromR = target.r; target.fromC = target.c;
+        mergedThisMove.add(target.id);
+        tile.r = nr; tile.c = nc;
+        tile.merged = true;
+        tile.removeMe = true;
+        score += target.value;
+        popups.push({ r: nr, c: nc, value: target.value, t: 0 });
+        if (target.value === 2048 && !won) { won = true; }
+        moved = true;
+      } else {
+        tile.r = far[0]; tile.c = far[1];
+        grid[far[0]][far[1]] = tile;
+        if (far[0] !== r || far[1] !== c) moved = true;
+      }
+    }
+  }
+
+  if (!moved) { rebuildGrid(); return false; }
+
+  history.push(before);
+  if (history.length > 30) history.shift();
+
+  // 移除被合并的源方块（动画后）
+  anim = { start: performance.now(), dur: 130 };
+  pendingCleanup = () => {
+    tiles = tiles.filter(t => !t.removeMe);
+    for (const t of tiles) { t.fromR = t.r; t.fromC = t.c; t.merged = false; }
+    rebuildGrid();
+    spawnTile();
+    if (won && !keepGoing) { state = 'win'; }
+    else if (!hasMoves()) { state = 'over'; }
+    if (score > best) best = score;
+  };
+  return true;
+}
+let pendingCleanup = null;
+
+function hasMoves() {
+  if (emptyCells().length > 0) return true;
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const v = grid[r][c] && grid[r][c].value;
+      if (c + 1 < SIZE && grid[r][c + 1] && grid[r][c + 1].value === v) return true;
+      if (r + 1 < SIZE && grid[r + 1][c] && grid[r + 1][c].value === v) return true;
+    }
+  }
+  return false;
+}
+
+function undo() {
+  if (history.length === 0 || anim) return;
+  restore(history.pop());
+  popups = [];
+  if (state === 'over') state = 'playing';
+}
+
+// ---- 输入 ----
+document.addEventListener('keydown', e => {
+  if (state === 'title') {
+    if (e.code === 'Enter' || e.code === 'Space') initGame();
+    return;
+  }
+  if (state === 'win') {
+    if (e.code === 'Enter') { keepGoing = true; state = 'playing'; }
+    if (e.code === 'KeyN') state = 'title';
+    return;
+  }
+  if (state === 'over') {
+    if (e.code === 'Enter' || e.code === 'Space') state = 'title';
+    return;
+  }
+  if (state !== 'playing') return;
+  const map = { ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3 };
+  if (e.code in map) { move(map[e.code]); e.preventDefault(); }
+  else if (e.code === 'KeyZ') undo();
+  else if (e.code === 'KeyR') initGame();
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  if (state === 'title') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) initGame();
+  } else if (state === 'win') {
+    if (mx > 200 && mx < 380 && my > 300 && my < 360) { keepGoing = true; state = 'playing'; }
+    if (mx > 420 && mx < 600 && my > 300 && my < 360) state = 'title';
+  } else if (state === 'over') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) state = 'title';
+  } else if (state === 'playing') {
+    // 重开按钮
+    if (mx > 640 && mx < 760 && my > 30 && my < 70) initGame();
+  }
+});
+
+// 触摸/鼠标滑动
+let touchStart = null;
+canvas.addEventListener('mousedown', e => {
+  if (state !== 'playing') return;
+  const rect = canvas.getBoundingClientRect();
+  touchStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+});
+canvas.addEventListener('mouseup', e => {
+  if (!touchStart || state !== 'playing') { touchStart = null; return; }
+  const rect = canvas.getBoundingClientRect();
+  const dx = (e.clientX - rect.left) - touchStart.x;
+  const dy = (e.clientY - rect.top) - touchStart.y;
+  touchStart = null;
+  if (Math.abs(dx) < 20 && Math.abs(dy) < 20) return;
+  if (Math.abs(dx) > Math.abs(dy)) move(dx > 0 ? 1 : 3);
+  else move(dy > 0 ? 2 : 0);
+});
+
+// ---- 绘制 ----
+function cellPos(r, c) {
+  return {
+    x: BX + GAP + c * (CELL + GAP),
+    y: BY + GAP + r * (CELL + GAP)
+  };
+}
+
+function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+function drawBoard() {
+  // 底板
+  ctx.fillStyle = '#23232f';
+  ctx.beginPath();
+  ctx.roundRect(BX, BY, BOARD, BOARD, 10);
+  ctx.fill();
+  // 空格
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const p = cellPos(r, c);
+      ctx.fillStyle = '#2e2e3c';
+      ctx.beginPath();
+      ctx.roundRect(p.x, p.y, CELL, CELL, 6);
+      ctx.fill();
+    }
+  }
+}
+
+function drawTiles(now) {
+  let prog = 1;
+  if (anim) {
+    prog = Math.min(1, (now - anim.start) / anim.dur);
+    if (prog >= 1) {
+      anim = null;
+      if (pendingCleanup) { pendingCleanup(); pendingCleanup = null; }
+    }
+  }
+  const e = easeOut(prog);
+
+  // 排序：先画未合并的，再画合并目标
+  const sorted = tiles.slice().sort((a, b) => (a.merged ? 1 : 0) - (b.merged ? 1 : 0));
+  for (const t of sorted) {
+    if (t.removeMe && prog >= 1) continue;
+    let x, y;
+    if (anim) {
+      const fp = cellPos(t.fromR, t.fromC);
+      const tp = cellPos(t.r, t.c);
+      x = fp.x + (tp.x - fp.x) * e;
+      y = fp.y + (tp.y - fp.y) * e;
+    } else {
+      const p = cellPos(t.r, t.c);
+      x = p.x; y = p.y;
+    }
+    let scale = 1;
+    if (t.isNew && anim) scale = e;
+    if (t.merged && !t.removeMe && anim) scale = 1 + Math.sin(prog * Math.PI) * 0.12;
+    const col = colorFor(t.value);
+    const s = CELL * scale;
+    const ox = x + (CELL - s) / 2;
+    const oy = y + (CELL - s) / 2;
+    ctx.fillStyle = col.bg;
+    ctx.beginPath();
+    ctx.roundRect(ox, oy, s, s, 6);
+    ctx.fill();
+    ctx.fillStyle = col.fg;
+    ctx.font = 'bold ' + Math.floor(s * (t.value >= 1024 ? 0.3 : t.value >= 128 ? 0.36 : 0.44)) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(t.value.toString(), ox + s / 2, oy + s / 2);
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawPopups(now) {
+  for (const p of popups) {
+    p.t += 16;
+    const life = p.t / 700;
+    if (life >= 1) continue;
+    const pos = cellPos(p.r, p.c);
+    ctx.globalAlpha = 1 - life;
+    ctx.fillStyle = '#ffd54f';
+    ctx.font = 'bold 26px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('+' + p.value, pos.x + CELL / 2, pos.y - life * 30);
+    ctx.globalAlpha = 1;
+  }
+  popups = popups.filter(p => p.t < 700);
+}
+
+function drawHUD() {
+  ctx.fillStyle = '#f0c040';
+  ctx.font = 'bold 40px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('2048', BX, 55);
+
+  // 分数框
+  function scoreBox(x, label, val) {
+    ctx.fillStyle = '#2e2e3c';
+    ctx.beginPath();
+    ctx.roundRect(x, 20, 110, 54, 6);
+    ctx.fill();
+    ctx.fillStyle = '#aaa';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x + 55, 38);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText(val.toString(), x + 55, 64);
+  }
+  scoreBox(480, '分数', score);
+  scoreBox(600, '最高', best);
+
+  // 重开按钮
+  ctx.fillStyle = '#3a3a4a';
+  ctx.beginPath();
+  ctx.roundRect(640, 30, 120, 40, 6);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('新游戏', 700, 56);
+
+  ctx.fillStyle = '#666';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('方向键 / 滑动合并  ·  Z 撤销  ·  R 重开', BX, BY + BOARD + 28);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#f0c040';
+  ctx.font = 'bold 90px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('2048', 400, 170);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('合并相同数字，凑出 2048！', 400, 220);
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath();
+  ctx.roundRect(300, 320, 200, 60, 8);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('开始游戏', 400, 358);
+  ctx.fillStyle = '#666';
+  ctx.font = '15px sans-serif';
+  ctx.fillText('按 回车 或 点击按钮 开始', 400, 420);
+}
+
+function overlay(title, color, sub) {
+  ctx.fillStyle = 'rgba(20,20,28,0.82)';
+  ctx.fillRect(BX, BY, BOARD, BOARD);
+  ctx.fillStyle = color;
+  ctx.font = 'bold 46px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(title, BX + BOARD / 2, BY + BOARD / 2 - 20);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText(sub, BX + BOARD / 2, BY + BOARD / 2 + 25);
+}
+
+function drawWin() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = 'bold 50px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('达成 2048！', 400, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px sans-serif';
+  ctx.fillText('得分: ' + score, 400, 225);
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath(); ctx.roundRect(200, 300, 180, 60, 8); ctx.fill();
+  ctx.fillStyle = '#1565c0';
+  ctx.beginPath(); ctx.roundRect(420, 300, 180, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('继续挑战', 290, 338);
+  ctx.fillText('返回菜单', 510, 338);
+}
+
+function drawOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ff5252';
+  ctx.font = 'bold 50px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('游戏结束', 400, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px sans-serif';
+  ctx.fillText('最终得分: ' + score + '  ·  最高: ' + best, 400, 225);
+  ctx.fillStyle = '#1565c0';
+  ctx.beginPath(); ctx.roundRect(300, 320, 200, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 358);
+}
+
+// ---- 主循环 ----
+function render(now) {
+  if (state === 'title') { drawTitle(); }
+  else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, 800, 480);
+    drawBoard();
+    drawTiles(now);
+    drawPopups(now);
+    drawHUD();
+    if (state === 'win') drawWin();
+    else if (state === 'over') drawOver();
+  }
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

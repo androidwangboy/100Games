@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>飞行棋 Ludo</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let state = 'title';
+let btnHover = '';
+let message = '';
+const COLORS = ['#e74c3c', '#2ecc71', '#3498db', '#f1c40f'];
+const NAMES = ['红(你)', '绿(AI)', '蓝(AI)', '黄(AI)'];
+const CELL = 30;
+const BX = 170, BY = 10; // board offset
+// Main track: 52 cells, each player starts at different offset
+const START_POS = [0, 13, 26, 39];
+const SAFE_CELLS = [0, 8, 13, 21, 26, 34, 39, 47];
+let players = [];
+let currentPlayer = 0;
+let diceVal = 0;
+let diceRolled = false;
+let canMove = [];
+let animating = false;
+let winner = -1;
+
+function initGame() {
+  players = [];
+  for (let p = 0; p < 4; p++) {
+    players.push({ pieces: [-1,-1,-1,-1], color: COLORS[p], start: START_POS[p] });
+  }
+  currentPlayer = 0;
+  diceVal = 0; diceRolled = false; canMove = []; winner = -1; message = '';
+}
+
+// Convert track position (0-51) to grid coords on 15x15 board
+function trackToGrid(pos) {
+  // Standard Ludo path on 15x15 grid
+  const path = [
+    [6,13],[6,12],[6,11],[6,10],[6,9],[6,8],
+    [5,6],[4,6],[3,6],[2,6],[1,6],[0,6],
+    [0,5],[0,4],[0,3],[0,2],[0,1],[0,0],
+    [1,0],[2,0],[3,0],[4,0],[5,0],
+    [6,0],[6,1],[6,2],[6,3],[6,4],[6,5],
+    [8,6],[9,6],[10,6],[11,6],[12,6],[13,6],[14,6],
+    [14,7],[14,8],
+    [13,8],[12,8],[11,8],[10,8],[9,8],[8,8],
+    [8,10],[8,11],[8,12],[8,13],[8,14],
+    [7,14],[6,14]
+  ];
+  // Remap to proper 52-cell loop
+  const p2 = pos % 52;
+  return path[p2] || [7,7];
+}
+
+// Simplified: use a linear path representation
+function getCellPos(trackPos) {
+  const p = ((trackPos % 52) + 52) % 52;
+  // Map 52 positions around the cross-shaped board
+  const coords = [];
+  // Bottom arm going up (positions 0-5): col=6, row=13 down to 8
+  for (let i = 0; i < 6; i++) coords.push([6, 13 - i]);
+  // Left arm going left (positions 6-11): row=6, col=5 down to 0
+  for (let i = 0; i < 6; i++) coords.push([5 - i, 6]);
+  // Top-left corner up (positions 12-13)
+  coords.push([0, 5]); coords.push([0, 4]);
+  // Top arm going right (positions 14-19): row=0..5, col=0..5 -> actually top going right
+  // Let me use a simpler standard mapping
+  return coords[p] || [7, 7];
+}
+
+// Better approach: define full 52-cell path as [col, row] on 15x15
+const PATH = [];
+(function buildPath() {
+  // Segment 1: bottom column going up (col 6, rows 13->8)
+  for (let r = 13; r >= 8; r--) PATH.push([6, r]);
+  // Segment 2: left row going left (row 6, cols 5->0)
+  for (let c = 5; c >= 0; c--) PATH.push([c, 6]);
+  // Segment 3: top-left going up then right
+  PATH.push([0, 5]); PATH.push([0, 4]); PATH.push([0, 3]); PATH.push([0, 2]); PATH.push([0, 1]); PATH.push([0, 0]);
+  // Segment 4: top row going right (row 0, cols 1->5) -- actually let's do standard
+  // I'll use a well-known Ludo path layout
+})();
+
+// Let me just use a clean standard path
+const BOARD_PATH = (function() {
+  const p = [];
+  // Going clockwise from bottom-center
+  // Bottom arm up: (6,13) to (6,8)
+  for (let i = 13; i >= 8; i--) p.push([6, i]);
+  // Left turn: (5,6) to (0,6)
+  for (let i = 5; i >= 0; i--) p.push([i, 6]);
+  // Up: (0,5) to (0,0)
+  for (let i = 5; i >= 0; i--) p.push([0, i]);
+  // Right: (1,0) to (5,0)
+  for (let i = 1; i <= 5; i++) p.push([i, 0]);
+  // Down: (6,0) to (6,5)
+  for (let i = 0; i <= 5; i++) p.push([6, i]);
+  // Right: (8,6) to (13,6)
+  for (let i = 8; i <= 13; i++) p.push([i, 6]);
+  // Down-right: (14,6) to (14,8)
+  p.push([14, 6]); p.push([14, 7]); p.push([14, 8]);
+  // Left: (13,8) to (8,8)
+  for (let i = 13; i >= 8; i--) p.push([i, 8]);
+  // Down: (8,9) to (8,14)
+  for (let i = 9; i <= 14; i++) p.push([8, i]);
+  // Left: (7,14) to (6,14)
+  p.push([7, 14]); p.push([6, 14]);
+  // This gives us ~52 cells
+  return p;
+})();
+
+// Home paths for each player (6 cells leading to center)
+const HOME_PATHS = [
+  [[7,13],[7,12],[7,11],[7,10],[7,9],[7,8]], // Red - from bottom
+  [[1,7],[2,7],[3,7],[4,7],[5,7],[6,7]],     // Green - from left
+  [[7,1],[7,2],[7,3],[7,4],[7,5],[7,6]],     // Blue - from top
+  [[13,7],[12,7],[11,7],[10,7],[9,7],[8,7]]  // Yellow - from right
+];
+
+// Home base positions (where pieces wait)
+const HOME_BASE = [
+  [[1,10],[3,10],[1,12],[3,12]],  // Red bottom-left
+  [[1,1],[3,1],[1,3],[3,3]],      // Green top-left
+  [[10,1],[12,1],[10,3],[12,3]],  // Blue top-right
+  [[10,10],[12,10],[10,12],[12,12]] // Yellow bottom-right
+];
+
+function getPieceScreenPos(player, pieceIdx) {
+  const p = players[player];
+  const pos = p.pieces[pieceIdx];
+  if (pos === -1) {
+    const [c, r] = HOME_BASE[player][pieceIdx];
+    return [BX + c * CELL + CELL/2, BY + r * CELL + CELL/2];
+  }
+  if (pos >= 100) { // In home stretch
+    const hIdx = pos - 100;
+    if (hIdx >= 6) return [BX + 7 * CELL + CELL/2, BY + 7 * CELL + CELL/2]; // center
+    const [c, r] = HOME_PATHS[player][hIdx];
+    return [BX + c * CELL + CELL/2, BY + r * CELL + CELL/2];
+  }
+  const trackPos = (p.start + pos) % BOARD_PATH.length;
+  const [c, r] = BOARD_PATH[trackPos];
+  return [BX + c * CELL + CELL/2, BY + r * CELL + CELL/2];
+}
+
+function getMovablePieces(player) {
+  const movable = [];
+  const p = players[player];
+  for (let i = 0; i < 4; i++) {
+    const pos = p.pieces[i];
+    if (pos === -1) { if (diceVal === 6) movable.push(i); }
+    else if (pos >= 100) { if (pos - 100 + diceVal <= 6) movable.push(i); }
+    else {
+      const newPos = pos + diceVal;
+      if (newPos <= 56) movable.push(i); // 50 on track + 6 home
+    }
+  }
+  return movable;
+}
+
+function movePiece(player, pieceIdx) {
+  const p = players[player];
+  let pos = p.pieces[pieceIdx];
+  if (pos === -1) {
+    p.pieces[pieceIdx] = 0;
+    checkCapture(player, pieceIdx);
+  } else if (pos >= 100) {
+    p.pieces[pieceIdx] = pos + diceVal;
+  } else {
+    const newPos = pos + diceVal;
+    if (newPos > 50) { p.pieces[pieceIdx] = 100 + (newPos - 51); }
+    else { p.pieces[pieceIdx] = newPos; checkCapture(player, pieceIdx); }
+  }
+  // Check win
+  if (p.pieces.every(v => v >= 106)) { winner = player; score = player === 0 ? 100 : 0; state = 'result'; return; }
+  // Next turn
+  if (diceVal !== 6) { nextPlayer(); }
+  else { diceRolled = false; canMove = []; if (player !== 0) setTimeout(aiTurn, 700); }
+}
+
+function checkCapture(player, pieceIdx) {
+  const p = players[player];
+  const pos = p.pieces[pieceIdx];
+  if (pos < 0 || pos >= 100) return;
+  const absPos = (p.start + pos) % BOARD_PATH.length;
+  const relSafe = SAFE_CELLS.includes(absPos % 52);
+  if (relSafe) return;
+  for (let op = 0; op < 4; op++) {
+    if (op === player) continue;
+    const opp = players[op];
+    for (let i = 0; i < 4; i++) {
+      if (opp.pieces[i] >= 0 && opp.pieces[i] < 100) {
+        const oppAbs = (opp.start + opp.pieces[i]) % BOARD_PATH.length;
+        if (oppAbs === absPos) { opp.pieces[i] = -1; message = NAMES[player] + ' 吃掉了 ' + NAMES[op] + ' 的棋子!'; }
+      }
+    }
+  }
+}
+
+function nextPlayer() {
+  currentPlayer = (currentPlayer + 1) % 4;
+  diceRolled = false; canMove = []; diceVal = 0;
+  if (currentPlayer !== 0) setTimeout(aiTurn, 700);
+}
+
+function aiTurn() {
+  if (state !== 'game' || currentPlayer === 0 || winner >= 0) return;
+  diceVal = Math.ceil(Math.random() * 6);
+  diceRolled = true;
+  const movable = getMovablePieces(currentPlayer);
+  if (movable.length === 0) { setTimeout(nextPlayer, 600); return; }
+  // AI: prefer captures, then furthest piece
+  let best = movable[0], bestScore = -1;
+  movable.forEach(i => {
+    let sc = players[currentPlayer].pieces[i] === -1 ? 5 : players[currentPlayer].pieces[i];
+    // Check if capture possible
+    const pos = players[currentPlayer].pieces[i];
+    if (pos >= 0 && pos < 100) {
+      const newPos = pos + diceVal;
+      const absPos = (players[currentPlayer].start + newPos) % BOARD_PATH.length;
+      for (let op = 0; op < 4; op++) {
+        if (op === currentPlayer) continue;
+        for (let j = 0; j < 4; j++) {
+          const opp = players[op];
+          if (opp.pieces[j] >= 0 && opp.pieces[j] < 100) {
+            if ((opp.start + opp.pieces[j]) % BOARD_PATH.length === absPos) sc += 50;
+          }
+        }
+      }
+    }
+    if (sc > bestScore) { bestScore = sc; best = i; }
+  });
+  setTimeout(() => movePiece(currentPlayer, best), 500);
+}
+
+function drawBoard() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  // Draw grid cells
+  for (let r = 0; r < 15; r++) {
+    for (let c = 0; c < 15; c++) {
+      const x = BX + c * CELL, y = BY + r * CELL;
+      ctx.fillStyle = '#2a2a3e';
+      ctx.fillRect(x, y, CELL, CELL);
+      ctx.strokeStyle = '#333';
+      ctx.strokeRect(x, y, CELL, CELL);
+    }
+  }
+  // Color home bases
+  const baseAreas = [[0,9,6,6,'#e74c3c'],[0,0,6,6,'#2ecc71'],[9,0,6,6,'#3498db'],[9,9,6,6,'#f1c40f']];
+  baseAreas.forEach(([c,r,w,h,col]) => {
+    ctx.fillStyle = col + '33';
+    ctx.fillRect(BX + c*CELL, BY + r*CELL, w*CELL, h*CELL);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(BX + c*CELL, BY + r*CELL, w*CELL, h*CELL);
+  });
+  // Center
+  ctx.fillStyle = '#4a4a6e';
+  ctx.fillRect(BX + 6*CELL, BY + 6*CELL, 3*CELL, 3*CELL);
+  ctx.fillStyle = '#fff';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('终点', BX + 7.5*CELL, BY + 7.5*CELL + 4);
+  // Draw path cells
+  BOARD_PATH.forEach(([c, r], i) => {
+    const x = BX + c * CELL, y = BY + r * CELL;
+    ctx.fillStyle = SAFE_CELLS.includes(i % 52) ? '#4a6' : '#3a3a5e';
+    ctx.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+  });
+  // Home paths
+  HOME_PATHS.forEach((hp, pi) => {
+    hp.forEach(([c, r]) => {
+      ctx.fillStyle = COLORS[pi] + '55';
+      ctx.fillRect(BX + c*CELL + 1, BY + r*CELL + 1, CELL - 2, CELL - 2);
+    });
+  });
+  // Draw pieces
+  for (let p = 0; p < 4; p++) {
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = getPieceScreenPos(p, i);
+      ctx.beginPath();
+      ctx.arc(x, y, 10, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS[p];
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Highlight movable
+      if (p === currentPlayer && p === 0 && canMove.includes(i)) {
+        ctx.beginPath();
+        ctx.arc(x, y, 13, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ff0';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+  }
+  // UI panel
+  ctx.fillStyle = '#222';
+  ctx.fillRect(640, 10, 150, 460);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('飞行棋', 715, 40);
+  // Current player
+  ctx.fillStyle = COLORS[currentPlayer];
+  ctx.font = '14px sans-serif';
+  ctx.fillText(NAMES[currentPlayer], 715, 70);
+  // Dice
+  if (diceRolled) {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(690, 90, 50, 50);
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillText(diceVal, 715, 123);
+  } else if (currentPlayer === 0) {
+    drawBtn(665, 90, 100, 40, '掷骰子', 'roll', '#e94560');
+  }
+  // Message
+  ctx.fillStyle = '#ff0';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  const lines = message.match(/.{1,14}/g) || [];
+  lines.slice(0, 3).forEach((l, i) => ctx.fillText(l, 715, 170 + i * 16));
+  // Player status
+  ctx.textAlign = 'left';
+  ctx.font = '12px sans-serif';
+  players.forEach((p, i) => {
+    const done = p.pieces.filter(v => v >= 106).length;
+    ctx.fillStyle = COLORS[i];
+    ctx.fillText(NAMES[i] + ': ' + done + '/4到终点', 650, 240 + i * 25);
+  });
+  // Instructions
+  ctx.fillStyle = '#888';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('掷6出发/再掷一次', 715, 380);
+  ctx.fillText('点击高亮棋子移动', 715, 400);
+  ctx.fillText('踩到对手送回起点', 715, 420);
+}
+
+function drawBtn(x, y, w, h, text, id, color) {
+  const hover = btnHover === id;
+  ctx.fillStyle = hover ? (color||'#4a9') : '#333';
+  ctx.strokeStyle = color || '#4a9';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 5);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = hover ? '#111' : '#eee';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x+w/2, y+h/2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('飞 行 棋', W/2, 140);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('Ludo', W/2, 180);
+  COLORS.forEach((c, i) => {
+    ctx.beginPath();
+    ctx.arc(W/2 - 75 + i * 50, 240, 18, 0, Math.PI * 2);
+    ctx.fillStyle = c; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  });
+  ctx.fillStyle = '#888';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('1人 vs 3 AI，先将4颗棋子全部送到终点获胜', W/2, 310);
+  ctx.fillText('掷出6才能出发，再掷6可额外回合', W/2, 340);
+  ctx.fillText('踩到对手棋子可将其送回起点', W/2, 365);
+  drawBtn(W/2-80, 400, 160, 42, '开始游戏', 'start', '#e94560');
+}
+
+function drawResult() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = winner === 0 ? '#4f4' : COLORS[winner];
+  ctx.font = 'bold 40px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(winner === 0 ? '你赢了!' : NAMES[winner] + ' 获胜!', W/2, 180);
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px sans-serif';
+  players.forEach((p, i) => {
+    const done = p.pieces.filter(v => v >= 106).length;
+    ctx.fillStyle = COLORS[i];
+    ctx.fillText(NAMES[i] + ': ' + done + '/4', W/2, 240 + i * 35);
+  });
+  drawBtn(W/2-80, 400, 160, 40, '再来一局', 'restart', '#4a9');
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (state === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 400 && my < 442) { initGame(); state = 'game'; }
+    return;
+  }
+  if (state === 'result') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 400 && my < 440) state = 'title';
+    return;
+  }
+  if (state !== 'game') return;
+  // Roll dice
+  if (currentPlayer === 0 && !diceRolled && mx > 665 && mx < 765 && my > 90 && my < 130) {
+    diceVal = Math.ceil(Math.random() * 6);
+    diceRolled = true;
+    canMove = getMovablePieces(0);
+    if (canMove.length === 0) { message = '无法移动!'; setTimeout(nextPlayer, 1000); }
+    return;
+  }
+  // Move piece
+  if (currentPlayer === 0 && diceRolled && canMove.length > 0) {
+    for (let i = 0; i < 4; i++) {
+      if (!canMove.includes(i)) continue;
+      const [x, y] = getPieceScreenPos(0, i);
+      if (Math.hypot(mx - x, my - y) < 15) { movePiece(0, i); return; }
+    }
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  btnHover = '';
+  if (state === 'title' && mx > W/2-80 && mx < W/2+80 && my > 400 && my < 442) btnHover = 'start';
+  if (state === 'result' && mx > W/2-80 && mx < W/2+80 && my > 400 && my < 440) btnHover = 'restart';
+  if (state === 'game' && currentPlayer === 0 && !diceRolled && mx > 665 && mx < 765 && my > 90 && my < 130) btnHover = 'roll';
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (state === 'title') drawTitle();
+  else if (state === 'game') drawBoard();
+  else if (state === 'result') drawResult();
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

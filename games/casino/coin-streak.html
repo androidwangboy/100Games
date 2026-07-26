@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>抛硬币连击 (Coin Streak)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title'; // title, guessing, flipping, result, gameover
+let streak = 0;
+let pot = 0;
+let coinResult = ''; // 'heads' or 'tails'
+let guess = '';
+let flipProgress = 0;
+let flipRotation = 0;
+let message = '';
+let resultMsg = '';
+let coins = 50; // starting coins
+let betAmount = 10;
+let particles = [];
+
+function startGame() {
+  state = 'guessing';
+  streak = 0;
+  pot = 0;
+  coins = 50;
+  score = 0;
+  message = '选择正面或反面';
+  resultMsg = '';
+}
+
+function placeBet() {
+  if (coins < betAmount) { state = 'gameover'; message = '金币不足!'; return; }
+  coins -= betAmount;
+  pot += betAmount;
+  state = 'guessing';
+  message = '选择正面或反面';
+}
+
+function doGuess(g) {
+  if (state !== 'guessing') return;
+  guess = g;
+  coinResult = Math.random() < 0.5 ? 'heads' : 'tails';
+  state = 'flipping';
+  flipProgress = 0;
+  flipRotation = 0;
+}
+
+function resolveFlip() {
+  if (guess === coinResult) {
+    streak++;
+    pot = Math.floor(pot * 1.8);
+    resultMsg = `正确! 连击 x${streak}`;
+    state = 'result_win';
+    message = '继续猜或兑现?';
+    // particles
+    for (let i = 0; i < 12; i++) {
+      particles.push({ x: 400, y: 220, vx: (Math.random()-0.5)*8, vy: -Math.random()*6-2, life: 40, color: '#f1c40f' });
+    }
+  } else {
+    resultMsg = `错误! 失去所有 (${pot} 金币)`;
+    pot = 0;
+    streak = 0;
+    state = 'result_lose';
+    message = '点击继续';
+  }
+}
+
+function cashOut() {
+  if (state !== 'result_win') return;
+  coins += pot;
+  score += pot;
+  resultMsg = `兑现 ${pot} 金币!`;
+  pot = 0;
+  streak = 0;
+  message = '点击继续下注';
+  state = 'result_cash';
+  for (let i = 0; i < 20; i++) {
+    particles.push({ x: 400, y: 300, vx: (Math.random()-0.5)*10, vy: -Math.random()*8-3, life: 50, color: '#2ecc71' });
+  }
+}
+
+function drawCoin(x, y, radius, rotation, showResult) {
+  ctx.save();
+  ctx.translate(x, y);
+  const scaleX = Math.cos(rotation);
+  ctx.scale(Math.abs(scaleX) < 0.05 ? 0.05 : scaleX, 1);
+  // Coin body
+  const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+  grad.addColorStop(0, '#f9e547');
+  grad.addColorStop(0.7, '#f1c40f');
+  grad.addColorStop(1, '#d4a017');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#b8860b';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // Face
+  ctx.fillStyle = '#8b6914';
+  ctx.font = `bold ${radius}px serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (showResult || state === 'guessing' || state === 'result_win' || state === 'result_cash') {
+    ctx.fillText(coinResult === 'heads' ? '正' : '反', 0, 4);
+  } else {
+    ctx.fillText('?', 0, 4);
+  }
+  ctx.restore();
+}
+
+function drawButton(x, y, w, h, text, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 8);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w/2, y + h/2);
+}
+
+function draw() {
+  // Dark purple background
+  ctx.fillStyle = '#1a0a2e';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = 'rgba(128,0,255,0.03)';
+  for (let i = 0; i < 480; i += 3) ctx.fillRect(0, i, 800, 1);
+
+  if (state === 'title') {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = 'bold 48px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🪙 抛硬币连击', 400, 140);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('猜对硬币正反面，连击越多奖金越高!', 400, 200);
+    ctx.fillText('猜错则失去当前所有奖金', 400, 235);
+    ctx.fillText('随时可以兑现保住奖金', 400, 270);
+    ctx.fillStyle = '#bdc3c7';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('初始金币: 50 | 每次下注: 10', 400, 320);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('[ 点击开始 ]', 400, 400);
+    return;
+  }
+
+  if (state === 'gameover') {
+    ctx.fillStyle = '#e74c3c';
+    ctx.font = 'bold 44px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('游戏结束', 400, 180);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '24px sans-serif';
+    ctx.fillText(`最终得分: ${score}`, 400, 240);
+    ctx.fillText(`剩余金币: ${coins}`, 400, 280);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText('[ 点击重新开始 ]', 400, 380);
+    return;
+  }
+
+  // HUD
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`金币: ${coins}`, 20, 35);
+  ctx.textAlign = 'right';
+  ctx.fillText(`得分: ${score}`, 780, 35);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e67e22';
+  ctx.fillText(`连击: x${streak}`, 400, 35);
+
+  // Pot display
+  ctx.fillStyle = '#2ecc71';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(`奖池: ${pot}`, 400, 80);
+
+  // Coin
+  const showRes = (state === 'result_win' || state === 'result_lose' || state === 'result_cash');
+  drawCoin(400, 210, 60, flipRotation, showRes);
+
+  // Result message
+  if (resultMsg) {
+    ctx.fillStyle = state === 'result_lose' ? '#e74c3c' : '#2ecc71';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText(resultMsg, 400, 310);
+  }
+
+  // Buttons
+  if (state === 'guessing') {
+    drawButton(200, 360, 160, 50, '正面 (头)', '#2980b9');
+    drawButton(440, 360, 160, 50, '反面 (尾)', '#8e44ad');
+    ctx.fillStyle = '#95a5a6';
+    ctx.font = '14px sans-serif';
+    ctx.fillText(`下注: ${betAmount} 金币`, 400, 440);
+  } else if (state === 'result_win') {
+    drawButton(180, 360, 180, 50, '继续猜 (x1.8)', '#27ae60');
+    drawButton(440, 360, 180, 50, `兑现 ${pot}`, '#f39c12');
+  } else if (state === 'result_lose' || state === 'result_cash') {
+    if (coins >= betAmount) {
+      drawButton(300, 370, 200, 50, '继续下注', '#2980b9');
+    } else {
+      ctx.fillStyle = '#e74c3c';
+      ctx.font = '20px sans-serif';
+      ctx.fillText('金币不足，游戏结束', 400, 390);
+      ctx.fillStyle = '#f39c12';
+      ctx.font = '18px sans-serif';
+      ctx.fillText('[ 点击重新开始 ]', 400, 430);
+    }
+  }
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / 50;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // Instruction
+  ctx.fillStyle = '#7f8c8d';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, 400, 470);
+}
+
+function update() {
+  if (state === 'flipping') {
+    flipProgress += 0.03;
+    flipRotation += 0.4;
+    if (flipProgress >= 1) {
+      flipRotation = 0;
+      resolveFlip();
+    }
+  }
+  // Update particles
+  particles = particles.filter(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.2;
+    p.life--;
+    return p.life > 0;
+  });
+}
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') { startGame(); return; }
+  if (state === 'gameover') { state = 'title'; return; }
+  if (state === 'guessing') {
+    if (mx >= 200 && mx <= 360 && my >= 360 && my <= 410) { doGuess('heads'); return; }
+    if (mx >= 440 && mx <= 600 && my >= 360 && my <= 410) { doGuess('tails'); return; }
+  }
+  if (state === 'result_win') {
+    if (mx >= 180 && mx <= 360 && my >= 360 && my <= 410) { // continue
+      if (coins >= betAmount || pot > 0) {
+        state = 'guessing';
+        resultMsg = '';
+        message = '选择正面或反面';
+        // Re-bet from pot
+        coins -= 0; // pot already has money
+      }
+      return;
+    }
+    if (mx >= 440 && mx <= 620 && my >= 360 && my <= 410) { cashOut(); return; }
+  }
+  if (state === 'result_lose' || state === 'result_cash') {
+    if (coins < betAmount) { state = 'gameover'; return; }
+    if (mx >= 300 && mx <= 500 && my >= 370 && my <= 420) {
+      placeBet();
+      resultMsg = '';
+      return;
+    }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

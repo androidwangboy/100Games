@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>猜词 Hangman</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+
+// Word list: [word, category, hint]
+const WORDS = [
+  ['APPLE','水果','红红圆圆的水果'], ['BANANA','水果','黄色弯弯的水果'],
+  ['ORANGE','水果','橙色柑橘类'], ['GRAPE','水果','一串串紫色小果'],
+  ['MANGO','水果','热带黄色甜果'], ['TIGER','动物','森林百兽之王'],
+  ['ELEPHANT','动物','长鼻子大耳朵'], ['MONKEY','动物','爱吃香蕉会爬树'],
+  ['RABBIT','动物','长耳朵短尾巴'], ['PENGUIN','动物','不会飞的南极鸟'],
+  ['GUITAR','乐器','六弦弹拨乐器'], ['PIANO','乐器','黑白键敲击乐器'],
+  ['VIOLIN','乐器','四弦拉奏乐器'], ['DRUM','乐器','敲击节奏乐器'],
+  ['SOCCER','运动','用脚踢的球类'], ['TENNIS','运动','隔网挥拍运动'],
+  ['SWIMMING','运动','在水中前进'], ['CYCLING','运动','骑两个轮子'],
+  ['DOCTOR','职业','医院治病的人'], ['TEACHER','职业','学校教书的人'],
+  ['FARMER','职业','田地种庄稼的人'], ['PILOT','职业','开飞机的人'],
+  ['WINTER','季节','最冷的下雪季'], ['SUMMER','季节','最热的游泳季'],
+  ['SPRING','季节','万物复苏花开'], ['AUTUMN','季节','落叶金黄季节'],
+  ['PYTHON','编程','蛇形编程语言'], ['ROBOT','科技','自动机械装置'],
+  ['PLANET','天文','绕恒星运行天体'], ['COMET','天文','带尾巴的扫帚星'],
+  ['CASTLE','建筑','古代国王住所'], ['BRIDGE','建筑','跨越河流结构'],
+  ['ISLAND','地理','四面环水的陆地'], ['VOLCANO','地理','会喷发的山']
+];
+
+let state = 'start'; // start, play, win, lose, over
+let word = '', hint = '', cat = '';
+let guessed = [], wrong = 0;
+const MAX_WRONG = 6;
+let usedWords = [];
+let msg = '', msgT = 0;
+
+function newWord() {
+  if (usedWords.length >= WORDS.length) usedWords = [];
+  let pool = WORDS.filter((_, i) => !usedWords.includes(i));
+  let idx = WORDS.indexOf(pool[Math.floor(Math.random() * pool.length)]);
+  usedWords.push(idx);
+  word = WORDS[idx][0]; cat = WORDS[idx][1]; hint = WORDS[idx][2];
+  guessed = []; wrong = 0;
+}
+
+function guessLetter(l) {
+  if (state !== 'play' || guessed.includes(l)) return;
+  guessed.push(l);
+  if (word.includes(l)) {
+    if ([...word].every(c => guessed.includes(c))) {
+      state = 'win'; score++; msg = '太棒了! +1'; msgT = 90;
+    }
+  } else {
+    wrong++;
+    if (wrong >= MAX_WRONG) { state = 'lose'; msg = '失败! 单词: ' + word; msgT = 120; }
+  }
+}
+
+// Draw hangman figure
+function drawHangman(x, y) {
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  // gallows
+  ctx.beginPath();
+  ctx.moveTo(x, y + 160); ctx.lineTo(x + 100, y + 160);
+  ctx.moveTo(x + 30, y + 160); ctx.lineTo(x + 30, y);
+  ctx.lineTo(x + 110, y); ctx.lineTo(x + 110, y + 20);
+  ctx.stroke();
+  ctx.strokeStyle = '#ff5555'; ctx.lineWidth = 3;
+  const cx = x + 110;
+  if (wrong >= 1) { ctx.beginPath(); ctx.arc(cx, y + 38, 18, 0, Math.PI * 2); ctx.stroke(); }
+  if (wrong >= 2) { ctx.beginPath(); ctx.moveTo(cx, y + 56); ctx.lineTo(cx, y + 105); ctx.stroke(); }
+  if (wrong >= 3) { ctx.beginPath(); ctx.moveTo(cx, y + 70); ctx.lineTo(cx - 22, y + 90); ctx.stroke(); }
+  if (wrong >= 4) { ctx.beginPath(); ctx.moveTo(cx, y + 70); ctx.lineTo(cx + 22, y + 90); ctx.stroke(); }
+  if (wrong >= 5) { ctx.beginPath(); ctx.moveTo(cx, y + 105); ctx.lineTo(cx - 20, y + 135); ctx.stroke(); }
+  if (wrong >= 6) { ctx.beginPath(); ctx.moveTo(cx, y + 105); ctx.lineTo(cx + 20, y + 135); ctx.stroke(); }
+}
+
+const KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+function keyRect(i) {
+  const cols = 9, bw = 60, bh = 38, gap = 8;
+  const startX = (W - (cols * (bw + gap) - gap)) / 2;
+  const row = Math.floor(i / cols), col = i % cols;
+  return { x: startX + col * (bw + gap), y: 320 + row * (bh + gap), w: bw, h: bh };
+}
+
+function draw() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+
+  if (state === 'start') {
+    ctx.fillStyle = '#ffd54a'; ctx.font = 'bold 56px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('猜 词 HANGMAN', W / 2, 160);
+    ctx.fillStyle = '#ccc'; ctx.font = '20px Arial';
+    ctx.fillText('根据中文提示猜出英文单词', W / 2, 210);
+    ctx.fillText('错 6 次失败 · 完成单词得分', W / 2, 245);
+    ctx.fillStyle = '#4caf50';
+    ctx.fillRect(W / 2 - 100, 300, 200, 60);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 26px Arial';
+    ctx.fillText('开始游戏', W / 2, 340);
+    ctx.fillStyle = '#777'; ctx.font = '14px Arial';
+    ctx.fillText('按 ESC 退出', W / 2, 420);
+    return;
+  }
+
+  // Header
+  ctx.fillStyle = '#ffd54a'; ctx.font = 'bold 22px Arial'; ctx.textAlign = 'left';
+  ctx.fillText('得分: ' + score, 20, 35);
+  ctx.fillStyle = '#ff5555'; ctx.textAlign = 'right';
+  ctx.fillText('错误: ' + wrong + ' / ' + MAX_WRONG, W - 20, 35);
+
+  if (state === 'play' || state === 'win' || state === 'lose') {
+    drawHangman(60, 70);
+    // hint
+    ctx.textAlign = 'center'; ctx.fillStyle = '#7ec8ff'; ctx.font = '18px Arial';
+    ctx.fillText('分类: ' + cat + '   提示: ' + hint, W / 2 + 60, 90);
+    // word display
+    ctx.font = 'bold 40px monospace';
+    let disp = [...word].map(c => guessed.includes(c) || state === 'lose' ? c : '_').join(' ');
+    ctx.fillStyle = state === 'lose' ? '#ff5555' : '#fff';
+    ctx.fillText(disp, W / 2 + 60, 200);
+    // wrong letters
+    ctx.font = '16px Arial'; ctx.fillStyle = '#ff8888';
+    let wl = guessed.filter(l => !word.includes(l)).join(' ');
+    ctx.fillText('错字母: ' + wl, W / 2 + 60, 240);
+
+    // keyboard
+    KEYS.forEach((l, i) => {
+      const r = keyRect(i);
+      const used = guessed.includes(l);
+      const good = used && word.includes(l);
+      ctx.fillStyle = used ? (good ? '#2e7d32' : '#7a2222') : '#333';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = '#555'; ctx.strokeRect(r.x, r.y, r.w, r.h);
+      ctx.fillStyle = used ? '#aaa' : '#fff';
+      ctx.font = 'bold 20px Arial'; ctx.textAlign = 'center';
+      ctx.fillText(l, r.x + r.w / 2, r.y + 27);
+    });
+  }
+
+  if (state === 'win' || state === 'lose') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = state === 'win' ? '#4caf50' : '#ff5555';
+    ctx.font = 'bold 48px Arial';
+    ctx.fillText(state === 'win' ? '猜对了!' : '失败了!', W / 2, 180);
+    ctx.fillStyle = '#fff'; ctx.font = '24px Arial';
+    ctx.fillText('单词: ' + word + '  (' + hint + ')', W / 2, 230);
+    ctx.fillStyle = '#ffd54a'; ctx.font = '20px Arial';
+    ctx.fillText('当前得分: ' + score, W / 2, 275);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(W / 2 - 90, 310, 180, 55);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 22px Arial';
+    ctx.fillText('下一个词', W / 2, 345);
+  }
+
+  if (msgT > 0) {
+    ctx.fillStyle = 'rgba(255,213,74,' + Math.min(1, msgT / 30) + ')';
+    ctx.font = 'bold 30px Arial'; ctx.textAlign = 'center';
+    ctx.fillText(msg, W / 2, 60);
+    msgT--;
+  }
+}
+
+function loop() { draw(); requestAnimationFrame(loop); }
+
+cv.addEventListener('click', e => {
+  const rect = cv.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (state === 'start') {
+    if (mx > W / 2 - 100 && mx < W / 2 + 100 && my > 300 && my < 360) {
+      score = 0; newWord(); state = 'play';
+    }
+    return;
+  }
+  if (state === 'win' || state === 'lose') {
+    if (mx > W / 2 - 90 && mx < W / 2 + 90 && my > 310 && my < 365) {
+      newWord(); state = 'play';
+    }
+    return;
+  }
+  if (state === 'play') {
+    KEYS.forEach((l, i) => {
+      const r = keyRect(i);
+      if (mx > r.x && mx < r.x + r.w && my > r.y && my < r.y + r.h) guessLetter(l);
+    });
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (state === 'play') {
+    const k = e.key.toUpperCase();
+    if (/^[A-Z]$/.test(k)) guessLetter(k);
+  } else if (state === 'start' && e.code === 'Enter') {
+    score = 0; newWord(); state = 'play';
+  } else if ((state === 'win' || state === 'lose') && e.code === 'Enter') {
+    newWord(); state = 'play';
+  }
+});
+
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>颜色填充</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title';
+let grid = [];
+let moves = 0;
+let hoverBtn = -1;
+const GS = 14;
+const CELL = 30;
+const OX = 190, OY = 30;
+const MAX_MOVES = 25;
+const COLORS = ['#e53935','#1e88e5','#43a047','#fdd835','#8e24aa','#ff8f00'];
+const COLOR_NAMES = ['红','蓝','绿','黄','紫','橙'];
+
+function initGrid() {
+  grid = [];
+  for (let i = 0; i < GS * GS; i++) grid.push(Math.floor(Math.random() * 6));
+  moves = 0; score = 0;
+}
+
+function flood(color) {
+  const old = grid[0];
+  if (old === color) return;
+  const stack = [0];
+  const visited = new Set([0]);
+  while (stack.length) {
+    const idx = stack.pop();
+    grid[idx] = color;
+    const r = Math.floor(idx / GS), c = idx % GS;
+    const nb = [];
+    if (r > 0) nb.push(idx - GS);
+    if (r < GS - 1) nb.push(idx + GS);
+    if (c > 0) nb.push(idx - 1);
+    if (c < GS - 1) nb.push(idx + 1);
+    for (const n of nb) {
+      if (!visited.has(n) && grid[n] === old) { visited.add(n); stack.push(n); }
+    }
+  }
+  moves++; score = moves;
+}
+
+function isWin() { return grid.every(v => v === grid[0]); }
+
+function getRegionSize() {
+  // Count cells matching top-left color (the captured region)
+  const target = grid[0];
+  const stack = [0];
+  const visited = new Set([0]);
+  while (stack.length) {
+    const idx = stack.pop();
+    const r = Math.floor(idx / GS), c = idx % GS;
+    const nb = [];
+    if (r > 0) nb.push(idx - GS);
+    if (r < GS - 1) nb.push(idx + GS);
+    if (c > 0) nb.push(idx - 1);
+    if (c < GS - 1) nb.push(idx + 1);
+    for (const n of nb) {
+      if (!visited.has(n) && grid[n] === target) { visited.add(n); stack.push(n); }
+    }
+  }
+  return visited.size;
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  hoverBtn = -1;
+  for (let i = 0; i < 6; i++) {
+    const bx = 200 + i * 70, by = 452;
+    if (mx > bx && mx < bx + 58 && my > by && my < by + 24) hoverBtn = i;
+  }
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) { initGrid(); state = 'playing'; }
+    return;
+  }
+  if (state === 'win' || state === 'lose') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) state = 'title';
+    return;
+  }
+  // Color buttons at bottom
+  for (let i = 0; i < 6; i++) {
+    const bx = 200 + i * 70, by = 452;
+    if (mx > bx && mx < bx + 58 && my > by && my < by + 24) {
+      flood(i);
+      if (isWin()) state = 'win';
+      else if (moves >= MAX_MOVES) state = 'lose';
+      return;
+    }
+  }
+});
+
+function drawGrid() {
+  for (let r = 0; r < GS; r++) {
+    for (let c = 0; c < GS; c++) {
+      ctx.fillStyle = COLORS[grid[r * GS + c]];
+      ctx.fillRect(OX + c * CELL, OY + r * CELL, CELL - 1, CELL - 1);
+    }
+  }
+  // Highlight top-left region border
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(OX, OY, CELL, CELL);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ce93d8';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('颜色填充', 400, 110);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('Flood-It! 从左上角开始，选择颜色扩展你的区域', 400, 170);
+  ctx.fillText(`在 ${MAX_MOVES} 步内让整盘变为同一颜色即获胜`, 400, 200);
+  ctx.fillText('每次选色后，与左上角相连的同色格子都会被吞并', 400, 230);
+  // Color preview
+  for (let i = 0; i < 6; i++) {
+    ctx.fillStyle = COLORS[i];
+    ctx.fillRect(245 + i * 54, 260, 46, 32);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(245 + i * 54, 260, 46, 32);
+    ctx.fillStyle = '#ddd';
+    ctx.font = '13px sans-serif';
+    ctx.fillText(COLOR_NAMES[i], 268 + i * 54, 302);
+  }
+  // Start button
+  ctx.fillStyle = '#6a1b9a';
+  ctx.fillRect(300, 330, 200, 55);
+  ctx.strokeStyle = '#ab47bc';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(300, 330, 200, 55);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('开始游戏', 400, 358);
+}
+
+function drawEnd(win) {
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = win ? '#76ff03' : '#ff5252';
+  ctx.font = 'bold 44px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(win ? '恭喜通关！' : '步数用尽！', 400, 160);
+  ctx.fillStyle = '#fff';
+  ctx.font = '26px sans-serif';
+  ctx.fillText(`使用了 ${moves} 步`, 400, 220);
+  if (win) {
+    const rating = moves <= 16 ? '太厉害了！' : moves <= 20 ? '不错！' : '刚好完成！';
+    ctx.fillStyle = '#ffeb3b';
+    ctx.font = '22px sans-serif';
+    ctx.fillText(rating, 400, 265);
+  } else {
+    const captured = getRegionSize();
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(`已占领 ${captured}/${GS*GS} 格`, 400, 265);
+  }
+  ctx.fillStyle = '#1565c0';
+  ctx.fillRect(300, 320, 200, 55);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 348);
+}
+
+function drawPlaying() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  drawGrid();
+  // HUD - moves and progress
+  const captured = getRegionSize();
+  const pct = Math.round(captured / (GS * GS) * 100);
+  ctx.fillStyle = '#ce93d8';
+  ctx.font = '20px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`步数: ${moves} / ${MAX_MOVES}`, 15, 445);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(`占领: ${pct}%`, 15, 470);
+  // Progress bar
+  ctx.fillStyle = '#333';
+  ctx.fillRect(620, 445, 160, 14);
+  ctx.fillStyle = '#76ff03';
+  ctx.fillRect(620, 445, 160 * pct / 100, 14);
+  ctx.strokeStyle = '#555';
+  ctx.strokeRect(620, 445, 160, 14);
+  // Color buttons
+  for (let i = 0; i < 6; i++) {
+    const bx = 200 + i * 70, by = 452;
+    ctx.fillStyle = COLORS[i];
+    ctx.fillRect(bx, by, 58, 24);
+    ctx.strokeStyle = hoverBtn === i ? '#fff' : '#666';
+    ctx.lineWidth = hoverBtn === i ? 3 : 1;
+    ctx.strokeRect(bx, by, 58, 24);
+    // Mark current color
+    if (grid[0] === i) {
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('●', bx + 29, by + 12);
+    }
+  }
+}
+
+function render() {
+  if (state === 'title') drawTitle();
+  else if (state === 'playing') drawPlaying();
+  else { drawPlaying(); drawEnd(state === 'win'); }
+  requestAnimationFrame(render);
+}
+render();
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

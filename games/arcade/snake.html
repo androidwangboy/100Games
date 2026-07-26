@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>贪吃蛇</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const GRID = 20;
+const COLS = canvas.width / GRID;
+const ROWS = canvas.height / GRID;
+
+let state = 'start'; // start, play, over
+let snake, dir, nextDir, food, score, highScore = 0, speed, timer, particles;
+
+function init() {
+  snake = [{x:10,y:12},{x:9,y:12},{x:8,y:12}];
+  dir = {x:1,y:0};
+  nextDir = {x:1,y:0};
+  score = 0;
+  speed = 150;
+  timer = 0;
+  particles = [];
+  placeFood();
+}
+
+function placeFood() {
+  let valid = false;
+  while (!valid) {
+    food = {x: Math.floor(Math.random()*COLS), y: Math.floor(Math.random()*ROWS)};
+    valid = !snake.some(s => s.x === food.x && s.y === food.y);
+  }
+}
+
+function spawnParticles(x, y) {
+  for (let i = 0; i < 8; i++) {
+    particles.push({
+      x: x*GRID+GRID/2, y: y*GRID+GRID/2,
+      vx: (Math.random()-0.5)*6, vy: (Math.random()-0.5)*6,
+      life: 1, color: `hsl(${Math.random()*60+10},100%,60%)`
+    });
+  }
+}
+
+function update() {
+  dir = nextDir;
+  const head = {x: snake[0].x + dir.x, y: snake[0].y + dir.y};
+
+  if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS ||
+      snake.some(s => s.x === head.x && s.y === head.y)) {
+    state = 'over';
+    if (score > highScore) highScore = score;
+    return;
+  }
+
+  snake.unshift(head);
+  if (head.x === food.x && head.y === food.y) {
+    score += 10;
+    spawnParticles(food.x, food.y);
+    speed = Math.max(60, speed - 3);
+    placeFood();
+  } else {
+    snake.pop();
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, 800, 480);
+
+  // Grid lines
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= COLS; i++) { ctx.beginPath(); ctx.moveTo(i*GRID,0); ctx.lineTo(i*GRID,480); ctx.stroke(); }
+  for (let i = 0; i <= ROWS; i++) { ctx.beginPath(); ctx.moveTo(0,i*GRID); ctx.lineTo(800,i*GRID); ctx.stroke(); }
+
+  if (state === 'start') {
+    ctx.fillStyle = '#0f0';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('贪吃蛇', 400, 160);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px monospace';
+    ctx.fillText('方向键 控制移动', 400, 240);
+    ctx.fillText('吃食物得分，撞墙或撞自己游戏结束', 400, 280);
+    ctx.fillStyle = '#ff0';
+    ctx.font = '24px monospace';
+    ctx.fillText('按 空格键 开始', 400, 360);
+    ctx.fillStyle = '#666';
+    ctx.font = '16px monospace';
+    ctx.fillText('ESC 退出游戏', 400, 420);
+    return;
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = '#f44';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('游戏结束', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '28px monospace';
+    ctx.fillText(`得分: ${score}`, 400, 230);
+    ctx.fillStyle = '#ff0';
+    ctx.fillText(`最高分: ${highScore}`, 400, 275);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '22px monospace';
+    ctx.fillText('按 空格键 重新开始', 400, 350);
+    return;
+  }
+
+  // Food with glow
+  ctx.shadowColor = '#f00';
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = '#f44';
+  ctx.beginPath();
+  ctx.arc(food.x*GRID+GRID/2, food.y*GRID+GRID/2, GRID/2-2, 0, Math.PI*2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Snake
+  snake.forEach((seg, i) => {
+    const ratio = 1 - i / snake.length;
+    const g = Math.floor(180 + 75 * ratio);
+    ctx.fillStyle = i === 0 ? '#0f0' : `rgb(0,${g},0)`;
+    ctx.shadowColor = i === 0 ? '#0f0' : 'transparent';
+    ctx.shadowBlur = i === 0 ? 8 : 0;
+    ctx.fillRect(seg.x*GRID+1, seg.y*GRID+1, GRID-2, GRID-2);
+    if (i === 0) {
+      ctx.fillStyle = '#000';
+      const ex = dir.x === 0 ? 5 : (dir.x > 0 ? 12 : 5);
+      const ey = dir.y === 0 ? 5 : (dir.y > 0 ? 12 : 5);
+      ctx.fillRect(seg.x*GRID+ex, seg.y*GRID+ey, 3, 3);
+      ctx.fillRect(seg.x*GRID+ex+(dir.x===0?7:0), seg.y*GRID+ey+(dir.y===0?7:0), 3, 3);
+    }
+  });
+  ctx.shadowBlur = 0;
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-2, p.y-2, 4, 4);
+  });
+  ctx.globalAlpha = 1;
+
+  // HUD
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`分数: ${score}`, 10, 470);
+  ctx.textAlign = 'right';
+  ctx.fillText(`最高: ${highScore}`, 790, 470);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#555';
+  ctx.fillText(`速度: ${Math.round((150-speed)/3)+1}`, 400, 470);
+}
+
+let lastTime = 0, acc = 0;
+function loop(ts) {
+  const dt = ts - lastTime;
+  lastTime = ts;
+
+  if (state === 'play') {
+    acc += dt;
+    if (acc >= speed) { acc -= speed; update(); }
+  }
+
+  particles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life -= 0.03; });
+  particles = particles.filter(p => p.life > 0);
+
+  draw();
+  requestAnimationFrame(loop);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space') {
+    if (state === 'start' || state === 'over') { init(); state = 'play'; }
+    e.preventDefault();
+  }
+  if (state === 'play') {
+    if (e.code === 'ArrowUp' && dir.y !== 1) nextDir = {x:0,y:-1};
+    if (e.code === 'ArrowDown' && dir.y !== -1) nextDir = {x:0,y:1};
+    if (e.code === 'ArrowLeft' && dir.x !== 1) nextDir = {x:-1,y:0};
+    if (e.code === 'ArrowRight' && dir.x !== -1) nextDir = {x:1,y:0};
+    e.preventDefault();
+  }
+});
+
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

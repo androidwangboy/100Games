@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>管道工</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+const STATE_TITLE = 0, STATE_PLAY = 1, STATE_WIN = 2, STATE_LOSE = 3;
+let state = STATE_TITLE;
+let score = 0;
+
+// Pipe types: connections [top, right, bottom, left]
+// 0=straight-v, 1=straight-h, 2=corner-TR, 3=corner-RB, 4=corner-BL, 5=corner-LT
+// 6=T-up, 7=T-right, 8=T-down, 9=T-left, 10=cross
+const PIPE_DEFS = [
+  [1,0,1,0], // 0: straight vertical
+  [0,1,0,1], // 1: straight horizontal
+  [1,1,0,0], // 2: corner top-right
+  [0,1,1,0], // 3: corner right-bottom
+  [0,0,1,1], // 4: corner bottom-left
+  [1,0,0,1], // 5: corner left-top
+  [1,1,0,1], // 6: T (no bottom)
+  [1,1,1,0], // 7: T (no left)
+  [0,1,1,1], // 8: T (no top)
+  [1,0,1,1], // 9: T (no right)
+  [1,1,1,1], // 10: cross
+];
+
+// Levels config
+const LEVELS = [
+  { cols: 6, rows: 5, time: 60, name: '第1关' },
+  { cols: 7, rows: 6, time: 55, name: '第2关' },
+  { cols: 8, rows: 6, time: 50, name: '第3关' },
+  { cols: 9, rows: 7, time: 45, name: '第4关' },
+  { cols: 10, rows: 7, time: 40, name: '第5关' },
+];
+
+let level = 0;
+let grid = [];
+let gridCols = 6, gridRows = 5;
+let cellSize = 60;
+let gridX = 0, gridY = 0;
+let startPos = null, endPos = null;
+let startDir = 1, endDir = 3; // water enters from left, exits right
+let waterCells = [];
+let waterTimer = 0;
+let waterInterval = null;
+let timeLeft = 60;
+let countdownInterval = null;
+let selectedPipe = 1; // current pipe type to place
+let waterFlowing = false;
+let waterReachedEnd = false;
+let waterDead = false;
+
+const COL_BG = '#1a1a2e';
+const COL_GRID = '#2a2a4a';
+const COL_PIPE = '#607d8b';
+const COL_PIPE_FILL = '#37474f';
+const COL_WATER = '#29b6f6';
+const COL_START = '#66bb6a';
+const COL_END = '#ef5350';
+const COL_TEXT = '#eee';
+const COL_BTN = '#333';
+const COL_BTN_HOVER = '#555';
+
+let buttons = [];
+let hoverBtn = -1;
+
+function initButtons() {
+  buttons = [];
+  if (state === STATE_TITLE) {
+    for (let i = 0; i < LEVELS.length; i++) {
+      buttons.push({ x: 280, y: 140 + i * 55, w: 240, h: 42, label: `${LEVELS[i].name} (${LEVELS[i].cols}×${LEVELS[i].rows})`, action: () => startLevel(i) });
+    }
+  } else if (state === STATE_PLAY) {
+    // Pipe selection buttons
+    let pipeTypes = [0, 2, 6, 10]; // straight, corner, T, cross
+    let pipeNames = ['直管', '弯管', 'T管', '十字'];
+    for (let i = 0; i < 4; i++) {
+      buttons.push({ x: 620, y: 100 + i * 55, w: 80, h: 42, label: pipeNames[i], action: () => { selectedPipe = pipeTypes[i]; initButtons(); }, pipeType: pipeTypes[i] });
+    }
+    buttons.push({ x: 620, y: 340, w: 80, h: 36, label: '开始注水', action: startWater });
+    buttons.push({ x: 620, y: 385, w: 80, h: 36, label: '重置', action: () => startLevel(level) });
+  } else if (state === STATE_WIN || state === STATE_LOSE) {
+    buttons.push({ x: 250, y: 320, w: 140, h: 45, label: '下一关', action: () => { if (level < LEVELS.length-1) startLevel(level+1); else { state = STATE_TITLE; initButtons(); } } });
+    buttons.push({ x: 410, y: 320, w: 140, h: 45, label: '返回菜单', action: () => { state = STATE_TITLE; initButtons(); } });
+  }
+}
+
+function startLevel(lvl) {
+  level = lvl;
+  let cfg = LEVELS[lvl];
+  gridCols = cfg.cols;
+  gridRows = cfg.rows;
+  timeLeft = cfg.time;
+
+  cellSize = Math.min(Math.floor(560 / gridCols), Math.floor(420 / gridRows), 65);
+  gridX = (580 - gridCols * cellSize) / 2 + 10;
+  gridY = (H - gridRows * cellSize) / 2;
+
+  // Initialize grid with random pipes
+  grid = [];
+  for (let r = 0; r < gridRows; r++) {
+    grid[r] = [];
+    for (let c = 0; c < gridCols; c++) {
+      grid[r][c] = { type: Math.floor(Math.random() * 6), fixed: false, hasWater: false };
+    }
+  }
+
+  // Start and end positions
+  startPos = { r: Math.floor(gridRows / 2), c: 0 };
+  endPos = { r: Math.floor(gridRows / 2), c: gridCols - 1 };
+  startDir = 3; // water comes from left
+  endDir = 1; // water exits right
+
+  // Mark start/end cells
+  grid[startPos.r][startPos.c] = { type: 1, fixed: true, hasWater: false }; // horizontal straight
+  grid[endPos.r][endPos.c] = { type: 1, fixed: true, hasWater: false };
+
+  waterCells = [];
+  waterFlowing = false;
+  waterReachedEnd = false;
+  waterDead = false;
+  selectedPipe = 1;
+
+  state = STATE_PLAY;
+  startCountdown();
+  initButtons();
+}
+
+function startCountdown() {
+  stopTimers();
+  countdownInterval = setInterval(() => {
+    timeLeft--;
+    if (timeLeft <= 0) {
+      timeLeft = 0;
+      if (!waterFlowing) startWater();
+      else loseGame();
+    }
+  }, 1000);
+}
+
+function stopTimers() {
+  if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+  if (waterInterval) { clearInterval(waterInterval); waterInterval = null; }
+}
+
+function startWater() {
+  if (waterFlowing) return;
+  waterFlowing = true;
+  waterCells = [];
+  // Reset water state
+  for (let r = 0; r < gridRows; r++)
+    for (let c = 0; c < gridCols; c++)
+      grid[r][c].hasWater = false;
+
+  waterInterval = setInterval(flowWater, 400);
+}
+
+function flowWater() {
+  if (waterCells.length === 0) {
+    // Start from start position
+    let cell = grid[startPos.r][startPos.c];
+    cell.hasWater = true;
+    waterCells.push({ r: startPos.r, c: startPos.c, fromDir: startDir });
+    return;
+  }
+
+  // Process last water cell - find where it flows next
+  let last = waterCells[waterCells.length - 1];
+  let cell = grid[last.r][last.c];
+  let connections = PIPE_DEFS[cell.type];
+
+  // Find exit directions (all connected dirs except where water came from)
+  let exits = [];
+  for (let d = 0; d < 4; d++) {
+    if (d === last.fromDir) continue;
+    if (connections[d]) exits.push(d);
+  }
+
+  let flowed = false;
+  for (let dir of exits) {
+    let nr = last.r + (dir === 0 ? -1 : dir === 2 ? 1 : 0);
+    let nc = last.c + (dir === 1 ? 1 : dir === 3 ? -1 : 0);
+
+    // Check bounds
+    if (nr < 0 || nr >= gridRows || nc < 0 || nc >= gridCols) {
+      // Check if this is the end exit
+      if (last.r === endPos.r && last.c === endPos.c && dir === endDir) {
+        winGame();
+        return;
+      }
+      continue;
+    }
+
+    let nextCell = grid[nr][nc];
+    let oppositeDir = (dir + 2) % 4;
+
+    // Check if next cell accepts water from this direction
+    if (PIPE_DEFS[nextCell.type][oppositeDir] && !nextCell.hasWater) {
+      nextCell.hasWater = true;
+      waterCells.push({ r: nr, c: nc, fromDir: oppositeDir });
+      flowed = true;
+      break;
+    }
+  }
+
+  if (!flowed) {
+    // Check if we're at the end cell and can exit
+    if (last.r === endPos.r && last.c === endPos.c) {
+      let connections2 = PIPE_DEFS[cell.type];
+      if (connections2[endDir]) {
+        winGame();
+        return;
+      }
+    }
+    // Water is stuck - dead end
+    loseGame();
+  }
+}
+
+function winGame() {
+  stopTimers();
+  waterReachedEnd = true;
+  score += 200 + timeLeft * 5 + (level + 1) * 100;
+  state = STATE_WIN;
+  initButtons();
+}
+
+function loseGame() {
+  stopTimers();
+  waterDead = true;
+  state = STATE_LOSE;
+  initButtons();
+}
+
+function rotatePipe(r, c) {
+  let cell = grid[r][c];
+  if (cell.fixed) return;
+  // Rotate: shift connections clockwise
+  let t = cell.type;
+  // Rotation mapping
+  const rotMap = {
+    0: 1, 1: 0, // straight v <-> h
+    2: 3, 3: 4, 4: 5, 5: 2, // corners cycle
+    6: 7, 7: 8, 8: 9, 9: 6, // T cycle
+    10: 10 // cross stays
+  };
+  cell.type = rotMap[t];
+}
+
+function placePipe(r, c) {
+  let cell = grid[r][c];
+  if (cell.fixed || waterFlowing) return;
+  cell.type = selectedPipe;
+}
+
+// Drawing
+function draw() {
+  ctx.fillStyle = COL_BG;
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE_TITLE) drawTitle();
+  else if (state === STATE_PLAY) drawPlay();
+  else drawEnd();
+
+  drawButtons();
+  requestAnimationFrame(draw);
+}
+
+function drawTitle() {
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = 'bold 44px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('管 道 工', W/2, 70);
+  ctx.font = '16px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('Pipe Dream — 连接水管，引导水流到达终点', W/2, 105);
+  ctx.fillText('左键放置管道 | 右键旋转 | 点击"开始注水"测试', W/2, 450);
+}
+
+function drawPlay() {
+  // Draw grid
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      let x = gridX + c * cellSize;
+      let y = gridY + r * cellSize;
+      let cell = grid[r][c];
+
+      // Cell background
+      ctx.fillStyle = cell.fixed ? '#2a3a2a' : COL_GRID;
+      ctx.fillRect(x + 1, y + 1, cellSize - 2, cellSize - 2);
+
+      // Draw pipe
+      drawPipe(x, y, cellSize, cell.type, cell.hasWater, cell.fixed);
+    }
+  }
+
+  // Draw start/end markers
+  let sx = gridX + startPos.c * cellSize;
+  let sy = gridY + startPos.r * cellSize;
+  ctx.fillStyle = COL_START;
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('入', sx + cellSize/2, sy - 5);
+
+  // Arrow into start
+  ctx.strokeStyle = COL_START;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(sx - 20, sy + cellSize/2);
+  ctx.lineTo(sx, sy + cellSize/2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sx - 5, sy + cellSize/2 - 5);
+  ctx.lineTo(sx, sy + cellSize/2);
+  ctx.lineTo(sx - 5, sy + cellSize/2 + 5);
+  ctx.stroke();
+
+  let ex = gridX + endPos.c * cellSize;
+  let ey = gridY + endPos.r * cellSize;
+  ctx.fillStyle = COL_END;
+  ctx.fillText('出', ex + cellSize/2, ey - 5);
+
+  // Arrow out of end
+  ctx.strokeStyle = COL_END;
+  ctx.beginPath();
+  ctx.moveTo(ex + cellSize, ey + cellSize/2);
+  ctx.lineTo(ex + cellSize + 20, ey + cellSize/2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ex + cellSize + 15, ey + cellSize/2 - 5);
+  ctx.lineTo(ex + cellSize + 20, ey + cellSize/2);
+  ctx.lineTo(ex + cellSize + 15, ey + cellSize/2 + 5);
+  ctx.stroke();
+
+  // HUD
+  ctx.fillStyle = COL_TEXT;
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(LEVELS[level].name, 620, 30);
+  ctx.fillText(`时间: ${timeLeft}s`, 620, 55);
+  ctx.fillStyle = timeLeft <= 10 ? '#f44336' : '#aaa';
+  ctx.fillText(waterFlowing ? '水流进行中...' : '布置管道中', 620, 80);
+
+  // Current pipe preview
+  ctx.fillStyle = '#aaa';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('当前管道:', 620, 320);
+  drawPipe(640, 325, 40, selectedPipe, false, false);
+}
+
+function drawPipe(x, y, size, type, hasWater, fixed) {
+  let cx = x + size / 2;
+  let cy = y + size / 2;
+  let pw = size * 0.28; // pipe width
+  let connections = PIPE_DEFS[type];
+
+  ctx.fillStyle = hasWater ? COL_WATER : (fixed ? '#4a6a4a' : COL_PIPE);
+  ctx.strokeStyle = hasWater ? '#0288d1' : COL_PIPE_FILL;
+  ctx.lineWidth = 1;
+
+  // Draw center
+  ctx.fillRect(cx - pw/2, cy - pw/2, pw, pw);
+
+  // Draw arms based on connections [top, right, bottom, left]
+  if (connections[0]) ctx.fillRect(cx - pw/2, y, pw, size/2); // top
+  if (connections[1]) ctx.fillRect(cx, cy - pw/2, size/2, pw); // right
+  if (connections[2]) ctx.fillRect(cx - pw/2, cy, pw, size/2); // bottom
+  if (connections[3]) ctx.fillRect(x, cy - pw/2, size/2, pw); // left
+
+  // Pipe border
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.lineWidth = 1;
+  if (connections[0]) ctx.strokeRect(cx - pw/2, y, pw, size/2);
+  if (connections[1]) ctx.strokeRect(cx, cy - pw/2, size/2, pw);
+  if (connections[2]) ctx.strokeRect(cx - pw/2, cy, pw, size/2);
+  if (connections[3]) ctx.strokeRect(x, cy - pw/2, size/2, pw);
+
+  // Water shine effect
+  if (hasWater) {
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, pw/4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawEnd() {
+  // Draw the grid state
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      let x = gridX + c * cellSize;
+      let y = gridY + r * cellSize;
+      let cell = grid[r][c];
+      ctx.fillStyle = COL_GRID;
+      ctx.fillRect(x + 1, y + 1, cellSize - 2, cellSize - 2);
+      drawPipe(x, y, cellSize, cell.type, cell.hasWater, cell.fixed);
+    }
+  }
+
+  // Overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  if (state === STATE_WIN) {
+    ctx.fillStyle = '#66bb6a';
+    ctx.font = 'bold 36px sans-serif';
+    ctx.fillText('通关成功!', W/2, 150);
+    ctx.fillStyle = COL_TEXT;
+    ctx.font = '20px sans-serif';
+    ctx.fillText(`剩余时间: ${timeLeft}s`, W/2, 200);
+    ctx.fillText(`得分: ${score}`, W/2, 240);
+    if (level >= LEVELS.length - 1) {
+      ctx.fillStyle = '#ffab40';
+      ctx.fillText('恭喜通关所有关卡!', W/2, 280);
+    }
+  } else {
+    ctx.fillStyle = '#ef5350';
+    ctx.font = 'bold 36px sans-serif';
+    ctx.fillText('水流中断!', W/2, 150);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px sans-serif';
+    ctx.fillText('管道未正确连接，水流到达死胡同', W/2, 200);
+    ctx.fillText(`当前得分: ${score}`, W/2, 240);
+  }
+}
+
+function drawButtons() {
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    let isHover = (i === hoverBtn);
+    let isSelected = (b.pipeType !== undefined && b.pipeType === selectedPipe);
+    ctx.fillStyle = isSelected ? '#4a5a3a' : (isHover ? COL_BTN_HOVER : COL_BTN);
+    ctx.strokeStyle = isSelected ? '#8bc34a' : '#666';
+    ctx.lineWidth = isSelected ? 2 : 1;
+    roundRect(b.x, b.y, b.w, b.h, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COL_TEXT;
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w/2, b.y + b.h/2);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// Input
+canvas.addEventListener('mousemove', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+  hoverBtn = -1;
+  for (let i = 0; i < buttons.length; i++) {
+    let b = buttons[i];
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) { hoverBtn = i; break; }
+  }
+  canvas.style.cursor = hoverBtn >= 0 ? 'pointer' : 'default';
+});
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  for (let b of buttons) {
+    if (mx >= b.x && mx <= b.x+b.w && my >= b.y && my <= b.y+b.h) { b.action(); return; }
+  }
+
+  if (state === STATE_PLAY && !waterFlowing) {
+    let c = Math.floor((mx - gridX) / cellSize);
+    let r = Math.floor((my - gridY) / cellSize);
+    if (r >= 0 && r < gridRows && c >= 0 && c < gridCols) {
+      placePipe(r, c);
+    }
+  }
+});
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (state === STATE_PLAY && !waterFlowing) {
+    let c = Math.floor((mx - gridX) / cellSize);
+    let r = Math.floor((my - gridY) / cellSize);
+    if (r >= 0 && r < gridRows && c >= 0 && c < gridCols) {
+      rotatePipe(r, c);
+    }
+  }
+});
+
+initButtons();
+draw();
+</script>
+</body>
+</html>

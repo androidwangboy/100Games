@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>迷你高尔夫</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+const STATE = { TITLE: 0, AIMING: 1, ROLLING: 2, HOLE_DONE: 3, GAME_OVER: 4 };
+let state = STATE.TITLE;
+let score = 0;
+let currentHole = 0;
+let strokes = 0;
+let totalStrokes = 0;
+let holeScores = [];
+let ball = { x: 0, y: 0, vx: 0, vy: 0, r: 7 };
+let dragging = false;
+let dragStart = { x: 0, y: 0 };
+let dragEnd = { x: 0, y: 0 };
+let particles = [];
+let celebrationTimer = 0;
+let message = '';
+let messageTimer = 0;
+
+const FRICTION = 0.985;
+const WALL_BOUNCE = 0.7;
+const MAX_POWER = 18;
+const HOLE_RADIUS = 12;
+
+// 9 holes definition
+const holes = [
+  { // Hole 1 - Simple straight
+    par: 2, start: {x: 100, y: 240}, hole: {x: 680, y: 240},
+    walls: [{x: 50, y: 140, w: 700, h: 15}, {x: 50, y: 325, w: 700, h: 15}],
+    bumpers: [], water: []
+  },
+  { // Hole 2 - L-shape
+    par: 3, start: {x: 100, y: 380}, hole: {x: 680, y: 100},
+    walls: [{x: 50, y: 50, w: 700, h: 15}, {x: 50, y: 415, w: 400, h: 15},
+            {x: 50, y: 50, w: 15, h: 380}, {x: 735, y: 50, w: 15, h: 200},
+            {x: 435, y: 250, w: 315, h: 15}, {x: 435, y: 250, w: 15, h: 180}],
+    bumpers: [], water: []
+  },
+  { // Hole 3 - Bumpers
+    par: 3, start: {x: 100, y: 240}, hole: {x: 700, y: 240},
+    walls: [{x: 50, y: 100, w: 700, h: 15}, {x: 50, y: 365, w: 700, h: 15}],
+    bumpers: [{x: 300, y: 200, r: 20}, {x: 450, y: 280, r: 20}, {x: 550, y: 180, r: 15}],
+    water: []
+  },
+  { // Hole 4 - Water hazard
+    par: 3, start: {x: 100, y: 240}, hole: {x: 700, y: 240},
+    walls: [{x: 50, y: 120, w: 700, h: 15}, {x: 50, y: 345, w: 700, h: 15}],
+    bumpers: [],
+    water: [{x: 320, y: 135, w: 160, h: 210}]
+  },
+  { // Hole 5 - Zigzag
+    par: 4, start: {x: 100, y: 100}, hole: {x: 700, y: 380},
+    walls: [{x: 50, y: 50, w: 700, h: 15}, {x: 50, y: 415, w: 700, h: 15},
+            {x: 200, y: 50, w: 15, h: 250}, {x: 400, y: 180, w: 15, h: 250},
+            {x: 580, y: 50, w: 15, h: 250}],
+    bumpers: [], water: []
+  },
+  { // Hole 6 - Island green
+    par: 3, start: {x: 100, y: 240}, hole: {x: 650, y: 240},
+    walls: [{x: 50, y: 80, w: 700, h: 15}, {x: 50, y: 385, w: 700, h: 15}],
+    bumpers: [{x: 350, y: 160, r: 18}, {x: 350, y: 320, r: 18}],
+    water: [{x: 250, y: 95, w: 80, h: 290}, {x: 470, y: 95, w: 80, h: 290}]
+  },
+  { // Hole 7 - Corridors
+    par: 4, start: {x: 80, y: 420}, hole: {x: 720, y: 80},
+    walls: [{x: 50, y: 50, w: 15, h: 380}, {x: 735, y: 50, w: 15, h: 380},
+            {x: 50, y: 50, w: 700, h: 15}, {x: 50, y: 430, w: 700, h: 15},
+            {x: 180, y: 150, w: 400, h: 15}, {x: 250, y: 300, w: 400, h: 15}],
+    bumpers: [{x: 600, y: 230, r: 15}], water: []
+  },
+  { // Hole 8 - Bumper madness
+    par: 4, start: {x: 100, y: 240}, hole: {x: 700, y: 240},
+    walls: [{x: 50, y: 80, w: 700, h: 15}, {x: 50, y: 385, w: 700, h: 15}],
+    bumpers: [{x: 250, y: 150, r: 18}, {x: 350, y: 300, r: 22}, {x: 450, y: 170, r: 16},
+              {x: 550, y: 310, r: 20}, {x: 600, y: 150, r: 14}],
+    water: []
+  },
+  { // Hole 9 - Grand finale
+    par: 5, start: {x: 80, y: 430}, hole: {x: 720, y: 70},
+    walls: [{x: 50, y: 40, w: 700, h: 15}, {x: 50, y: 440, w: 700, h: 15},
+            {x: 50, y: 40, w: 15, h: 415}, {x: 735, y: 40, w: 15, h: 415},
+            {x: 200, y: 300, w: 15, h: 155}, {x: 350, y: 40, w: 15, h: 200},
+            {x: 500, y: 250, w: 15, h: 205}, {x: 600, y: 40, w: 15, h: 150}],
+    bumpers: [{x: 280, y: 350, r: 15}, {x: 450, y: 130, r: 15}],
+    water: [{x: 550, y: 300, w: 100, h: 140}]
+  }
+];
+
+function loadHole(idx) {
+  const h = holes[idx];
+  ball.x = h.start.x;
+  ball.y = h.start.y;
+  ball.vx = 0;
+  ball.vy = 0;
+  strokes = 0;
+  dragging = false;
+  particles = [];
+  celebrationTimer = 0;
+}
+
+function shoot(power, angle) {
+  ball.vx = Math.cos(angle) * power;
+  ball.vy = Math.sin(angle) * power;
+  strokes++;
+  totalStrokes++;
+  state = STATE.ROLLING;
+}
+
+function update() {
+  if (state === STATE.ROLLING) {
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+    ball.vx *= FRICTION;
+    ball.vy *= FRICTION;
+
+    const h = holes[currentHole];
+
+    // Wall collisions
+    for (let w of h.walls) {
+      if (ball.x + ball.r > w.x && ball.x - ball.r < w.x + w.w &&
+          ball.y + ball.r > w.y && ball.y - ball.r < w.y + w.h) {
+        // Determine collision side
+        const overlapLeft = (ball.x + ball.r) - w.x;
+        const overlapRight = (w.x + w.w) - (ball.x - ball.r);
+        const overlapTop = (ball.y + ball.r) - w.y;
+        const overlapBottom = (w.y + w.h) - (ball.y - ball.r);
+        const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+        if (minOverlap === overlapLeft) { ball.x = w.x - ball.r; ball.vx = -Math.abs(ball.vx) * WALL_BOUNCE; }
+        else if (minOverlap === overlapRight) { ball.x = w.x + w.w + ball.r; ball.vx = Math.abs(ball.vx) * WALL_BOUNCE; }
+        else if (minOverlap === overlapTop) { ball.y = w.y - ball.r; ball.vy = -Math.abs(ball.vy) * WALL_BOUNCE; }
+        else { ball.y = w.y + w.h + ball.r; ball.vy = Math.abs(ball.vy) * WALL_BOUNCE; }
+
+        spawnParticles(ball.x, ball.y, '#aaa', 3);
+      }
+    }
+
+    // Bumper collisions
+    for (let b of h.bumpers) {
+      const dx = ball.x - b.x;
+      const dy = ball.y - b.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < ball.r + b.r) {
+        const nx = dx / dist;
+        const ny = dy / dist;
+        ball.x = b.x + nx * (ball.r + b.r);
+        ball.y = b.y + ny * (ball.r + b.r);
+        const dot = ball.vx * nx + ball.vy * ny;
+        ball.vx = (ball.vx - 2 * dot * nx) * 1.1;
+        ball.vy = (ball.vy - 2 * dot * ny) * 1.1;
+        spawnParticles(ball.x, ball.y, '#ff6b6b', 5);
+      }
+    }
+
+    // Water hazard
+    for (let w of h.water) {
+      if (ball.x > w.x && ball.x < w.x + w.w && ball.y > w.y && ball.y < w.y + w.h) {
+        // Reset to start with penalty
+        strokes++;
+        totalStrokes++;
+        ball.x = h.start.x;
+        ball.y = h.start.y;
+        ball.vx = 0;
+        ball.vy = 0;
+        state = STATE.AIMING;
+        showMessage('水障碍! +1罚杆');
+        spawnParticles(ball.x, ball.y, '#4488ff', 10);
+        return;
+      }
+    }
+
+    // Boundary
+    if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = Math.abs(ball.vx) * WALL_BOUNCE; }
+    if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -Math.abs(ball.vx) * WALL_BOUNCE; }
+    if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = Math.abs(ball.vy) * WALL_BOUNCE; }
+    if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -Math.abs(ball.vy) * WALL_BOUNCE; }
+
+    // Hole detection
+    const hx = h.hole.x, hy = h.hole.y;
+    const dx = ball.x - hx, dy = ball.y - hy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+
+    if (dist < HOLE_RADIUS && speed < 8) {
+      // Ball in hole!
+      ball.x = hx;
+      ball.y = hy;
+      ball.vx = 0;
+      ball.vy = 0;
+      holeScores.push(strokes);
+      const diff = strokes - h.par;
+      score += Math.max(10, 50 - diff * 15);
+      state = STATE.HOLE_DONE;
+      celebrationTimer = 120;
+      spawnParticles(hx, hy, '#ffd700', 25);
+      if (diff <= -2) showMessage('老鹰球! 🦅');
+      else if (diff === -1) showMessage('小鸟球! 🐦');
+      else if (diff === 0) showMessage('标准杆! 👍');
+      else if (diff === 1) showMessage('柏忌 +1');
+      else showMessage(`+${diff} 杆`);
+      return;
+    }
+
+    // Stop check
+    if (speed < 0.15) {
+      ball.vx = 0;
+      ball.vy = 0;
+      state = STATE.AIMING;
+    }
+  }
+
+  // Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.1;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  if (celebrationTimer > 0) celebrationTimer--;
+  if (messageTimer > 0) messageTimer--;
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = Math.random() * 4 + 1;
+    particles.push({
+      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 2,
+      life: 1, decay: 0.02 + Math.random() * 0.03, color,
+      size: Math.random() * 4 + 2
+    });
+  }
+}
+
+function showMessage(msg) { message = msg; messageTimer = 90; }
+
+function draw() {
+  // Background - green felt
+  ctx.fillStyle = '#1a472a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle texture
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  for (let i = 0; i < W; i += 20) {
+    ctx.fillRect(i, 0, 1, H);
+  }
+
+  if (state === STATE.TITLE) { drawTitle(); return; }
+
+  const h = holes[currentHole];
+
+  // Water hazards
+  for (let w of h.water) {
+    ctx.fillStyle = 'rgba(30, 100, 200, 0.6)';
+    ctx.fillRect(w.x, w.y, w.w, w.h);
+    ctx.strokeStyle = 'rgba(100, 180, 255, 0.5)';
+    ctx.strokeRect(w.x, w.y, w.w, w.h);
+    // Wave effect
+    const t = Date.now() / 1000;
+    ctx.strokeStyle = 'rgba(150, 220, 255, 0.3)';
+    ctx.beginPath();
+    for (let wx = w.x; wx < w.x + w.w; wx += 5) {
+      const wy = w.y + w.h / 2 + Math.sin(wx * 0.05 + t * 3) * 5;
+      wx === w.x ? ctx.moveTo(wx, wy) : ctx.lineTo(wx, wy);
+    }
+    ctx.stroke();
+  }
+
+  // Walls
+  for (let w of h.walls) {
+    ctx.fillStyle = '#5a3a1a';
+    ctx.fillRect(w.x, w.y, w.w, w.h);
+    ctx.fillStyle = '#7a5a3a';
+    ctx.fillRect(w.x, w.y, w.w, 3);
+    ctx.strokeStyle = '#3a2a0a';
+    ctx.strokeRect(w.x, w.y, w.w, w.h);
+  }
+
+  // Bumpers
+  for (let b of h.bumpers) {
+    const grad = ctx.createRadialGradient(b.x - 3, b.y - 3, 2, b.x, b.y, b.r);
+    grad.addColorStop(0, '#ff8888');
+    grad.addColorStop(1, '#cc3333');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffaaaa';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // Hole
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(h.hole.x, h.hole.y, HOLE_RADIUS, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(h.hole.x, h.hole.y, HOLE_RADIUS, 0, Math.PI * 2);
+  ctx.stroke();
+  // Flag
+  if (state !== STATE.HOLE_DONE) {
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(h.hole.x, h.hole.y);
+    ctx.lineTo(h.hole.x, h.hole.y - 35);
+    ctx.stroke();
+    ctx.fillStyle = '#e74c3c';
+    ctx.beginPath();
+    ctx.moveTo(h.hole.x, h.hole.y - 35);
+    ctx.lineTo(h.hole.x + 20, h.hole.y - 28);
+    ctx.lineTo(h.hole.x, h.hole.y - 21);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Aim line
+  if (dragging && state === STATE.AIMING) {
+    const dx = dragStart.x - dragEnd.x;
+    const dy = dragStart.y - dragEnd.y;
+    const dist = Math.min(Math.sqrt(dx * dx + dy * dy), 150);
+    const angle = Math.atan2(dy, dx);
+    const power = dist / 150;
+
+    // Direction dots
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    for (let i = 1; i <= 8; i++) {
+      const px = ball.x + Math.cos(angle) * i * 18 * power;
+      const py = ball.y + Math.sin(angle) * i * 18 * power;
+      ctx.globalAlpha = 1 - i / 10;
+      ctx.beginPath();
+      ctx.arc(px, py, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Power indicator
+    ctx.strokeStyle = `hsl(${120 - power * 120}, 80%, 50%)`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(ball.x, ball.y);
+    ctx.lineTo(ball.x + Math.cos(angle) * dist * 0.6, ball.y + Math.sin(angle) * dist * 0.6);
+    ctx.stroke();
+
+    // Drag line (rubber band)
+    ctx.strokeStyle = 'rgba(255,100,100,0.5)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(ball.x, ball.y);
+    ctx.lineTo(dragEnd.x, dragEnd.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Ball
+  if (state !== STATE.HOLE_DONE || celebrationTimer > 60) {
+    const ballGrad = ctx.createRadialGradient(ball.x - 2, ball.y - 2, 1, ball.x, ball.y, ball.r);
+    ballGrad.addColorStop(0, '#ffffff');
+    ballGrad.addColorStop(1, '#cccccc');
+    ctx.fillStyle = ballGrad;
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Particles
+  for (let p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // HUD
+  drawHUD(h);
+
+  // Message
+  if (messageTimer > 0) {
+    ctx.globalAlpha = Math.min(1, messageTimer / 30);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 30px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, W / 2, H / 2 - 60);
+    ctx.globalAlpha = 1;
+  }
+
+  // Hole done overlay
+  if (state === STATE.HOLE_DONE && celebrationTimer < 60) {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#4ecdc4';
+    ctx.font = 'bold 36px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`第 ${currentHole + 1} 洞完成!`, W / 2, H / 2 - 30);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.fillText(`本洞: ${strokes} 杆 (标准杆 ${h.par})`, W / 2, H / 2 + 10);
+    if (currentHole < 8) {
+      ctx.fillText('点击 进入下一洞', W / 2, H / 2 + 50);
+    } else {
+      ctx.fillText('点击 查看总成绩', W / 2, H / 2 + 50);
+    }
+  }
+
+  if (state === STATE.GAME_OVER) drawScorecard();
+}
+
+function drawHUD(h) {
+  // Top bar
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, 35);
+  ctx.font = '15px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`第 ${currentHole + 1}/9 洞`, 15, 23);
+  ctx.fillText(`标准杆: ${h.par}`, 130, 23);
+  ctx.fillText(`本洞杆数: ${strokes}`, 250, 23);
+  ctx.textAlign = 'right';
+  ctx.fillText(`总杆数: ${totalStrokes}`, W - 15, 23);
+  ctx.fillText(`得分: ${score}`, W - 140, 23);
+}
+
+function drawTitle() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 48px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('迷你高尔夫', W / 2, H / 2 - 90);
+
+  ctx.font = '20px Arial';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('9洞迷你高尔夫挑战!', W / 2, H / 2 - 40);
+
+  ctx.font = '16px Arial';
+  ctx.fillStyle = '#8f8';
+  ctx.fillText('从球的位置拖拽瞄准 (反方向发射)', W / 2, H / 2 + 10);
+  ctx.fillText('拖拽距离决定力度，松开鼠标击球', W / 2, H / 2 + 40);
+  ctx.fillText('避开蓝色水障碍，利用红色弹射器', W / 2, H / 2 + 70);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText('点击 开始游戏', W / 2, H / 2 + 120);
+}
+
+function drawScorecard() {
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 36px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('成绩卡', W / 2, 50);
+
+  ctx.font = '16px Arial';
+  const startY = 90;
+  // Header
+  ctx.fillStyle = '#888';
+  ctx.textAlign = 'left';
+  ctx.fillText('洞', 150, startY);
+  ctx.fillText('标准杆', 250, startY);
+  ctx.fillText('成绩', 380, startY);
+  ctx.fillText('差', 480, startY);
+
+  for (let i = 0; i < 9; i++) {
+    const y = startY + 30 + i * 28;
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${i + 1}`, 155, y);
+    ctx.fillText(`${holes[i].par}`, 265, y);
+    if (i < holeScores.length) {
+      const s = holeScores[i];
+      const diff = s - holes[i].par;
+      ctx.fillStyle = diff < 0 ? '#4ecdc4' : diff === 0 ? '#fff' : '#e74c3c';
+      ctx.fillText(`${s}`, 390, y);
+      ctx.fillText(diff === 0 ? 'E' : (diff > 0 ? `+${diff}` : `${diff}`), 480, y);
+    }
+  }
+
+  const totalPar = holes.reduce((s, h) => s + h.par, 0);
+  const diff = totalStrokes - totalPar;
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 20px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(`总计: ${totalStrokes} 杆 (标准杆 ${totalPar}, ${diff === 0 ? 'E' : diff > 0 ? '+' + diff : diff})`, W / 2, startY + 310);
+  ctx.fillText(`最终得分: ${score}`, W / 2, startY + 345);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '18px Arial';
+  ctx.fillText('点击 重新开始', W / 2, startY + 385);
+}
+
+// Mouse input
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (state === STATE.TITLE) {
+    state = STATE.AIMING;
+    currentHole = 0;
+    totalStrokes = 0;
+    score = 0;
+    holeScores = [];
+    loadHole(0);
+    return;
+  }
+
+  if (state === STATE.HOLE_DONE && celebrationTimer < 60) {
+    if (currentHole < 8) {
+      currentHole++;
+      loadHole(currentHole);
+      state = STATE.AIMING;
+    } else {
+      state = STATE.GAME_OVER;
+    }
+    return;
+  }
+
+  if (state === STATE.GAME_OVER) {
+    state = STATE.TITLE;
+    return;
+  }
+
+  if (state === STATE.AIMING) {
+    dragging = true;
+    dragStart.x = mx;
+    dragStart.y = my;
+    dragEnd.x = mx;
+    dragEnd.y = my;
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  dragEnd.x = (e.clientX - rect.left) * (W / rect.width);
+  dragEnd.y = (e.clientY - rect.top) * (H / rect.height);
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (!dragging || state !== STATE.AIMING) { dragging = false; return; }
+  dragging = false;
+
+  const dx = dragStart.x - dragEnd.x;
+  const dy = dragStart.y - dragEnd.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 10) return; // Too small, ignore
+
+  const power = Math.min(dist / 150, 1) * MAX_POWER;
+  const angle = Math.atan2(dy, dx);
+  shoot(power, angle);
+});
+
+// Prevent context menu
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// Game loop
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

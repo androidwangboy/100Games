@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>贪吃虫 AI</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+const STATE = { TITLE: 0, PLAYING: 1, GAME_OVER: 2 };
+let state = STATE.TITLE;
+let score = 0;
+
+// Grid settings
+let gridSize = 20;
+let cols, rows;
+let cellW, cellH;
+const GRID_OFFSET_X = 10;
+const GRID_OFFSET_Y = 40;
+const GRID_W = 560;
+const GRID_H = 420;
+
+// Game objects
+let snake = [];
+let food = { x: 0, y: 0 };
+let direction = { x: 1, y: 0 };
+let nextDirection = { x: 1, y: 0 };
+let path = [];
+let aiMode = true;
+let speedMultiplier = 1;
+let moveTimer = 0;
+let moveInterval = 8; // frames per move at 1x
+
+// Stats
+let foodEaten = 0;
+let survivalTime = 0;
+let totalMoves = 0;
+let optimalMoves = 0;
+let startTime = 0;
+let particles = [];
+let gridOption = 1; // 0=small, 1=medium, 2=large
+const gridOptions = [
+  { size: 15, label: '小 (15x15)' },
+  { size: 20, label: '中 (20x20)' },
+  { size: 30, label: '大 (30x30)' }
+];
+
+function initGrid() {
+  gridSize = gridOptions[gridOption].size;
+  cols = gridSize;
+  rows = Math.floor(gridSize * (GRID_H / GRID_W));
+  cellW = GRID_W / cols;
+  cellH = GRID_H / rows;
+}
+
+function startGame() {
+  initGrid();
+  const startX = Math.floor(cols / 4);
+  const startY = Math.floor(rows / 2);
+  snake = [
+    { x: startX, y: startY },
+    { x: startX - 1, y: startY },
+    { x: startX - 2, y: startY }
+  ];
+  direction = { x: 1, y: 0 };
+  nextDirection = { x: 1, y: 0 };
+  foodEaten = 0;
+  score = 0;
+  totalMoves = 0;
+  optimalMoves = 0;
+  survivalTime = 0;
+  startTime = Date.now();
+  particles = [];
+  path = [];
+  aiMode = true;
+  speedMultiplier = 1;
+  spawnFood();
+  state = STATE.PLAYING;
+}
+
+function spawnFood() {
+  let attempts = 0;
+  do {
+    food.x = Math.floor(Math.random() * cols);
+    food.y = Math.floor(Math.random() * rows);
+    attempts++;
+  } while (isSnakeAt(food.x, food.y) && attempts < 1000);
+}
+
+function isSnakeAt(x, y) {
+  return snake.some(s => s.x === x && s.y === y);
+}
+
+// BFS pathfinding
+function bfs(startX, startY, targetX, targetY, ignoreTail) {
+  const visited = new Set();
+  const queue = [{ x: startX, y: startY, path: [] }];
+  visited.add(`${startX},${startY}`);
+
+  const dirs = [
+    { x: 0, y: -1 }, { x: 0, y: 1 },
+    { x: -1, y: 0 }, { x: 1, y: 0 }
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (current.x === targetX && current.y === targetY) {
+      return current.path;
+    }
+
+    for (let d of dirs) {
+      const nx = current.x + d.x;
+      const ny = current.y + d.y;
+      const key = `${nx},${ny}`;
+
+      if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
+      if (visited.has(key)) continue;
+      if (isSnakeAt(nx, ny)) {
+        // Allow moving to tail position (it will move away)
+        if (!(ignoreTail && nx === snake[snake.length - 1].x && ny === snake[snake.length - 1].y)) {
+          continue;
+        }
+      }
+
+      visited.add(key);
+      queue.push({
+        x: nx, y: ny,
+        path: [...current.path, { x: d.x, y: d.y }]
+      });
+    }
+  }
+  return null; // No path found
+}
+
+// Check if a move is safe (won't trap the snake)
+function isSafeMove(dir) {
+  const head = snake[0];
+  const nx = head.x + dir.x;
+  const ny = head.y + dir.y;
+
+  if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) return false;
+  if (isSnakeAt(nx, ny) && !(nx === snake[snake.length - 1].x && ny === snake[snake.length - 1].y)) return false;
+
+  // Count accessible cells from new position (flood fill, limited)
+  let count = 0;
+  const visited = new Set();
+  const stack = [{ x: nx, y: ny }];
+  visited.add(`${nx},${ny}`);
+
+  while (stack.length > 0 && count < snake.length + 5) {
+    const cell = stack.pop();
+    count++;
+    const dirs = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
+    for (let d of dirs) {
+      const cx = cell.x + d.x;
+      const cy = cell.y + d.y;
+      const key = `${cx},${cy}`;
+      if (cx < 0 || cx >= cols || cy < 0 || cy >= rows) continue;
+      if (visited.has(key)) continue;
+      if (isSnakeAt(cx, cy)) continue;
+      visited.add(key);
+      stack.push({ x: cx, y: cy });
+    }
+  }
+  return count >= snake.length;
+}
+
+function aiDecide() {
+  const head = snake[0];
+
+  // Try BFS to food
+  const pathToFood = bfs(head.x, head.y, food.x, food.y, true);
+
+  if (pathToFood && pathToFood.length > 0) {
+    // Verify the first move is safe
+    if (isSafeMove(pathToFood[0])) {
+      path = pathToFood;
+      return pathToFood[0];
+    }
+  }
+
+  // Fallback: find any safe move, prefer one that gets closer to food
+  const dirs = [
+    { x: 0, y: -1 }, { x: 0, y: 1 },
+    { x: -1, y: 0 }, { x: 1, y: 0 }
+  ];
+
+  // Sort by distance to food
+  dirs.sort((a, b) => {
+    const da = Math.abs(head.x + a.x - food.x) + Math.abs(head.y + a.y - food.y);
+    const db = Math.abs(head.x + b.x - food.x) + Math.abs(head.y + b.y - food.y);
+    return da - db;
+  });
+
+  for (let d of dirs) {
+    if (isSafeMove(d)) {
+      path = [d];
+      return d;
+    }
+  }
+
+  // No safe move - just go straight (will likely die)
+  path = [];
+  return direction;
+}
+
+function moveSnake() {
+  if (aiMode) {
+    const decision = aiDecide();
+    nextDirection = decision;
+  }
+
+  direction = { ...nextDirection };
+  const head = snake[0];
+  const newHead = { x: head.x + direction.x, y: head.y + direction.y };
+
+  totalMoves++;
+
+  // Collision check
+  if (newHead.x < 0 || newHead.x >= cols || newHead.y < 0 || newHead.y >= rows) {
+    gameOver();
+    return;
+  }
+  if (snake.some((s, i) => i < snake.length - 1 && s.x === newHead.x && s.y === newHead.y)) {
+    gameOver();
+    return;
+  }
+
+  snake.unshift(newHead);
+
+  // Food check
+  if (newHead.x === food.x && newHead.y === food.y) {
+    foodEaten++;
+    score += 10 * speedMultiplier;
+    optimalMoves += path.length || 1;
+    spawnEatParticles(food.x, food.y);
+    spawnFood();
+    path = [];
+  } else {
+    snake.pop();
+  }
+}
+
+function gameOver() {
+  state = STATE.GAME_OVER;
+  survivalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+  // Death particles
+  for (let s of snake) {
+    particles.push({
+      x: GRID_OFFSET_X + s.x * cellW + cellW / 2,
+      y: GRID_OFFSET_Y + s.y * cellH + cellH / 2,
+      vx: (Math.random() - 0.5) * 4,
+      vy: (Math.random() - 0.5) * 4,
+      life: 1, decay: 0.02,
+      color: '#e74c3c', size: cellW * 0.4
+    });
+  }
+}
+
+function spawnEatParticles(gx, gy) {
+  const px = GRID_OFFSET_X + gx * cellW + cellW / 2;
+  const py = GRID_OFFSET_Y + gy * cellH + cellH / 2;
+  for (let i = 0; i < 8; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = Math.random() * 3 + 1;
+    particles.push({
+      x: px, y: py,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 1, decay: 0.04,
+      color: `hsl(${Math.random() * 60 + 90}, 80%, 60%)`,
+      size: Math.random() * 3 + 2
+    });
+  }
+}
+
+function update() {
+  if (state !== STATE.PLAYING) {
+    updateParticles();
+    return;
+  }
+
+  moveTimer++;
+  const interval = Math.max(1, Math.floor(moveInterval / speedMultiplier));
+  if (moveTimer >= interval) {
+    moveTimer = 0;
+    moveSnake();
+  }
+
+  updateParticles();
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function draw() {
+  // Background
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === STATE.TITLE) { drawTitle(); return; }
+
+  // Grid background
+  ctx.fillStyle = '#111122';
+  ctx.fillRect(GRID_OFFSET_X, GRID_OFFSET_Y, GRID_W, GRID_H);
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 0.5;
+  for (let x = 0; x <= cols; x++) {
+    ctx.beginPath();
+    ctx.moveTo(GRID_OFFSET_X + x * cellW, GRID_OFFSET_Y);
+    ctx.lineTo(GRID_OFFSET_X + x * cellW, GRID_OFFSET_Y + GRID_H);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= rows; y++) {
+    ctx.beginPath();
+    ctx.moveTo(GRID_OFFSET_X, GRID_OFFSET_Y + y * cellH);
+    ctx.lineTo(GRID_OFFSET_X + GRID_W, GRID_OFFSET_Y + y * cellH);
+    ctx.stroke();
+  }
+
+  // Path visualization
+  if (aiMode && path.length > 0) {
+    ctx.fillStyle = 'rgba(78, 205, 196, 0.15)';
+    let px = snake[0].x, py = snake[0].y;
+    for (let step of path) {
+      px += step.x;
+      py += step.y;
+      ctx.fillRect(
+        GRID_OFFSET_X + px * cellW + 1,
+        GRID_OFFSET_Y + py * cellH + 1,
+        cellW - 2, cellH - 2
+      );
+    }
+    // Path line
+    ctx.strokeStyle = 'rgba(78, 205, 196, 0.4)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(GRID_OFFSET_X + snake[0].x * cellW + cellW / 2, GRID_OFFSET_Y + snake[0].y * cellH + cellH / 2);
+    px = snake[0].x; py = snake[0].y;
+    for (let step of path) {
+      px += step.x; py += step.y;
+      ctx.lineTo(GRID_OFFSET_X + px * cellW + cellW / 2, GRID_OFFSET_Y + py * cellH + cellH / 2);
+    }
+    ctx.stroke();
+  }
+
+  // Food
+  const fx = GRID_OFFSET_X + food.x * cellW + cellW / 2;
+  const fy = GRID_OFFSET_Y + food.y * cellH + cellH / 2;
+  const pulse = 1 + Math.sin(Date.now() / 200) * 0.15;
+  ctx.fillStyle = '#e74c3c';
+  ctx.beginPath();
+  ctx.arc(fx, fy, (cellW * 0.35) * pulse, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(231, 76, 60, 0.3)';
+  ctx.beginPath();
+  ctx.arc(fx, fy, (cellW * 0.5) * pulse, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Snake
+  for (let i = snake.length - 1; i >= 0; i--) {
+    const s = snake[i];
+    const sx = GRID_OFFSET_X + s.x * cellW;
+    const sy = GRID_OFFSET_Y + s.y * cellH;
+    const t = i / snake.length;
+
+    if (i === 0) {
+      // Head
+      ctx.fillStyle = aiMode ? '#4ecdc4' : '#ffd700';
+      ctx.fillRect(sx + 1, sy + 1, cellW - 2, cellH - 2);
+      // Eyes
+      ctx.fillStyle = '#000';
+      const ex1 = sx + cellW * 0.3 + direction.x * 2;
+      const ey1 = sy + cellH * 0.3 + direction.y * 2;
+      const ex2 = sx + cellW * 0.7 + direction.x * 2;
+      const ey2 = sy + cellH * 0.7 + direction.y * 2;
+      ctx.beginPath(); ctx.arc(ex1, ey1, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(ex2, ey2, 2, 0, Math.PI * 2); ctx.fill();
+    } else {
+      // Body gradient
+      const hue = aiMode ? 170 - t * 40 : 45 - t * 20;
+      const light = 55 - t * 20;
+      ctx.fillStyle = `hsl(${hue}, 70%, ${light}%)`;
+      ctx.fillRect(sx + 1.5, sy + 1.5, cellW - 3, cellH - 3);
+    }
+  }
+
+  // Particles
+  for (let p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Stats panel (right side)
+  drawStats();
+
+  // Top bar
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, 35);
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = aiMode ? '#4ecdc4' : '#ffd700';
+  ctx.fillText(aiMode ? '🤖 AI 模式' : '🎮 手动模式', 15, 24);
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.fillText(`速度: ${speedMultiplier}x`, 160, 24);
+  ctx.fillText(`得分: ${score}`, 270, 24);
+  ctx.fillText(`长度: ${snake.length}`, 380, 24);
+
+  // Controls hint
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#888';
+  ctx.font = '12px Arial';
+  ctx.fillText('M:切换手动 | 1/2/4:速度 | G:网格 | R:重开', W - 10, 24);
+
+  // Game over overlay
+  if (state === STATE.GAME_OVER) drawGameOver();
+}
+
+function drawStats() {
+  const px = GRID_OFFSET_X + GRID_W + 15;
+  const py = GRID_OFFSET_Y + 10;
+  const pw = W - px - 10;
+
+  ctx.fillStyle = 'rgba(20,20,40,0.9)';
+  ctx.fillRect(px, py, pw, GRID_H - 20);
+  ctx.strokeStyle = '#333';
+  ctx.strokeRect(px, py, pw, GRID_H - 20);
+
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 15px Arial';
+  ctx.fillStyle = '#4ecdc4';
+  ctx.fillText('统计数据', px + 12, py + 25);
+
+  ctx.font = '13px Arial';
+  const elapsed = state === STATE.PLAYING ? ((Date.now() - startTime) / 1000).toFixed(0) : survivalTime;
+  const efficiency = totalMoves > 0 ? Math.min(100, (optimalMoves / totalMoves * 100)).toFixed(1) : '0.0';
+  const avgMoves = foodEaten > 0 ? (totalMoves / foodEaten).toFixed(1) : '0';
+
+  const stats = [
+    { label: '食物吃掉', value: `${foodEaten}`, color: '#e74c3c' },
+    { label: '蛇身长度', value: `${snake.length}`, color: '#4ecdc4' },
+    { label: '存活时间', value: `${elapsed}s`, color: '#f9ca24' },
+    { label: '总步数', value: `${totalMoves}`, color: '#aaa' },
+    { label: '效率', value: `${efficiency}%`, color: '#8f8' },
+    { label: '平均步/食物', value: `${avgMoves}`, color: '#aaf' },
+    { label: '网格大小', value: `${cols}x${rows}`, color: '#888' },
+    { label: '速度倍率', value: `${speedMultiplier}x`, color: '#fa8' }
+  ];
+
+  stats.forEach((s, i) => {
+    const sy = py + 50 + i * 32;
+    ctx.fillStyle = '#888';
+    ctx.fillText(s.label, px + 12, sy);
+    ctx.fillStyle = s.color;
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText(s.value, px + 12, sy + 17);
+    ctx.font = '13px Arial';
+  });
+
+  // Efficiency bar
+  const barY = py + 320;
+  ctx.fillStyle = '#888';
+  ctx.font = '12px Arial';
+  ctx.fillText('路径效率:', px + 12, barY);
+  ctx.fillStyle = '#333';
+  ctx.fillRect(px + 12, barY + 5, pw - 24, 12);
+  const eff = Math.min(100, parseFloat(efficiency));
+  ctx.fillStyle = eff > 70 ? '#4ecdc4' : eff > 40 ? '#f9ca24' : '#e74c3c';
+  ctx.fillRect(px + 12, barY + 5, (pw - 24) * eff / 100, 12);
+
+  // Mini snake length visualization
+  const lenY = barY + 35;
+  ctx.fillStyle = '#888';
+  ctx.fillText('长度增长:', px + 12, lenY);
+  const maxLen = cols * rows;
+  ctx.fillStyle = '#333';
+  ctx.fillRect(px + 12, lenY + 5, pw - 24, 12);
+  ctx.fillStyle = '#4ecdc4';
+  ctx.fillRect(px + 12, lenY + 5, (pw - 24) * Math.min(1, snake.length / (maxLen * 0.5)), 12);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 44px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('贪吃虫 AI', W / 2, H / 2 - 110);
+
+  ctx.font = '18px Arial';
+  ctx.fillStyle = '#4ecdc4';
+  ctx.fillText('观看 AI 使用 BFS 寻路算法自动游玩', W / 2, H / 2 - 65);
+
+  ctx.font = '15px Arial';
+  ctx.fillStyle = '#8f8';
+  ctx.fillText('M - 切换 AI/手动模式', W / 2, H / 2 - 15);
+  ctx.fillText('1 / 2 / 4 - 调整速度', W / 2, H / 2 + 15);
+  ctx.fillText('G - 切换网格大小', W / 2, H / 2 + 45);
+  ctx.fillText('方向键 - 手动控制 (手动模式)', W / 2, H / 2 + 75);
+
+  ctx.font = '14px Arial';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('AI 使用广度优先搜索 (BFS) 寻找最短路径', W / 2, H / 2 + 115);
+  ctx.fillText('并检测安全性以避免自我围困', W / 2, H / 2 + 140);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText('按 空格键 开始观看', W / 2, H / 2 + 185);
+
+  // Animated snake on title
+  const t = Date.now() / 300;
+  ctx.fillStyle = '#4ecdc4';
+  for (let i = 0; i < 8; i++) {
+    const sx = W / 2 - 100 + i * 25 + Math.sin(t + i * 0.5) * 3;
+    const sy = H / 2 - 150 + Math.cos(t + i * 0.5) * 5;
+    ctx.globalAlpha = 1 - i * 0.08;
+    ctx.fillRect(sx, sy, 18, 18);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#e74c3c';
+  ctx.font = 'bold 40px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('游戏结束', W / 2, H / 2 - 70);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px Arial';
+  ctx.fillText(`最终得分: ${score}`, W / 2, H / 2 - 25);
+
+  ctx.font = '17px Arial';
+  ctx.fillStyle = '#aaa';
+  const efficiency = totalMoves > 0 ? Math.min(100, (optimalMoves / totalMoves * 100)).toFixed(1) : '0';
+  ctx.fillText(`食物: ${foodEaten}  |  长度: ${snake.length}  |  存活: ${survivalTime}s`, W / 2, H / 2 + 15);
+  ctx.fillText(`总步数: ${totalMoves}  |  效率: ${efficiency}%`, W / 2, H / 2 + 45);
+
+  let rating = foodEaten >= 50 ? 'AI 大师! 🏆' : foodEaten >= 30 ? '出色表现! 🌟' : foodEaten >= 15 ? '不错! 👍' : '继续优化! 🔧';
+  ctx.fillStyle = '#4ecdc4';
+  ctx.font = '20px Arial';
+  ctx.fillText(rating, W / 2, H / 2 + 85);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 20px Arial';
+  ctx.fillText('按 R 重新开始  |  按 G 切换网格后重开', W / 2, H / 2 + 130);
+}
+
+// Input
+document.addEventListener('keydown', e => {
+  if (state === STATE.TITLE) {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      startGame();
+    }
+    if (e.code === 'KeyG') {
+      gridOption = (gridOption + 1) % gridOptions.length;
+    }
+    return;
+  }
+
+  if (state === STATE.GAME_OVER) {
+    if (e.code === 'KeyR') startGame();
+    if (e.code === 'KeyG') {
+      gridOption = (gridOption + 1) % gridOptions.length;
+      startGame();
+    }
+    return;
+  }
+
+  if (state === STATE.PLAYING) {
+    if (e.code === 'KeyM') {
+      aiMode = !aiMode;
+      path = [];
+    }
+    if (e.code === 'KeyR') startGame();
+    if (e.code === 'KeyG') {
+      gridOption = (gridOption + 1) % gridOptions.length;
+      startGame();
+    }
+    if (e.code === 'Digit1') speedMultiplier = 1;
+    if (e.code === 'Digit2') speedMultiplier = 2;
+    if (e.code === 'Digit4') speedMultiplier = 4;
+
+    // Manual control
+    if (!aiMode) {
+      if (e.code === 'ArrowUp' && direction.y !== 1) { nextDirection = { x: 0, y: -1 }; e.preventDefault(); }
+      if (e.code === 'ArrowDown' && direction.y !== -1) { nextDirection = { x: 0, y: 1 }; e.preventDefault(); }
+      if (e.code === 'ArrowLeft' && direction.x !== 1) { nextDirection = { x: -1, y: 0 }; e.preventDefault(); }
+      if (e.code === 'ArrowRight' && direction.x !== -1) { nextDirection = { x: 1, y: 0 }; e.preventDefault(); }
+    }
+  }
+});
+
+// Game loop
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

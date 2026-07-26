@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>关灯游戏</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title';
+let grid = [];
+let moves = 0;
+let hoverIdx = -1;
+let flashCells = [];
+let flashTimer = 0;
+const SIZE = 5;
+const CELL = 76;
+const OX = 210, OY = 30;
+
+function initGrid() {
+  grid = Array(SIZE * SIZE).fill(false);
+  // Generate solvable puzzle by applying random clicks from solved state
+  const clicks = 5 + Math.floor(Math.random() * 10);
+  for (let i = 0; i < clicks; i++) {
+    const idx = Math.floor(Math.random() * SIZE * SIZE);
+    toggle(idx, false);
+  }
+  // Ensure not already solved
+  if (grid.every(v => !v)) { grid[12] = true; grid[7] = true; grid[17] = true; }
+  moves = 0;
+  score = 0;
+  flashCells = [];
+}
+
+function toggle(idx, count) {
+  const r = Math.floor(idx / SIZE), c = idx % SIZE;
+  grid[idx] = !grid[idx];
+  if (r > 0) grid[idx - SIZE] = !grid[idx - SIZE];
+  if (r < SIZE - 1) grid[idx + SIZE] = !grid[idx + SIZE];
+  if (c > 0) grid[idx - 1] = !grid[idx - 1];
+  if (c < SIZE - 1) grid[idx + 1] = !grid[idx + 1];
+  if (count) {
+    moves++;
+    score = moves;
+    // Flash effect on toggled cells
+    flashCells = [idx];
+    if (r > 0) flashCells.push(idx - SIZE);
+    if (r < SIZE - 1) flashCells.push(idx + SIZE);
+    if (c > 0) flashCells.push(idx - 1);
+    if (c < SIZE - 1) flashCells.push(idx + 1);
+    flashTimer = 8;
+  }
+}
+
+function isWin() { return grid.every(v => !v); }
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  const col = Math.floor((mx - OX) / CELL);
+  const row = Math.floor((my - OY) / CELL);
+  hoverIdx = (col >= 0 && col < SIZE && row >= 0 && row < SIZE) ? row * SIZE + col : -1;
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') {
+    if (mx > 300 && mx < 500 && my > 300 && my < 360) { initGrid(); state = 'playing'; }
+    return;
+  }
+  if (state === 'win') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) state = 'title';
+    return;
+  }
+  // New puzzle button
+  if (mx > 620 && mx < 780 && my > 430 && my < 470) { initGrid(); return; }
+  const col = Math.floor((mx - OX) / CELL);
+  const row = Math.floor((my - OY) / CELL);
+  if (col >= 0 && col < SIZE && row >= 0 && row < SIZE) {
+    toggle(row * SIZE + col, true);
+    if (isWin()) state = 'win';
+  }
+});
+
+function drawCell(idx) {
+  const r = Math.floor(idx / SIZE), c = idx % SIZE;
+  const x = OX + c * CELL, y = OY + r * CELL;
+  const on = grid[idx];
+  const isHover = idx === hoverIdx && state === 'playing';
+  const isFlash = flashTimer > 0 && flashCells.includes(idx);
+
+  // Cell background
+  if (isFlash) {
+    ctx.fillStyle = '#fff';
+  } else if (on) {
+    ctx.fillStyle = '#ffeb3b';
+  } else {
+    ctx.fillStyle = isHover ? '#37474f' : '#263238';
+  }
+  ctx.fillRect(x + 3, y + 3, CELL - 6, CELL - 6);
+
+  // Border
+  ctx.strokeStyle = on ? '#fff176' : (isHover ? '#78909c' : '#37474f');
+  ctx.lineWidth = isHover ? 3 : 2;
+  ctx.strokeRect(x + 3, y + 3, CELL - 6, CELL - 6);
+
+  // Glow effect for lit cells
+  if (on && !isFlash) {
+    ctx.fillStyle = 'rgba(255,235,59,0.25)';
+    ctx.beginPath();
+    ctx.arc(x + CELL/2, y + CELL/2, CELL/3, 0, Math.PI * 2);
+    ctx.fill();
+    // Bulb icon
+    ctx.fillStyle = '#f57f17';
+    ctx.font = '28px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('💡', x + CELL/2, y + CELL/2);
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ffeb3b';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('关灯游戏', 400, 120);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('Lights Out', 400, 165);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('点击灯泡会切换它和上下左右相邻灯的状态', 400, 215);
+  ctx.fillText('目标：用最少的步数关掉所有灯', 400, 248);
+  ctx.fillText('提示：每次点击的效果是对称可逆的', 400, 281);
+  // Start button
+  ctx.fillStyle = '#f57f17';
+  ctx.fillRect(300, 310, 200, 55);
+  ctx.strokeStyle = '#ffca28';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(300, 310, 200, 55);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('开始游戏', 400, 338);
+}
+
+function drawWin() {
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#76ff03';
+  ctx.font = 'bold 44px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('全部关闭！', 400, 160);
+  ctx.fillStyle = '#fff';
+  ctx.font = '26px sans-serif';
+  ctx.fillText(`用了 ${moves} 步`, 400, 220);
+  const rating = moves <= 8 ? '大师级！' : moves <= 15 ? '很厉害！' : '完成了！';
+  ctx.fillStyle = '#ffeb3b';
+  ctx.font = '22px sans-serif';
+  ctx.fillText(rating, 400, 265);
+  ctx.fillStyle = '#1565c0';
+  ctx.fillRect(300, 320, 200, 55);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 348);
+}
+
+function drawPlaying() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  for (let i = 0; i < SIZE * SIZE; i++) drawCell(i);
+  // HUD
+  ctx.fillStyle = '#ffeb3b';
+  ctx.font = '22px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`步数: ${moves}`, 20, 435);
+  const on = grid.filter(v => v).length;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '18px sans-serif';
+  ctx.fillText(`剩余亮灯: ${on} / ${SIZE * SIZE}`, 20, 462);
+  // New puzzle button
+  ctx.fillStyle = '#333';
+  ctx.fillRect(620, 430, 160, 40);
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(620, 430, 160, 40);
+  ctx.fillStyle = '#ddd';
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('新谜题', 700, 450);
+  // Decrease flash timer
+  if (flashTimer > 0) flashTimer--;
+}
+
+function render() {
+  if (state === 'title') drawTitle();
+  else if (state === 'playing') drawPlaying();
+  else { drawPlaying(); drawWin(); }
+  requestAnimationFrame(render);
+}
+render();
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

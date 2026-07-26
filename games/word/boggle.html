@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>字母网格</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0, timeLeft = 180, foundWords = [], currentPath = [];
+let grid = [], selecting = false, message = '', msgTimer = 0;
+let timerInterval = null;
+let mouseX = 0, mouseY = 0;
+
+const GRID_SIZE = 4;
+const CELL = 70;
+const GRID_X = 60, GRID_Y = 80;
+
+// Weighted letter distribution for Boggle
+const DICE = [
+  'AAEEGN','ABBJOO','ACHOPS','AFFKPS',
+  'AOOTTW','CIMOTU','DEILRX','DELRVY',
+  'DISTTY','EEGHNW','EEINSU','EHRTVW',
+  'EIOSST','ELRTTY','HIMNUQ','HLNNRZ'
+];
+
+const DICT = new Set([
+"ace","act","add","age","ago","aid","aim","air","all","and","ant","any","ape","arc","are","ark","arm","art","ash","ask",
+"ate","awe","axe","bad","bag","ban","bar","bat","bay","bed","bee","beg","bet","bid","big","bin","bit","bow","box","boy",
+"bud","bug","bun","bus","but","buy","cab","can","cap","car","cat","cop","cow","cry","cub","cup","cut","dab","dad","dam",
+"day","den","dew","did","die","dig","dim","dip","doe","dog","dot","dry","dub","dud","due","dug","dye","ear","eat","eel",
+"egg","ego","elm","emu","end","era","eve","eye","fad","fan","far","fat","fax","fed","fee","few","fig","fin","fir","fit",
+"fix","fly","foe","fog","for","fox","fry","fun","fur","gag","gal","gap","gas","gel","gem","get","gig","gin","god","got",
+"gum","gun","gut","guy","gym","had","ham","has","hat","hay","hen","her","hew","hex","hid","him","hip","his","hit","hog",
+"hop","hot","how","hub","hue","hug","hum","hut","ice","icy","ill","imp","ink","inn","ion","ire","irk","ivy","jab","jam",
+"jar","jaw","jay","jet","jig","job","jog","jot","joy","jug","jut","keg","key","kid","kin","kit","lab","lad","lag","lap",
+"law","lay","led","leg","let","lid","lie","lip","lit","log","lot","low","lug","mad","man","map","mar","mat","may","men",
+"met","mid","mix","mob","mod","mop","mow","mud","mug","nab","nag","nap","net","new","nil","nip","nit","nod","nor","not",
+"now","nun","nut","oak","oar","oat","odd","ode","off","oil","old","one","opt","orb","ore","our","out","owe","owl","own",
+"pad","pal","pan","par","pat","paw","pay","pea","peg","pen","pep","per","pet","pew","pie","pig","pin","pit","ply","pod",
+"pop","pot","pow","pro","pry","pub","pug","pun","pup","put","rag","ram","ran","rap","rat","raw","ray","red","rib","rid",
+"rig","rim","rip","rob","rod","roe","rot","row","rub","rue","rug","rum","run","rut","rye","sad","sag","sap","sat","saw",
+"say","sea","set","sew","shy","sin","sip","sir","sit","six","ski","sky","sly","sob","sod","son","sop","sow","soy","spa",
+"spy","sty","sub","sue","sum","sun","tab","tag","tan","tap","tar","tax","tea","ten","the","thy","tic","tie","tin","tip",
+"toe","ton","too","top","tot","tow","toy","try","tub","tug","two","urn","use","van","vat","vet","vex","via","vie","vim",
+"vow","wad","wag","war","was","wax","way","web","wed","wet","who","why","wig","win","wit","woe","wok","won","woo","wow",
+"yak","yam","yap","yaw","yes","yet","yew","you","zap","zed","zen","zip","zoo","able","ache","acid","acre","aged","aide",
+"ally","also","arch","area","army","aunt","auto","avid","away","axle","babe","baby","back","bade","bail","bait","bake",
+"bald","bale","ball","band","bane","bang","bank","bare","bark","barn","base","bash","bath","bead","beak","beam","bean",
+"bear","beat","been","beer","bell","belt","bend","bent","best","bike","bill","bind","bird","bite","blot","blow","blue",
+"blur","boar","boat","body","boil","bold","bolt","bomb","bond","bone","book","boom","boot","bore","born","boss","both",
+"bout","bowl","brag","brat","bred","brew","brim","buck","bulb","bulk","bull","bump","burn","bury","bush","bust","busy",
+"cafe","cage","cake","calf","call","calm","came","camp","cane","cape","card","care","carp","cart","case","cash","cast",
+"cave","cell","chat","chef","chin","chip","chop","cite","city","clad","clam","clan","clap","claw","clay","clip","club",
+"clue","coal","coat","code","coil","coin","coke","cold","colt","comb","come","cone","cook","cool","coop","cope","copy",
+"cord","core","cork","corn","cost","cosy","coup","cove","cozy","crab","crew","crop","crow","cube","cuff","cult","curb",
+"cure","curl","cute","daft","dale","dame","damp","dare","dark","darn","dart","dash","data","date","dawn","dead","deaf",
+"deal","dean","dear","debt","deck","deed","deem","deep","deer","demo","dent","deny","desk","dial","dice","diet","dime",
+"dine","ding","dire","dirt","disc","dish","disk","dock","does","dome","done","doom","door","dose","dote","dove","down",
+"doze","drab","drag","draw","drew","drip","drop","drum","dual","duck","duct","dude","duel","duet","duke","dull","dumb",
+"dump","dune","dung","dunk","dupe","dusk","dust","duty","dyed","each","earl","earn","ease","east","easy","edge","edit",
+"else","emit","envy","epic","euro","even","ever","evil","exam","exit","eyed","face","fact","fade","fail","fair","fake",
+"fall","fame","fang","fare","farm","fast","fate","fawn","fear","feat","feed","feel","feet","fell","felt","fend","fern",
+"file","fill","film","find","fine","fire","firm","fish","fist","five","flag","flap","flat","flaw","flea","fled","flew",
+"flex","flip","flit","flog","flop","flow","flue","flux","foam","foal","foil","fold","folk","fond","font","food","fool",
+"foot","ford","fore","fork","form","fort","foul","four","fowl","free","frog","from","fuel","full","fume","fund","funk",
+"fuse","fuss","fuzz","gait","gale","gall","game","gang","gape","garb","gate","gave","gawk","gaze","gear","gene","germ",
+"gift","gild","gill","gilt","gist","give","glad","glee","glen","glib","glob","glow","glue","glum","glut","gnat","gnaw",
+"goad","goal","goat","gold","golf","gone","gong","good","gore","gory","gout","gown","grab","gram","gray","grew","grid",
+"grim","grin","grip","grit","grow","grub","gulf","gull","gulp","gust","guts","hack","hail","hair","hale","half","hall",
+"halt","hand","hang","hard","hare","hark","harm","harp","hash","hate","haul","have","hawk","haze","hazy","head","heal",
+"heap","hear","heat","heed","heel","heir","held","hell","helm","help","hemp","herb","herd","here","hero","hide","high",
+"hike","hill","hilt","hind","hint","hire","hiss","hive","hoax","hold","hole","holy","home","hone","hood","hoof","hook",
+"hoop","hoot","hope","horn","hose","host","hour","howl","huff","huge","hull","hump","hung","hunt","hurl","hurt","hush",
+"husk","hymn","icon","idea","idle","idol","inch","into","iris","iron","isle","itch","item","jade","jail","jazz","jeer",
+"jerk","jest","jibe","jilt","jinx","jive","join","joke","jolt","judo","jump","june","junk","jury","just","keen","keep",
+"kelp","kept","kick","kill","kiln","kilt","kind","king","kiss","kite","knee","knew","knit","knob","knot","know","lace",
+"lack","lacy","laid","lair","lake","lamb","lame","lamp","land","lane","lard","lark","lash","lass","last","late","laud",
+"lava","lawn","lazy","lead","leaf","leak","lean","leap","left","lend","lens","lent","less","lest","levy","liar","lice",
+"lick","lied","lien","lieu","life","lift","like","lily","limb","lime","limp","line","link","lint","lion","lisp","list",
+"live","load","loaf","loam","loan","lobe","lock","loft","logo","lone","long","look","loom","loon","loop","loot","lord",
+"lore","lose","loss","lost","loud","love","luck","lull","lump","lung","lure","lurk","lush","lust","lute","lynx","lyre",
+"mace","made","maid","mail","main","make","male","mall","malt","mane","many","mare","mark","mash","mask","mass","mast",
+"mate","math","maze","mead","meal","mean","meat","meek","meet","meld","melt","memo","mend","menu","mere","mesh","mess",
+"mice","mild","mile","milk","mill","mime","mind","mine","mint","mire","miss","mist","mite","mitt","moan","moat","mock",
+"mode","mold","mole","molt","monk","mood","moon","moor","mope","more","morn","moss","most","moth","move","much","muck",
+"muff","mule","mull","muse","mush","must","mute","mutt","myth","nail","name","nape","navy","near","neat","neck","need",
+"neon","nerd","nest","news","next","nice","nick","nine","node","none","nook","noon","norm","nose","note","noun","nude",
+"null","numb","oath","obey","odds","odor","ogle","ogre","oily","okay","omen","omit","once","only","onto","ooze","opal",
+"open","opus","oral","orca","oven","over","pace","pack","pact","page","paid","pail","pain","pair","pale","palm","pane",
+"pang","park","part","pass","past","path","pave","pawn","peak","peal","pear","peat","peck","peel","peer","pelt","perk",
+"perm","pest","pick","pier","pike","pile","pill","pine","ping","pink","pint","pipe","pity","plan","play","plea","plod",
+"plot","plow","ploy","plug","plum","plus","pock","poem","poet","poke","pole","poll","polo","pomp","pond","pony","pool",
+"poor","pope","pore","pork","port","pose","post","pour","pout","pray","prep","prey","prod","prop","pros","prow","puck",
+"puff","puke","pull","pulp","pump","punk","punt","puny","pupa","pure","purr","push","putt","pyre","quad","quay","quid",
+"quip","quit","quiz","race","rack","raft","rage","raid","rail","rain","rake","ramp","rang","rank","rant","rash","rasp",
+"rate","rave","raze","read","real","ream","reap","rear","reed","reef","reel","rein","rely","rend","rent","rest","rice",
+"rich","rick","ride","rift","rile","rill","rime","rind","ring","rink","riot","ripe","rise","risk","rite","road","roam",
+"roar","robe","rock","rode","role","roll","romp","roof","rook","room","rope","rose","rosy","rout","rove","rude","ruff",
+"ruin","rule","rump","rung","runt","ruse","rush","rusk","rust","ruth","sack","safe","sage","said","sail","sake","sale",
+"salt","same","sand","sane","sang","sank","sash","save","scab","scam","scan","scar","seal","seam","sear","seat","sect",
+"seed","seek","seem","seen","self","sell","semi","send","sent","serf","shed","shim","shin","ship","shoe","shop","shot",
+"show","shun","shut","sick","side","sift","sigh","sign","silk","sill","silo","silt","sine","sing","sink","sire","site",
+"size","skid","skim","skin","skip","skit","slab","slag","slam","slap","slat","slaw","slay","sled","slew","slid","slim",
+"slip","slit","slob","slop","slot","slow","slug","slum","slur","smog","smug","smut","snag","snap","snip","snit","snob",
+"snot","snow","snub","snug","soak","soap","soar","sock","soda","sofa","soft","soil","sold","sole","solo","some","song",
+"soon","soot","sore","sort","soul","soup","sour","sown","span","spar","spat","spay","spec","sped","spew","spin","spit",
+"spot","spry","spud","spun","spur","stab","stag","star","stay","stem","step","stew","stir","stop","stow","stub","stud",
+"stun","such","suck","suds","sued","suit","sulk","sump","sung","sunk","sure","surf","swab","swag","swam","swan","swap",
+"swat","sway","swig","swim","swum","tabs","tack","tact","tail","take","tale","talk","tall","tame","tang","tank","tape",
+"taps","tarn","tart","task","taut","teak","teal","team","tear","teem","teen","tell","temp","tend","tent","term","tern",
+"test","text","than","that","thaw","thee","them","then","they","thin","this","thou","thud","thug","thus","tick","tide",
+"tidy","tied","tier","tile","till","tilt","time","tine","ting","tint","tiny","tire","toad","toil","told","toll","tomb",
+"tome","tone","tong","took","tool","toot","tore","torn","toss","tote","tour","tout","town","trap","tray","tree","trek",
+"trim","trio","trip","trod","trot","troy","true","tsar","tuba","tube","tuck","tuft","tuna","tune","turf","turn","tusk",
+"tutu","twig","twin","twit","type","typo","ugly","undo","unit","unto","upon","urge","used","user","vain","vale","vane",
+"vary","vase","vast","veal","veer","veil","vein","vend","vent","verb","very","vest","veto","vial","vice","vied","view",
+"vile","vine","visa","vise","void","vole","volt","vote","wade","wage","wail","wait","wake","walk","wall","wand","wane",
+"want","ward","ware","warm","warn","warp","wart","wary","wash","wasp","watt","wave","wavy","waxy","weak","wean","wear",
+"weed","week","weep","weld","well","welt","wend","went","wept","were","west","wham","what","when","whet","whey","whim",
+"whip","whir","whit","whiz","whoa","whom","wick","wide","wife","wild","wile","will","wilt","wily","wimp","wind","wine",
+"wing","wink","wipe","wire","wiry","wise","wish","wisp","with","wits","woke","wolf","womb","wont","wood","wool","word",
+"wore","work","worm","worn","wort","wove","wrap","wren","writ","yank","yard","yarn","yawn","year","yell","yelp","yoga",
+"yoke","yolk","your","yowl","yurt","zeal","zero","zest","zinc","zing","zone","zoom"
+]);
+
+function generateGrid() {
+  grid = [];
+  let shuffledDice = [...DICE].sort(() => Math.random() - 0.5);
+  for (let i = 0; i < 16; i++) {
+    let die = shuffledDice[i];
+    let letter = die[Math.floor(Math.random() * 6)].toLowerCase();
+    grid.push({ letter: letter, row: Math.floor(i / 4), col: i % 4 });
+  }
+}
+
+function isAdjacent(a, b) {
+  let dr = Math.abs(grid[a].row - grid[b].row);
+  let dc = Math.abs(grid[a].col - grid[b].col);
+  return dr <= 1 && dc <= 1 && (dr + dc > 0);
+}
+
+function getCellAt(x, y) {
+  for (let i = 0; i < 16; i++) {
+    let cx = GRID_X + grid[i].col * CELL;
+    let cy = GRID_Y + grid[i].row * CELL;
+    if (x >= cx && x < cx + CELL && y >= cy && y < cy + CELL) return i;
+  }
+  return -1;
+}
+
+function startGame() {
+  score = 0; timeLeft = 180; foundWords = []; currentPath = [];
+  message = ''; msgTimer = 0;
+  generateGrid();
+  state = 'playing';
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    if (state === 'playing') {
+      timeLeft--;
+      if (timeLeft <= 0) { timeLeft = 0; state = 'gameover'; clearInterval(timerInterval); }
+    }
+  }, 1000);
+}
+
+function submitWord() {
+  if (currentPath.length < 3) { currentPath = []; return; }
+  let word = currentPath.map(i => grid[i].letter).join('');
+  if (foundWords.includes(word)) { showMsg('已找到过!'); currentPath = []; return; }
+  if (!DICT.has(word)) { showMsg('无效单词: ' + word); currentPath = []; return; }
+  foundWords.push(word);
+  let len = word.length;
+  let pts = len <= 4 ? 1 : len === 5 ? 2 : len === 6 ? 3 : 5;
+  score += pts;
+  showMsg(word + ' +' + pts);
+  currentPath = [];
+}
+
+function showMsg(msg) { message = msg; msgTimer = 90; }
+
+canvas.addEventListener('mousedown', e => {
+  if (state !== 'playing') return;
+  let rect = canvas.getBoundingClientRect();
+  let x = (e.clientX - rect.left) * (W / rect.width);
+  let y = (e.clientY - rect.top) * (H / rect.height);
+  let cell = getCellAt(x, y);
+  if (cell >= 0) { selecting = true; currentPath = [cell]; }
+});
+
+canvas.addEventListener('mousemove', e => {
+  let rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) * (W / rect.width);
+  mouseY = (e.clientY - rect.top) * (H / rect.height);
+  if (!selecting || state !== 'playing') return;
+  let cell = getCellAt(mouseX, mouseY);
+  if (cell >= 0 && !currentPath.includes(cell)) {
+    let last = currentPath[currentPath.length - 1];
+    if (isAdjacent(last, cell)) currentPath.push(cell);
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  if (selecting) { selecting = false; submitWord(); }
+});
+
+document.addEventListener('keydown', e => {
+  if (state === 'title' || state === 'gameover') {
+    if (e.code === 'Enter') startGame();
+  }
+});
+
+function draw() {
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'gameover') { drawGameOver(); return; }
+
+  // Header
+  ctx.fillStyle = '#58a6ff';
+  ctx.font = 'bold 22px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('字母网格', 20, 35);
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px monospace';
+  ctx.fillText('分数: ' + score, 180, 35);
+  ctx.fillStyle = timeLeft <= 30 ? '#f44' : '#8f8';
+  let min = Math.floor(timeLeft / 60), sec = timeLeft % 60;
+  ctx.fillText('时间: ' + min + ':' + (sec < 10 ? '0' : '') + sec, 320, 35);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('单词: ' + foundWords.length, 480, 35);
+
+  // Current word display
+  let curWord = currentPath.map(i => grid[i].letter).join('').toUpperCase();
+  ctx.fillStyle = '#ff0';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText(curWord, GRID_X, GRID_Y - 15);
+
+  // Draw grid
+  for (let i = 0; i < 16; i++) {
+    let cx = GRID_X + grid[i].col * CELL;
+    let cy = GRID_Y + grid[i].row * CELL;
+    let inPath = currentPath.includes(i);
+    let pathIdx = currentPath.indexOf(i);
+
+    ctx.fillStyle = inPath ? '#2d5a27' : '#1c2333';
+    ctx.fillRect(cx + 2, cy + 2, CELL - 4, CELL - 4);
+    ctx.strokeStyle = inPath ? '#4caf50' : '#3a4a5a';
+    ctx.lineWidth = inPath ? 3 : 1;
+    ctx.strokeRect(cx + 2, cy + 2, CELL - 4, CELL - 4);
+
+    if (inPath) {
+      ctx.fillStyle = '#4caf50';
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(pathIdx + 1, cx + CELL/2, cy + 15);
+    }
+
+    ctx.fillStyle = inPath ? '#fff' : '#cde';
+    ctx.font = 'bold 30px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(grid[i].letter.toUpperCase(), cx + CELL/2, cy + CELL/2 + 10);
+  }
+
+  // Draw path lines
+  if (currentPath.length > 1) {
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let i = 0; i < currentPath.length; i++) {
+      let cx = GRID_X + grid[currentPath[i]].col * CELL + CELL/2;
+      let cy = GRID_Y + grid[currentPath[i]].row * CELL + CELL/2;
+      if (i === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
+    }
+    ctx.stroke();
+  }
+
+  // Message
+  if (msgTimer > 0) {
+    msgTimer--;
+    ctx.fillStyle = '#ff0';
+    ctx.font = '16px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(message, GRID_X, GRID_Y + GRID_SIZE * CELL + 25);
+  }
+
+  // Found words panel
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#888';
+  ctx.font = '14px monospace';
+  let panelX = GRID_X + GRID_SIZE * CELL + 40;
+  ctx.fillText('已找到的单词:', panelX, GRID_Y);
+  ctx.fillStyle = '#cde';
+  let sorted = [...foundWords].sort((a, b) => b.length - a.length || a.localeCompare(b));
+  for (let i = 0; i < sorted.length && i < 18; i++) {
+    let pts = sorted[i].length <= 4 ? 1 : sorted[i].length === 5 ? 2 : sorted[i].length === 6 ? 3 : 5;
+    ctx.fillText(sorted[i] + ' (+' + pts + ')', panelX, GRID_Y + 22 + i * 20);
+  }
+  if (sorted.length > 18) {
+    ctx.fillStyle = '#666';
+    ctx.fillText('...+' + (sorted.length - 18) + ' 更多', panelX, GRID_Y + 22 + 18 * 20);
+  }
+
+  // Instructions
+  ctx.fillStyle = '#555';
+  ctx.font = '13px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('点击并拖动相邻字母组成单词 (3+字母)，松开提交', 20, H - 12);
+  ctx.textAlign = 'left';
+}
+
+function drawTitle() {
+  // Decorative grid background
+  ctx.globalAlpha = 0.1;
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+      ctx.strokeStyle = '#58a6ff';
+      ctx.strokeRect(250 + c * 80, 50 + r * 80, 70, 70);
+    }
+  }
+  ctx.globalAlpha = 1;
+  // Title
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#58a6ff';
+  ctx.font = 'bold 48px monospace';
+  ctx.fillText('字母网格', W/2, 120);
+  ctx.fillStyle = '#888';
+  ctx.font = '18px monospace';
+  ctx.fillText('BOGGLE', W/2, 155);
+  // Rules
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px monospace';
+  ctx.fillText('在4x4字母网格中找出尽可能多的英文单词', W/2, 210);
+  ctx.fillText('点击拖动连接相邻字母（横、竖、斜均可）', W/2, 240);
+  ctx.fillText('每个字母只能使用一次，单词至少3个字母', W/2, 270);
+  // Scoring
+  ctx.fillStyle = '#aaa';
+  ctx.font = '14px monospace';
+  ctx.fillText('计分规则:', W/2, 310);
+  ctx.fillStyle = '#cde';
+  ctx.fillText('3-4字母 = 1分 | 5字母 = 2分 | 6字母 = 3分 | 7+字母 = 5分', W/2, 335);
+  ctx.fillStyle = '#fa0';
+  ctx.fillText('限时3分钟，找出越多单词分数越高', W/2, 365);
+  ctx.fillStyle = '#888';
+  ctx.fillText('提示: 尝试从每个字母开始向各方向延伸', W/2, 395);
+  // Start
+  ctx.fillStyle = '#ff0';
+  ctx.font = '20px monospace';
+  ctx.fillText('按 ENTER 开始游戏', W/2, 440);
+  ctx.textAlign = 'left';
+}
+
+function drawGameOver() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f44';
+  ctx.font = 'bold 44px monospace';
+  ctx.fillText('时间到!', W/2, 90);
+  ctx.fillStyle = '#fff';
+  ctx.font = '26px monospace';
+  ctx.fillText('最终分数: ' + score, W/2, 145);
+  ctx.font = '20px monospace';
+  ctx.fillText('找到单词: ' + foundWords.length + ' 个', W/2, 185);
+  // Word length breakdown
+  let len3 = foundWords.filter(w => w.length <= 4).length;
+  let len5 = foundWords.filter(w => w.length === 5).length;
+  let len6 = foundWords.filter(w => w.length === 6).length;
+  let len7 = foundWords.filter(w => w.length >= 7).length;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '14px monospace';
+  ctx.fillText('3-4字母: ' + len3 + ' | 5字母: ' + len5 + ' | 6字母: ' + len6 + ' | 7+: ' + len7, W/2, 220);
+  // Show words
+  ctx.fillStyle = '#8f8';
+  ctx.font = '14px monospace';
+  let sorted = [...foundWords].sort((a, b) => b.length - a.length);
+  let display = sorted.slice(0, 10).join(', ');
+  ctx.fillText('最长: ' + (display || '无'), W/2, 255);
+  if (sorted.length > 10) {
+    ctx.fillStyle = '#6a6';
+    ctx.fillText(sorted.slice(10, 20).join(', '), W/2, 280);
+  }
+  if (sorted.length > 20) {
+    ctx.fillStyle = '#486';
+    ctx.fillText(sorted.slice(20, 30).join(', '), W/2, 305);
+  }
+  // Rating
+  ctx.fillStyle = '#fa0';
+  ctx.font = '18px monospace';
+  let rating = score >= 30 ? '词汇大师!' : score >= 20 ? '很厉害!' : score >= 10 ? '不错!' : '继续加油!';
+  ctx.fillText('评价: ' + rating, W/2, 350);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '20px monospace';
+  ctx.fillText('按 ENTER 重新开始', W/2, 420);
+  ctx.textAlign = 'left';
+}
+
+function gameLoop() {
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

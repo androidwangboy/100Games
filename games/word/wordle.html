@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>猜单词</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0, wins = 0, losses = 0;
+let answer = '', guesses = [], currentGuess = '';
+let currentRow = 0, gameOver = false, won = false;
+let revealAnim = [], shakeTimer = 0, message = '';
+let messageTimer = 0, bestStreak = 0, streak = 0;
+
+const ANSWERS = [
+  'apple','brave','crane','dance','eagle','flame','grape','house','ivory','joker',
+  'knife','lemon','magic','noble','ocean','piano','queen','river','stone','tiger',
+  'ultra','vivid','whale','xenon','yacht','zebra','amber','bloom','charm','drift',
+  'ember','frost','gleam','hazel','index','jolly','karma','lunar','maple','nerve',
+  'orbit','pearl','quest','robin','surge','thorn','unity','valve','wrist','xerox',
+  'yield','zonal','arrow','birch','coral','dwarf','elbow','fable','glide','honey',
+  'input','jewel','knack','lodge','mirth','nudge','oxide','plumb','quota','relic',
+  'swift','trend','usher','vigor','woven','xylem','youth','zilch','adore','blaze',
+  'crisp','depot','exile','flair','grout','hymns','irony','jaunt','kneel','lyric',
+  'motto','ninth','optic','prism','quilt','rumba','spice','truce','unbox','vouch',
+  'waltz','pixel','yokel','zooms','agile','brute','clash','dingo','equip','forge'
+];
+
+const VALID = new Set(ANSWERS);
+const EXTRA_VALID = [
+  'about','above','abuse','actor','acute','admit','adopt','adult','after','again',
+  'agent','agree','ahead','alarm','album','alert','alien','align','alive','alley',
+  'allow','alone','along','alter','among','angel','anger','angle','angry','ankle',
+  'annex','apart','apple','apply','arena','argue','arise','armor','army','aroma',
+  'array','aside','asset','atlas','attic','audio','audit','avoid','awake','award',
+  'aware','awful','bacon','badge','badly','baker','bases','basic','basin','batch',
+  'beach','began','begin','being','below','bench','berry','bible','birth','black',
+  'blade','blame','bland','blank','blast','bleed','blend','bless','blind','block',
+  'blood','board','boast','bonus','boost','booth','bound','brain','brand','bread',
+  'break','breed','brick','bride','brief','bring','broad','broke','brook','brown',
+  'brush','buddy','budget','buggy','build','built','bunch','burst','buyer','cabin',
+  'cable','candy','cargo','carry','catch','cause','cedar','chain','chair','chaos',
+  'chart','chase','cheap','check','cheek','cheer','chess','chest','chief','child',
+  'china','chunk','civic','civil','claim','clerk','click','cliff','climb','cling',
+  'clock','close','cloth','cloud','coach','coast','color','comet','comic','coral',
+  'couch','could','count','court','cover','crack','craft','crash','crazy','cream',
+  'creek','creep','crime','crisp','cross','crowd','crown','cruel','crush','curve',
+  'cycle','daily','dairy','dealt','death','debut','delay','delta','dense','depth',
+  'derby','devil','diary','dirty','disco','ditch','dizzy','dodge','doing','donor',
+  'doubt','dough','draft','drain','drake','drama','drank','drape','drawn','dread',
+  'dream','dress','dried','drift','drill','drink','drive','drone','drove','drown',
+  'drugs','drums','drunk','dryer','dryly','duchy','dully','dummy','dunce','dusty',
+  'dwarf','dwell','dying','eager','early','earth','eight','elder','elect','elite',
+  'empty','enemy','enjoy','enter','entry','equal','error','essay','event','every',
+  'exact','exalt','exams','excel','exist','expel','extra','faint','fairy','faith',
+  'false','fancy','fatal','fault','feast','fence','ferry','fever','fiber','field',
+  'fifth','fifty','fight','final','first','fixed','flame','flash','fleet','flesh',
+  'float','flood','floor','flora','flour','fluid','flush','flute','focal','focus',
+  'force','forge','forth','forty','forum','found','frame','frank','fraud','fresh',
+  'front','fruit','fully','funny','giant','given','glass','globe','glory','glove',
+  'going','grace','grade','grain','grand','grant','graph','grasp','grass','grave',
+  'great','green','greet','grief','grill','grind','groan','groom','gross','group',
+  'grove','grown','guard','guess','guest','guide','guild','guilt','guise','gulch',
+  'gully','gummy','gusto','gusty','habit','handy','happy','harsh','haste','hasty',
+  'hatch','haunt','haven','heart','heavy','hedge','heist','hence','herbs','hilly',
+  'hinge','hippo','hobby','homer','honey','honor','horse','hotel','hound','hover',
+  'human','humid','humor','hurry','hyper','ideal','image','imply','inbox','incur',
+  'index','indie','infer','inner','inter','intro','ionic','irate','issue','ivory',
+  'jaunt','jazzy','jelly','jewel','jiffy','joint','joker','jolly','joust','judge',
+  'juice','juicy','jumbo','jumpy','juror','kayak','kebab','khaki','kinky','kiosk',
+  'kitty','knack','knead','kneel','knife','knock','known','koala','kudos','label',
+  'labor','lance','large','laser','latch','later','laugh','layer','leach','leafy',
+  'leaky','leapt','learn','lease','leash','least','leave','ledge','legal','lemon',
+  'level','lever','light','lilac','limbo','limit','linen','liner','lingo','liver',
+  'llama','lobby','local','lodge','lofty','logic','login','lonely','loose','lorry',
+  'loser','lossy','lousy','lover','lower','loyal','lucid','lucky','lumen','lumpy',
+  'lunar','lunch','lunge','lusty','lying','lymph','lynch','lyric','macro','madam',
+  'magic','magma','major','maker','mango','manor','maple','march','marry','marsh',
+  'mason','match','matte','mauve','mayor','mealy','meant','meaty','medal','media',
+  'medic','melee','melon','mercy','merge','merit','merry','messy','metal','meter',
+  'midst','might','mimic','mince','miner','minim','minor','mirth','miser','misty',
+  'mitre','mixer','mocha','modal','model','modem','mogul','moist','molar','moldy',
+  'money','month','moody','moose','moral','morph','mossy','motel','motif','motor',
+  'motto','mould','mount','mourn','mouse','mouth','mover','movie','mower','mucus',
+  'muddy','mulch','mural','murky','mushy','music','musky','musty','myrrh','nadir',
+  'naive','nanny','nasal','nasty','natal','naval','navel','needy','nerve','never',
+  'newer','newly','niche','niece','night','ninja','ninny','ninth','noble','nobly',
+  'noise','noisy','nomad','noose','north','nosey','notch','noted','novel','nudge',
+  'nurse','nutty','nylon','nymph','oaken','oasis','occur','ocean','oddly','offal',
+  'offer','often','olden','older','olive','onion','onset','opera','optic','orbit',
+  'order','organ','other','otter','ought','ounce','outdo','outer','outgo','ovary',
+  'overt','owing','owner','oxide','ozone','paddy','pagan','paint','paler','palsy',
+  'panel','panic','pansy','papal','paper','parch','parer','parka','parry','parse',
+  'party','pasta','paste','pasty','patch','patio','patsy','pause','payee','payer',
+  'peace','peach','pearl','pecan','pedal','penal','pence','penne','penny','perch',
+  'peril','perky','pesky','pesto','petal','petty','phase','phone','photo','piano',
+  'picky','piece','piety','piggy','pilot','pinch','pixel','pixie','pizza','place',
+  'plaid','plain','plane','plank','plant','plate','plaza','plead','pleat','plied',
+  'pluck','plumb','plume','plump','plunk','plush','poach','poesy','point','poise',
+  'poker','polar','polka','polyp','pooch','poppy','porch','poser','posit','posse',
+  'pouch','pound','pouty','power','prank','prawn','press','price','pride','pried',
+  'prime','primo','print','prior','prism','privy','prize','probe','prone','prong',
+  'proof','prose','proud','prove','prowl','proxy','prude','prune','psalm','pubic',
+  'pudgy','puffy','pulpy','pulse','punch','pupal','pupil','puppy','puree','purer',
+  'purge','purse','pushy','putty','pygmy','quack','quaff','quail','quake','qualm',
+  'quark','quart','quash','quasi','queen','queer','quell','query','quest','queue',
+  'quick','quiet','quill','quilt','quirk','quite','quota','quote','quoth','rabbi',
+  'rabid','racer','radar','radii','radio','rainy','raise','rajah','rally','ranch',
+  'randy','range','rapid','rarer','raspy','ratio','ratty','raven','rayon','razor',
+  'reach','react','ready','realm','rearm','rebar','rebel','rebus','rebut','recap',
+  'recur','recut','reedy','refer','refit','regal','rehab','reign','relax','relay',
+  'relic','remit','renal','renew','repay','repel','reply','rerun','reset','resin',
+  'retch','retro','retry','reuse','revel','revue','rhino','rhyme','rider','ridge',
+  'rifle','right','rigid','rigor','rinse','ripen','riper','risen','risky','rival',
+  'river','rivet','roach','roast','robin','robot','rocky','rodeo','roger','rogue',
+  'roomy','roost','rotor','rouge','rough','round','rouse','route','rover','rowdy',
+  'rower','royal','ruddy','ruder','rugby','ruler','rumba','rumor','rupee','rural',
+  'rusty','sadly','saint','salad','sally','salon','salsa','salty','salve','salvo',
+  'sandy','saner','sappy','sassy','satin','satyr','sauce','saucy','sauna','savor',
+  'savoy','savvy','scald','scale','scalp','scaly','scamp','scant','scare','scarf',
+  'scary','scene','scent','scion','scoff','scold','scone','scoop','scope','score',
+  'scorn','scour','scout','scowl','scram','scrap','scree','screw','scrub','scrum',
+  'scuba','sedan','seedy','segue','seize','semen','sense','sepia','serif','serum',
+  'serve','setup','seven','sever','sewer','shack','shade','shady','shaft','shake',
+  'shaky','shale','shall','shalt','shame','shank','shape','shard','share','shark',
+  'sharp','shave','shawl','shear','sheen','sheep','sheer','sheet','sheik','shelf',
+  'shell','shied','shift','shine','shiny','shire','shirk','shirt','shoal','shock',
+  'shone','shook','shoot','shore','shorn','short','shout','shove','shown','showy',
+  'shrew','shrub','shrug','shuck','shunt','shush','shyly','siege','sieve','sight',
+  'sigma','silky','silly','since','sinew','singe','siren','sissy','sixth','sixty',
+  'skate','skier','skiff','skill','skimp','skirt','skulk','skull','skunk','slack',
+  'slain','slang','slant','slash','slate','slave','sleek','sleep','sleet','slept',
+  'slice','slick','slide','slime','slimy','sling','slink','sloop','slope','slosh',
+  'sloth','slump','slung','slunk','slurp','slush','slyly','smack','small','smart',
+  'smash','smear','smell','smelt','smile','smirk','smite','smith','smock','smoke',
+  'smoky','smote','snack','snail','snake','snaky','snare','snarl','sneak','sneer',
+  'snide','sniff','snipe','snoop','snore','snort','snout','snowy','snuck','snuff',
+  'soapy','sober','soggy','solar','solid','solve','sonar','sonic','sooth','sooty',
+  'sorry','sound','south','sower','space','spade','spank','spare','spark','spasm',
+  'spawn','speak','spear','speck','speed','spell','spelt','spend','spent','sperm',
+  'spice','spicy','spied','spiel','spike','spiky','spill','spilt','spine','spiny',
+  'spire','spite','splat','split','spoil','spoke','spoof','spook','spool','spoon',
+  'spore','sport','spout','spray','spree','sprig','spunk','spurn','spurt','squad',
+  'squat','squib','stack','staff','stage','staid','stain','stair','stake','stale',
+  'stalk','stall','stamp','stand','stank','stare','stark','start','stash','state',
+  'stave','stead','steak','steal','steam','steed','steel','steep','steer','stein',
+  'stern','stick','stiff','still','stilt','sting','stink','stint','stock','stoic',
+  'stoke','stole','stomp','stone','stony','stood','stool','stoop','store','stork',
+  'storm','story','stout','stove','strap','straw','stray','strip','strut','stuck',
+  'study','stuff','stump','stung','stunk','stunt','style','suave','sugar','suing',
+  'suite','sulky','sully','sumac','sunny','super','surer','surge','surly','sushi',
+  'swami','swamp','swarm','swash','swath','swear','sweat','sweep','sweet','swell',
+  'swept','swift','swill','swine','swing','swirl','swish','swoon','swoop','sword',
+  'swore','sworn','swung','synod','syrup','tabby','table','taboo','tacit','tacky',
+  'taffy','taint','taken','taker','tally','talon','tamer','tango','tangy','taper',
+  'tapir','tardy','tarot','taste','tasty','tatty','taunt','tawny','teach','teary',
+  'tease','teddy','teeth','tempo','tenet','tenor','tense','tenth','tepee','tepid',
+  'terra','terse','testy','thank','theft','their','theme','there','these','theta',
+  'thick','thief','thigh','thing','think','third','thong','thorn','those','three',
+  'threw','throb','throw','thrum','thumb','thump','thyme','tiara','tibia','tidal',
+  'tiger','tight','tilde','timer','timid','tipsy','titan','tithe','title','toast',
+  'today','toddy','token','tonal','tonga','tonic','tooth','topaz','topic','torch',
+  'torso','torus','total','totem','touch','tough','towel','tower','toxic','toxin',
+  'trace','track','tract','trade','trail','train','trait','tramp','trash','trawl',
+  'tread','treat','trend','triad','trial','tribe','trice','trick','tried','tripe',
+  'trite','troll','troop','trope','trout','trove','truce','truck','truer','truly',
+  'trump','trunk','truss','trust','truth','tryst','tubal','tuber','tulip','tulle',
+  'tumor','tunic','turbo','tutor','twang','tweak','tweed','tweet','twice','twine',
+  'twirl','twist','twixt','tying','udder','ulcer','ultra','umbra','uncle','uncut',
+  'under','undid','undue','unfed','unfit','unify','union','unite','unity','unlit',
+  'unmet','unset','untie','until','unwed','unzip','upper','upset','urban','urine',
+  'usage','usher','using','usual','usurp','utile','utter','vague','valet','valid',
+  'valor','value','valve','vapid','vapor','vault','vaunt','vegan','venom','venue',
+  'verge','verse','verso','verve','vicar','video','vigil','vigor','villa','vinyl',
+  'viola','viper','viral','virus','visit','visor','vista','vital','vivid','vixen',
+  'vocal','vodka','vogue','voice','voila','vomit','voter','vouch','vowel','vying',
+  'wacky','wafer','wager','wagon','waist','waive','waltz','warty','waste','watch',
+  'water','waver','waxen','weary','weave','wedge','weedy','weigh','weird','welch',
+  'welsh','wench','whack','whale','wharf','wheat','wheel','whelp','where','which',
+  'whiff','while','whine','whiny','whirl','whisk','white','whole','whoop','whose',
+  'widen','wider','widow','width','wield','wight','willy','wimpy','wince','winch',
+  'windy','wiser','wispy','witch','witty','woken','woman','women','woody','wooer',
+  'wooly','woozy','wordy','world','worry','worse','worst','worth','would','wound',
+  'woven','wrack','wrath','wreak','wreck','wrest','wring','wrist','write','wrong',
+  'wrote','wrung','wryly','yacht','yearn','yeast','yield','young','youth','zebra',
+  'zesty','zonal'
+];
+EXTRA_VALID.forEach(w => VALID.add(w));
+
+const KEYBOARD = [
+  ['Q','W','E','R','T','Y','U','I','O','P'],
+  ['A','S','D','F','G','H','J','K','L'],
+  ['ENTER','Z','X','C','V','B','N','M','DEL']
+];
+
+let keyColors = {};
+let flipAnims = [];
+let titleAnim = 0;
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (state === 'title') { if (e.code === 'Space' || e.code === 'Enter') startGame(); return; }
+  if (state === 'gameover') { if (e.code === 'Space' || e.code === 'Enter') startGame(); return; }
+  if (state !== 'playing') return;
+
+  if (e.code === 'Enter') { submitGuess(); return; }
+  if (e.code === 'Backspace') { currentGuess = currentGuess.slice(0, -1); return; }
+  if (/^[a-zA-Z]$/.test(e.key)) {
+    if (currentGuess.length < 5) currentGuess += e.key.toUpperCase();
+  }
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (state === 'title') { startGame(); return; }
+  if (state === 'gameover') { startGame(); return; }
+  if (state !== 'playing') return;
+
+  const kbY = 340, kbH = 38, kbGap = 6;
+  for (let row = 0; row < KEYBOARD.length; row++) {
+    const keys = KEYBOARD[row];
+    const totalW = keys.reduce((s, k) => s + (k.length > 1 ? 58 : 38) + kbGap, 0);
+    let kx = (W - totalW) / 2;
+    const ky = kbY + row * (kbH + kbGap);
+    for (const key of keys) {
+      const kw = key.length > 1 ? 58 : 38;
+      if (mx >= kx && mx <= kx + kw && my >= ky && my <= ky + kbH) {
+        if (key === 'ENTER') submitGuess();
+        else if (key === 'DEL') currentGuess = currentGuess.slice(0, -1);
+        else if (currentGuess.length < 5) currentGuess += key;
+        return;
+      }
+      kx += kw + kbGap;
+    }
+  }
+});
+
+function startGame() {
+  state = 'playing';
+  answer = ANSWERS[Math.floor(Math.random() * ANSWERS.length)].toUpperCase();
+  guesses = []; currentGuess = ''; currentRow = 0;
+  gameOver = false; won = false;
+  keyColors = {}; flipAnims = []; message = ''; messageTimer = 0;
+  shakeTimer = 0;
+}
+
+function submitGuess() {
+  if (currentGuess.length !== 5) { shakeTimer = 15; message = '需要5个字母'; messageTimer = 60; return; }
+  if (!VALID.has(currentGuess.toLowerCase())) { shakeTimer = 15; message = '不在词库中'; messageTimer = 60; return; }
+
+  const result = evaluateGuess(currentGuess, answer);
+  guesses.push({ word: currentGuess, result });
+
+  for (let i = 0; i < 5; i++) {
+    const ch = currentGuess[i];
+    if (result[i] === 'correct') keyColors[ch] = 'correct';
+    else if (result[i] === 'present' && keyColors[ch] !== 'correct') keyColors[ch] = 'present';
+    else if (!keyColors[ch]) keyColors[ch] = 'absent';
+    flipAnims.push({ row: currentRow, col: i, timer: i * 12, done: false });
+  }
+
+  if (currentGuess === answer) {
+    won = true; gameOver = true;
+    wins++; streak++;
+    if (streak > bestStreak) bestStreak = streak;
+    score += (6 - currentRow) * 100 + streak * 50;
+    message = ['天才!','太棒了!','厉害!','不错!','勉强!', '惊险!'][currentRow];
+    messageTimer = 120;
+    setTimeout(() => { state = 'gameover'; }, 2000);
+  } else if (currentRow >= 5) {
+    gameOver = true; won = false; losses++; streak = 0;
+    message = `答案: ${answer}`;
+    messageTimer = 180;
+    setTimeout(() => { state = 'gameover'; }, 2500);
+  }
+
+  currentGuess = '';
+  currentRow++;
+}
+
+function evaluateGuess(guess, ans) {
+  const result = Array(5).fill('absent');
+  const ansArr = ans.split('');
+  const used = Array(5).fill(false);
+
+  for (let i = 0; i < 5; i++) {
+    if (guess[i] === ansArr[i]) { result[i] = 'correct'; used[i] = true; }
+  }
+  for (let i = 0; i < 5; i++) {
+    if (result[i] === 'correct') continue;
+    for (let j = 0; j < 5; j++) {
+      if (!used[j] && guess[i] === ansArr[j]) { result[i] = 'present'; used[j] = true; break; }
+    }
+  }
+  return result;
+}
+
+function update() {
+  titleAnim++;
+  if (shakeTimer > 0) shakeTimer--;
+  if (messageTimer > 0) messageTimer--;
+  for (const fa of flipAnims) { if (fa.timer > 0) fa.timer--; else fa.done = true; }
+}
+
+function getColor(type) {
+  if (type === 'correct') return '#6aaa64';
+  if (type === 'present') return '#c9b458';
+  return '#3a3a3c';
+}
+
+function drawGrid() {
+  const cellSize = 52, gap = 6;
+  const gridW = 5 * (cellSize + gap) - gap;
+  const startX = (W - gridW) / 2;
+  const startY = 25;
+
+  for (let row = 0; row < 6; row++) {
+    const shake = (row === currentRow && shakeTimer > 0) ? Math.sin(shakeTimer * 2) * 4 : 0;
+    for (let col = 0; col < 5; col++) {
+      const x = startX + col * (cellSize + gap) + shake;
+      const y = startY + row * (cellSize + gap);
+
+      let bgColor = '#1a1a1b', borderColor = '#3a3a3c';
+      let letter = '', textColor = '#fff';
+
+      if (row < guesses.length) {
+        const g = guesses[row];
+        letter = g.word[col];
+        const fa = flipAnims.find(f => f.row === row && f.col === col);
+        if (fa && !fa.done) {
+          bgColor = '#1a1a1b'; borderColor = '#565758';
+        } else {
+          bgColor = getColor(g.result[col]);
+          borderColor = bgColor;
+        }
+      } else if (row === currentRow && col < currentGuess.length) {
+        letter = currentGuess[col];
+        borderColor = '#565758';
+      }
+
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(x, y, cellSize, cellSize);
+      ctx.strokeStyle = borderColor; ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, cellSize, cellSize);
+
+      if (letter) {
+        ctx.fillStyle = textColor; ctx.font = 'bold 28px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(letter, x + cellSize / 2, y + cellSize / 2 + 1);
+      }
+    }
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawKeyboard() {
+  const kbY = 340, kbH = 38, kbGap = 6;
+  for (let row = 0; row < KEYBOARD.length; row++) {
+    const keys = KEYBOARD[row];
+    const totalW = keys.reduce((s, k) => s + (k.length > 1 ? 58 : 38) + kbGap, 0);
+    let kx = (W - totalW) / 2;
+    const ky = kbY + row * (kbH + kbGap);
+
+    for (const key of keys) {
+      const kw = key.length > 1 ? 58 : 38;
+      let bg = '#818384';
+      if (keyColors[key]) bg = getColor(keyColors[key]);
+      ctx.fillStyle = bg;
+      ctx.beginPath(); ctx.roundRect(kx, ky, kw, kbH, 5); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = key.length > 1 ? 'bold 11px sans-serif' : 'bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(key === 'DEL' ? '⌫' : key, kx + kw / 2, ky + kbH / 2 + 5);
+      kx += kw + kbGap;
+    }
+  }
+}
+
+function drawMessage() {
+  if (messageTimer > 0 && message) {
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center';
+    const tw = ctx.measureText(message).width + 30;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.roundRect(W / 2 - tw / 2, H / 2 - 60, tw, 36, 6); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.fillText(message, W / 2, H / 2 - 37);
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#121213'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#6aaa64'; ctx.font = 'bold 50px sans-serif';
+  ctx.fillText('猜单词 WORDLE', W / 2, H / 2 - 80);
+  ctx.fillStyle = '#d3d6da'; ctx.font = '20px sans-serif';
+  ctx.fillText('猜出隐藏的5字母英文单词', W / 2, H / 2 - 25);
+  ctx.fillText('绿色=位置正确 黄色=字母存在 灰色=不存在', W / 2, H / 2 + 10);
+  ctx.fillText('共6次机会', W / 2, H / 2 + 45);
+  ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('点击或按空格开始', W / 2, H / 2 + 100);
+  if (wins + losses > 0) {
+    ctx.fillStyle = '#818384'; ctx.font = '16px sans-serif';
+    ctx.fillText(`胜: ${wins} 负: ${losses} 连胜: ${streak} 最佳连胜: ${bestStreak}`, W / 2, H / 2 + 145);
+  }
+}
+
+function drawGameOverScreen() {
+  ctx.fillStyle = '#121213'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  if (won) {
+    ctx.fillStyle = '#6aaa64'; ctx.font = 'bold 44px sans-serif';
+    ctx.fillText('🎉 恭喜猜中!', W / 2, H / 2 - 60);
+  } else {
+    ctx.fillStyle = '#e74c3c'; ctx.font = 'bold 44px sans-serif';
+    ctx.fillText('游戏结束', W / 2, H / 2 - 60);
+  }
+  ctx.fillStyle = '#d3d6da'; ctx.font = '24px sans-serif';
+  ctx.fillText(`答案: ${answer}`, W / 2, H / 2 - 5);
+  ctx.fillText(`用了 ${Math.min(currentRow, 6)} 次猜测`, W / 2, H / 2 + 35);
+  ctx.fillStyle = '#f1c40f'; ctx.font = '20px sans-serif';
+  ctx.fillText(`分数: ${score}`, W / 2, H / 2 + 80);
+  ctx.fillStyle = '#818384'; ctx.font = '18px sans-serif';
+  ctx.fillText('点击或按空格再来一局', W / 2, H / 2 + 130);
+}
+
+function render() {
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'gameover') { drawGameOverScreen(); return; }
+  ctx.fillStyle = '#121213'; ctx.fillRect(0, 0, W, H);
+  drawGrid();
+  drawKeyboard();
+  drawMessage();
+}
+
+function loop() { update(); render(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

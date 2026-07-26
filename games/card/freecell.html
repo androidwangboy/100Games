@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>空当接龙 - FreeCell</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+(function() {
+'use strict';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const CARD_W = 68, CARD_H = 92;
+const TAB_FAN = 20;
+const SUITS = ['\u2660', '\u2665', '\u2666', '\u2663'];
+const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+
+let score = 0, moves = 0, timer = 0, timerInterval = null;
+let gameWon = false, gameStarted = false;
+let tableau = [[],[],[],[],[],[],[],[]];
+let freeCells = [null, null, null, null];
+let foundations = [[],[],[],[]];
+let dragging = null, dragOffsetX = 0, dragOffsetY = 0, dragCards = [], dragSource = null;
+let undoStack = [];
+let winAnimCards = [], winAnimFrame = 0;
+let dealNumber = 0;
+let hintSource = null, hintTarget = null, hintTimer = 0;
+
+// ==================== Utility ====================
+function isRed(suit) { return suit === 1 || suit === 2; }
+function cardColor(card) { return isRed(card.suit) ? '#cc2222' : '#1a1a1a'; }
+function deepCopy(arr) { return arr.map(c => c ? {...c} : null); }
+function deepCopyPiles(piles) { return piles.map(p => p.map(c => ({...c}))); }
+
+// Seeded random for solvable deals
+let seed = 1;
+function seededRandom() {
+  seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+  return seed / 0x7fffffff;
+}
+
+function shuffleSeeded(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(seededRandom() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function shuffleRandom(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function createDeck() {
+  let deck = [];
+  for (let s = 0; s < 4; s++)
+    for (let r = 0; r < 13; r++)
+      deck.push({ suit: s, rank: r, faceUp: true, id: s * 13 + r });
+  return deck;
+}
+
+// ==================== Game State ====================
+function newGame(useDealNumber) {
+  score = 0; moves = 0; timer = 0;
+  gameWon = false; gameStarted = false;
+  undoStack = []; winAnimCards = []; winAnimFrame = 0;
+  hintSource = null; hintTarget = null; hintTimer = 0;
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = null;
+
+  if (useDealNumber !== undefined) {
+    dealNumber = useDealNumber;
+  } else {
+    dealNumber = Math.floor(Math.random() * 32000) + 1;
+  }
+
+  let deck = createDeck();
+  seed = dealNumber;
+  shuffleSeeded(deck);
+
+  tableau = [[],[],[],[],[],[],[],[]];
+  freeCells = [null, null, null, null];
+  foundations = [[],[],[],[]];
+
+  for (let i = 0; i < 52; i++) {
+    let col = i % 8;
+    let card = deck[i];
+    card.faceUp = true;
+    tableau[col].push(card);
+  }
+}
+
+function startTimer() {
+  if (!gameStarted) {
+    gameStarted = true;
+    timerInterval = setInterval(() => { if (!gameWon) timer++; }, 1000);
+  }
+}
+
+function saveState() {
+  undoStack.push({
+    tableau: deepCopyPiles(tableau),
+    freeCells: deepCopy(freeCells),
+    foundations: deepCopyPiles(foundations),
+    score: score, moves: moves
+  });
+  if (undoStack.length > 500) undoStack.shift();
+}
+
+function undo() {
+  if (undoStack.length === 0 || gameWon) return;
+  let st = undoStack.pop();
+  tableau = st.tableau;
+  freeCells = st.freeCells;
+  foundations = st.foundations;
+  score = st.score; moves = st.moves;
+  hintSource = null; hintTarget = null;
+}
+
+// ==================== Layout ====================
+function freeCellPos(i) { return { x: 10 + i * (CARD_W + 10), y: 10 }; }
+function foundPos(i) { return { x: 10 + (4 + i) * (CARD_W + 10), y: 10 }; }
+function tabPos(col) { return { x: 10 + col * (CARD_W + 10), y: 118 }; }
+
+function tabCardY(col, idx) {
+  return tabPos(col).y + idx * TAB_FAN;
+}
+
+// ==================== Drawing ====================
+function drawRoundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawCardFace(x, y, card, highlight) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 3;
+  ctx.shadowOffsetX = 1;
+  ctx.shadowOffsetY = 2;
+  drawRoundRect(x, y, CARD_W, CARD_H, 5);
+  ctx.fillStyle = '#fefefe';
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawRoundRect(x, y, CARD_W, CARD_H, 5);
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  let col = cardColor(card);
+  let suitChar = SUITS[card.suit];
+  let rankStr = RANKS[card.rank];
+
+  ctx.fillStyle = col;
+  ctx.font = 'bold 13px "Segoe UI", Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(rankStr, x + 4, y + 3);
+  ctx.font = '12px Arial';
+  ctx.fillText(suitChar, x + 5, y + 17);
+
+  ctx.save();
+  ctx.translate(x + CARD_W - 4, y + CARD_H - 3);
+  ctx.rotate(Math.PI);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.font = 'bold 13px "Segoe UI", Arial, sans-serif';
+  ctx.fillText(rankStr, 0, 0);
+  ctx.font = '12px Arial';
+  ctx.fillText(suitChar, 1, 14);
+  ctx.restore();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (card.rank >= 10) {
+    ctx.font = 'bold 24px "Times New Roman", serif';
+    ctx.fillStyle = col;
+    ctx.fillText(rankStr, x + CARD_W / 2, y + CARD_H / 2 - 8);
+    ctx.font = '20px Arial';
+    ctx.fillText(suitChar, x + CARD_W / 2, y + CARD_H / 2 + 14);
+  } else if (card.rank === 0) {
+    ctx.font = '34px Arial';
+    ctx.fillStyle = col;
+    ctx.fillText(suitChar, x + CARD_W / 2, y + CARD_H / 2 + 2);
+  } else {
+    drawPips(x, y, card);
+  }
+
+  if (highlight) {
+    drawRoundRect(x - 2, y - 2, CARD_W + 4, CARD_H + 4, 7);
+    ctx.strokeStyle = '#ffe000';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,224,0,0.06)';
+    drawRoundRect(x, y, CARD_W, CARD_H, 5);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPips(x, y, card) {
+  let col = cardColor(card);
+  let suitChar = SUITS[card.suit];
+  ctx.font = '13px Arial';
+  ctx.fillStyle = col;
+  let cx = x + CARD_W / 2;
+  let cy = y + CARD_H / 2;
+  let n = card.rank + 1;
+  let positions = getPipPositions(n, cx, cy);
+  for (let p of positions) {
+    ctx.save();
+    if (p.flip) {
+      ctx.translate(p.x, p.y);
+      ctx.rotate(Math.PI);
+      ctx.fillText(suitChar, 0, 0);
+    } else {
+      ctx.fillText(suitChar, p.x, p.y);
+    }
+    ctx.restore();
+  }
+}
+
+function getPipPositions(n, cx, cy) {
+  let dx = 13, dy = 16;
+  let pos = [];
+  switch(n) {
+    case 2: pos = [{x:cx,y:cy-dy},{x:cx,y:cy+dy,flip:true}]; break;
+    case 3: pos = [{x:cx,y:cy-dy},{x:cx,y:cy},{x:cx,y:cy+dy,flip:true}]; break;
+    case 4: pos = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 5: pos = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 6: pos = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx-dx,y:cy},{x:cx+dx,y:cy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 7: pos = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy-dy/2},{x:cx-dx,y:cy},{x:cx+dx,y:cy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 8: pos = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy-dy/2},{x:cx-dx,y:cy},{x:cx+dx,y:cy},{x:cx,y:cy+dy/2,flip:true},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 9: pos = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx-dx,y:cy-dy/3},{x:cx+dx,y:cy-dy/3},{x:cx,y:cy},{x:cx-dx,y:cy+dy/3,flip:true},{x:cx+dx,y:cy+dy/3,flip:true},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 10: pos = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy-dy*0.6},{x:cx-dx,y:cy-dy/3},{x:cx+dx,y:cy-dy/3},{x:cx-dx,y:cy+dy/3,flip:true},{x:cx+dx,y:cy+dy/3,flip:true},{x:cx,y:cy+dy*0.6,flip:true},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    default: pos = [{x:cx,y:cy}];
+  }
+  return pos;
+}
+
+function drawEmptySlot(x, y, label) {
+  ctx.save();
+  drawRoundRect(x, y, CARD_W, CARD_H, 5);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  ctx.fill();
+  if (label) {
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + CARD_W / 2, y + CARD_H / 2);
+  }
+  ctx.restore();
+}
+
+function drawButton(x, y, w, h, text) {
+  ctx.save();
+  drawRoundRect(x, y, w, h, 4);
+  ctx.fillStyle = '#1a3a6a';
+  ctx.fill();
+  ctx.strokeStyle = '#4a7acc';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#eee';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + h / 2);
+  ctx.restore();
+}
+
+// ==================== Main Render ====================
+function render() {
+  // Blue felt background
+  ctx.fillStyle = '#1a3a6b';
+  ctx.fillRect(0, 0, W, H);
+  let grad = ctx.createRadialGradient(W/2, H/2, 30, W/2, H/2, 500);
+  grad.addColorStop(0, 'rgba(80,140,220,0.08)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.3)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle texture
+  ctx.strokeStyle = 'rgba(0,0,0,0.02)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < W; i += 4) {
+    ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, H); ctx.stroke();
+  }
+
+  // Free cells
+  for (let i = 0; i < 4; i++) {
+    let fp = freeCellPos(i);
+    if (freeCells[i]) {
+      let isDrag = dragging && dragSource && dragSource.type === 'freecell' && dragSource.index === i;
+      if (!isDrag) {
+        let hl = hintSource && hintSource.type === 'freecell' && hintSource.index === i;
+        drawCardFace(fp.x, fp.y, freeCells[i], hl);
+      } else {
+        drawEmptySlot(fp.x, fp.y, '');
+      }
+    } else {
+      let hl = hintTarget && hintTarget.type === 'freecell' && hintTarget.index === i;
+      drawEmptySlot(fp.x, fp.y, '');
+      if (hl) {
+        drawRoundRect(fp.x - 2, fp.y - 2, CARD_W + 4, CARD_H + 4, 7);
+        ctx.strokeStyle = '#ffe000'; ctx.lineWidth = 2; ctx.stroke();
+      }
+    }
+  }
+
+  // Foundations
+  for (let i = 0; i < 4; i++) {
+    let fp = foundPos(i);
+    if (foundations[i].length === 0) {
+      drawEmptySlot(fp.x, fp.y, SUITS[i]);
+    } else {
+      let top = foundations[i][foundations[i].length - 1];
+      let isDrag = dragging && dragSource && dragSource.type === 'foundation' && dragSource.index === i;
+      if (!isDrag) drawCardFace(fp.x, fp.y, top, false);
+      else drawEmptySlot(fp.x, fp.y, SUITS[i]);
+    }
+  }
+
+  // Tableau
+  for (let col = 0; col < 8; col++) {
+    let tp = tabPos(col);
+    let pile = tableau[col];
+    if (pile.length === 0) {
+      let hl = hintTarget && hintTarget.type === 'tableau' && hintTarget.index === col;
+      drawEmptySlot(tp.x, tp.y, '');
+      if (hl) {
+        drawRoundRect(tp.x - 2, tp.y - 2, CARD_W + 4, CARD_H + 4, 7);
+        ctx.strokeStyle = '#ffe000'; ctx.lineWidth = 2; ctx.stroke();
+      }
+      continue;
+    }
+    for (let idx = 0; idx < pile.length; idx++) {
+      let isDrag = dragging && dragSource && dragSource.type === 'tableau' &&
+                   dragSource.index === col && idx >= dragSource.cardIndex;
+      if (isDrag) continue;
+      let cy = tabCardY(col, idx);
+      let hl = hintSource && hintSource.type === 'tableau' && hintSource.index === col && idx >= hintSource.cardIndex;
+      drawCardFace(tp.x, cy, pile[idx], hl);
+    }
+  }
+
+  // Dragging cards
+  if (dragging && dragCards.length > 0) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetX = 4;
+    ctx.shadowOffsetY = 6;
+    for (let i = 0; i < dragCards.length; i++) {
+      drawCardFace(dragging.x, dragging.y + i * TAB_FAN, dragCards[i], false);
+    }
+    ctx.restore();
+  }
+
+  // Status bar
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, H - 30, W, 30);
+  ctx.fillStyle = '#ddd';
+  ctx.font = '12px Arial';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  let min = Math.floor(timer / 60), sec = timer % 60;
+  let timeStr = min + ':' + (sec < 10 ? '0' : '') + sec;
+  ctx.fillText('\u5206\u6570: ' + score, 10, H - 15);
+  ctx.fillText('\u6B65\u6570: ' + moves, 95, H - 15);
+  ctx.fillText('\u65F6\u95F4: ' + timeStr, 175, H - 15);
+  ctx.fillText('\u724C\u5C40: #' + dealNumber, 275, H - 15);
+
+  drawButton(W - 195, H - 26, 58, 20, '\u65B0\u6E38\u620F');
+  drawButton(W - 130, H - 26, 58, 20, '\u64A4\u9500 Z');
+  drawButton(W - 65, H - 26, 55, 20, '\u63D0\u793A H');
+
+  // Win overlay
+  if (gameWon) {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+    for (let wc of winAnimCards) {
+      if (wc.active) drawCardFace(wc.x, wc.y, wc.card, false);
+    }
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 44px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('\u606D\u559C\u901A\u5173\uFF01', W/2, H/2 - 50);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.fillText('\u6B65\u6570: ' + moves + '   \u65F6\u95F4: ' + timeStr + '   \u5206\u6570: ' + score, W/2, H/2);
+    ctx.font = '14px Arial';
+    ctx.fillStyle = '#bbb';
+    ctx.fillText('\u6309 N \u65B0\u6E38\u620F | Esc \u9000\u51FA', W/2, H/2 + 40);
+  }
+}
+
+// ==================== Hit Testing ====================
+function hitFreeCell(mx, my) {
+  for (let i = 0; i < 4; i++) {
+    let fp = freeCellPos(i);
+    if (mx >= fp.x && mx <= fp.x + CARD_W && my >= fp.y && my <= fp.y + CARD_H) {
+      if (freeCells[i]) return { type: 'freecell', index: i, cards: [freeCells[i]] };
+    }
+  }
+  return null;
+}
+
+function hitFoundation(mx, my) {
+  for (let i = 0; i < 4; i++) {
+    let fp = foundPos(i);
+    if (mx >= fp.x && mx <= fp.x + CARD_W && my >= fp.y && my <= fp.y + CARD_H) {
+      if (foundations[i].length > 0) {
+        let top = foundations[i][foundations[i].length - 1];
+        return { type: 'foundation', index: i, cards: [top] };
+      }
+    }
+  }
+  return null;
+}
+
+function hitTableau(mx, my) {
+  for (let col = 0; col < 8; col++) {
+    let pile = tableau[col];
+    let tp = tabPos(col);
+    if (mx < tp.x || mx > tp.x + CARD_W) continue;
+    if (pile.length === 0) {
+      if (my >= tp.y && my <= tp.y + CARD_H) {
+        return { type: 'tableau', index: col, cardIndex: 0, cards: [] };
+      }
+      continue;
+    }
+    for (let idx = pile.length - 1; idx >= 0; idx--) {
+      let cy = tabCardY(col, idx);
+      let cardBottom = (idx === pile.length - 1) ? cy + CARD_H : tabCardY(col, idx + 1);
+      if (my >= cy && my < cardBottom) {
+        let cards = pile.slice(idx);
+        if (isValidSequence(cards)) {
+          return { type: 'tableau', index: col, cardIndex: idx, cards: cards };
+        }
+        return null;
+      }
+    }
+    let lastY = tabCardY(col, pile.length - 1);
+    if (my >= lastY && my <= lastY + CARD_H) {
+      return { type: 'tableau', index: col, cardIndex: pile.length - 1, cards: [pile[pile.length - 1]] };
+    }
+  }
+  return null;
+}
+
+function getDropTarget(mx, my) {
+  for (let i = 0; i < 4; i++) {
+    let fp = freeCellPos(i);
+    if (mx >= fp.x - 8 && mx <= fp.x + CARD_W + 8 && my >= fp.y - 8 && my <= fp.y + CARD_H + 8) {
+      return { type: 'freecell', index: i };
+    }
+  }
+  for (let i = 0; i < 4; i++) {
+    let fp = foundPos(i);
+    if (mx >= fp.x - 8 && mx <= fp.x + CARD_W + 8 && my >= fp.y - 8 && my <= fp.y + CARD_H + 8) {
+      return { type: 'foundation', index: i };
+    }
+  }
+  for (let col = 0; col < 8; col++) {
+    let tp = tabPos(col);
+    let pile = tableau[col];
+    let bottomY = (pile.length > 0) ? tabCardY(col, pile.length - 1) + CARD_H : tp.y + CARD_H;
+    if (mx >= tp.x - 6 && mx <= tp.x + CARD_W + 6 && my >= tp.y - 10 && my <= bottomY + 25) {
+      return { type: 'tableau', index: col };
+    }
+  }
+  return null;
+}
+
+// ==================== Game Logic ====================
+function isValidSequence(cards) {
+  for (let i = 0; i < cards.length - 1; i++) {
+    if (cards[i].rank !== cards[i+1].rank + 1) return false;
+    if (isRed(cards[i].suit) === isRed(cards[i+1].suit)) return false;
+  }
+  return true;
+}
+
+function countEmptyFreeCells() {
+  let count = 0;
+  for (let i = 0; i < 4; i++) if (!freeCells[i]) count++;
+  return count;
+}
+
+function countEmptyColumns() {
+  let count = 0;
+  for (let col = 0; col < 8; col++) if (tableau[col].length === 0) count++;
+  return count;
+}
+
+function maxMovable() {
+  let emptyFC = countEmptyFreeCells();
+  let emptyCols = countEmptyColumns();
+  // Don't count the target column as empty for this calculation
+  return (1 + emptyFC) * Math.pow(2, emptyCols);
+}
+
+function maxMovableToColumn(targetCol) {
+  let emptyFC = countEmptyFreeCells();
+  let emptyCols = countEmptyColumns();
+  if (tableau[targetCol].length === 0) emptyCols--;
+  if (emptyCols < 0) emptyCols = 0;
+  return (1 + emptyFC) * Math.pow(2, emptyCols);
+}
+
+function canPlaceOnTableau(card, col) {
+  let pile = tableau[col];
+  if (pile.length === 0) return true;
+  let top = pile[pile.length - 1];
+  return top.rank === card.rank + 1 && isRed(top.suit) !== isRed(card.suit);
+}
+
+function canPlaceOnFoundation(card, fi) {
+  let pile = foundations[fi];
+  if (pile.length === 0) return card.rank === 0 && card.suit === fi;
+  let top = pile[pile.length - 1];
+  return card.suit === top.suit && card.rank === top.rank + 1;
+}
+
+function removeFromSource(src) {
+  if (src.type === 'freecell') {
+    freeCells[src.index] = null;
+  } else if (src.type === 'foundation') {
+    foundations[src.index].pop();
+  } else if (src.type === 'tableau') {
+    tableau[src.index].splice(src.cardIndex);
+  }
+}
+
+function getMinFoundationRank() {
+  let min = 13;
+  for (let f of foundations) {
+    if (f.length === 0) return 0;
+    min = Math.min(min, f[f.length - 1].rank);
+  }
+  return min;
+}
+
+function isSafeToAutoMove(card) {
+  if (card.rank === 0) return true; // Aces always safe
+  if (card.rank === 1) return true; // Twos always safe
+  let minFound = getMinFoundationRank();
+  return card.rank <= minFound + 1;
+}
+
+function tryAutoMoveToFoundation() {
+  let moved = true;
+  while (moved) {
+    moved = false;
+    // Check free cells
+    for (let i = 0; i < 4; i++) {
+      if (freeCells[i] && isSafeToAutoMove(freeCells[i])) {
+        let card = freeCells[i];
+        for (let fi = 0; fi < 4; fi++) {
+          if (canPlaceOnFoundation(card, fi)) {
+            freeCells[i] = null;
+            foundations[fi].push(card);
+            score += 10;
+            moved = true;
+            break;
+          }
+        }
+      }
+    }
+    // Check tableau tops
+    for (let col = 0; col < 8; col++) {
+      let pile = tableau[col];
+      if (pile.length === 0) continue;
+      let card = pile[pile.length - 1];
+      if (isSafeToAutoMove(card)) {
+        for (let fi = 0; fi < 4; fi++) {
+          if (canPlaceOnFoundation(card, fi)) {
+            pile.pop();
+            foundations[fi].push(card);
+            score += 10;
+            moved = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  checkWin();
+}
+
+function checkWin() {
+  let total = foundations.reduce((s, f) => s + f.length, 0);
+  if (total === 52) {
+    gameWon = true;
+    if (timerInterval) clearInterval(timerInterval);
+    startWinAnimation();
+  }
+}
+
+function findHint() {
+  hintSource = null; hintTarget = null;
+  // Tableau/FreeCell to foundation
+  for (let i = 0; i < 4; i++) {
+    if (freeCells[i]) {
+      for (let fi = 0; fi < 4; fi++) {
+        if (canPlaceOnFoundation(freeCells[i], fi)) {
+          hintSource = { type: 'freecell', index: i };
+          hintTarget = { type: 'foundation', index: fi };
+          return;
+        }
+      }
+    }
+  }
+  for (let col = 0; col < 8; col++) {
+    let pile = tableau[col];
+    if (pile.length === 0) continue;
+    let card = pile[pile.length - 1];
+    for (let fi = 0; fi < 4; fi++) {
+      if (canPlaceOnFoundation(card, fi)) {
+        hintSource = { type: 'tableau', index: col, cardIndex: pile.length - 1 };
+        hintTarget = { type: 'foundation', index: fi };
+        return;
+      }
+    }
+  }
+  // Tableau to tableau
+  for (let col = 0; col < 8; col++) {
+    let pile = tableau[col];
+    for (let idx = 0; idx < pile.length; idx++) {
+      let seq = pile.slice(idx);
+      if (!isValidSequence(seq)) break;
+      let maxM = maxMovableToColumn(col);
+      if (seq.length > maxM) break;
+      for (let tcol = 0; tcol < 8; tcol++) {
+        if (tcol === col) continue;
+        if (canPlaceOnTableau(seq[0], tcol)) {
+          if (idx === 0 && tableau[tcol].length === 0) continue;
+          hintSource = { type: 'tableau', index: col, cardIndex: idx };
+          hintTarget = { type: 'tableau', index: tcol };
+          return;
+        }
+      }
+    }
+  }
+  // To free cell
+  for (let col = 0; col < 8; col++) {
+    let pile = tableau[col];
+    if (pile.length === 0) continue;
+    let card = pile[pile.length - 1];
+    for (let i = 0; i < 4; i++) {
+      if (!freeCells[i]) {
+        hintSource = { type: 'tableau', index: col, cardIndex: pile.length - 1 };
+        hintTarget = { type: 'freecell', index: i };
+        return;
+      }
+    }
+  }
+}
+
+// ==================== Win Animation ====================
+function startWinAnimation() {
+  winAnimCards = [];
+  winAnimFrame = 0;
+  let allCards = [];
+  for (let f of foundations) allCards.push(...f);
+  for (let i = 0; i < allCards.length; i++) {
+    winAnimCards.push({
+      card: allCards[i],
+      x: foundPos(i % 4).x,
+      y: foundPos(i % 4).y,
+      vx: (Math.random() - 0.5) * 12,
+      vy: -(Math.random() * 10 + 5),
+      active: false,
+      delay: i * 3
+    });
+  }
+  requestAnimationFrame(animateWin);
+}
+
+function animateWin() {
+  if (!gameWon) return;
+  winAnimFrame++;
+  for (let wc of winAnimCards) {
+    if (winAnimFrame >= wc.delay) {
+      wc.active = true;
+      wc.x += wc.vx;
+      wc.y += wc.vy;
+      wc.vy += 0.5;
+      if (wc.y > H + 50) {
+        wc.y = -CARD_H - 20;
+        wc.x = Math.random() * (W - CARD_W);
+        wc.vy = Math.random() * 3 + 2;
+        wc.vx = (Math.random() - 0.5) * 4;
+      }
+    }
+  }
+  render();
+  requestAnimationFrame(animateWin);
+}
+
+// ==================== Input Handling ====================
+canvas.addEventListener('mousedown', function(e) {
+  if (gameWon) return;
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  // Buttons
+  if (my >= H - 26 && my <= H - 6) {
+    if (mx >= W - 195 && mx <= W - 137) { newGame(); return; }
+    if (mx >= W - 130 && mx <= W - 72) { undo(); return; }
+    if (mx >= W - 65 && mx <= W - 10) { findHint(); hintTimer = 120; return; }
+  }
+
+  let hit = hitFreeCell(mx, my) || hitFoundation(mx, my) || hitTableau(mx, my);
+  if (hit && hit.cards.length > 0) {
+    startTimer();
+    hintSource = null; hintTarget = null;
+    dragCards = hit.cards;
+    dragSource = hit;
+    let srcX, srcY;
+    if (hit.type === 'freecell') {
+      srcX = freeCellPos(hit.index).x;
+      srcY = freeCellPos(hit.index).y;
+    } else if (hit.type === 'foundation') {
+      srcX = foundPos(hit.index).x;
+      srcY = foundPos(hit.index).y;
+    } else {
+      srcX = tabPos(hit.index).x;
+      srcY = tabCardY(hit.index, hit.cardIndex);
+    }
+    dragOffsetX = mx - srcX;
+    dragOffsetY = my - srcY;
+    dragging = { x: srcX, y: srcY };
+  }
+});
+
+canvas.addEventListener('mousemove', function(e) {
+  if (!dragging) return;
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+  dragging.x = mx - dragOffsetX;
+  dragging.y = my - dragOffsetY;
+});
+
+canvas.addEventListener('mouseup', function(e) {
+  if (!dragging) return;
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  let target = getDropTarget(mx, my);
+  let success = false;
+
+  if (target) {
+    if (target.type === 'freecell' && dragCards.length === 1) {
+      if (!freeCells[target.index]) {
+        saveState();
+        removeFromSource(dragSource);
+        freeCells[target.index] = dragCards[0];
+        moves++;
+        score = Math.max(0, score - 1);
+        success = true;
+      }
+    } else if (target.type === 'foundation' && dragCards.length === 1) {
+      if (canPlaceOnFoundation(dragCards[0], target.index)) {
+        saveState();
+        removeFromSource(dragSource);
+        foundations[target.index].push(dragCards[0]);
+        score += 10;
+        moves++;
+        success = true;
+        checkWin();
+      }
+    } else if (target.type === 'tableau') {
+      let maxM = maxMovableToColumn(target.index);
+      if (dragCards.length <= maxM && canPlaceOnTableau(dragCards[0], target.index)) {
+        saveState();
+        removeFromSource(dragSource);
+        for (let c of dragCards) tableau[target.index].push(c);
+        moves++;
+        score = Math.max(0, score - 1);
+        success = true;
+      }
+    }
+  }
+
+  dragging = null; dragCards = []; dragSource = null;
+  if (success && !gameWon) tryAutoMoveToFoundation();
+});
+
+canvas.addEventListener('dblclick', function(e) {
+  if (gameWon) return;
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  let hit = hitFreeCell(mx, my) || hitTableau(mx, my);
+  if (hit && hit.cards.length === 1) {
+    let card = hit.cards[0];
+    for (let fi = 0; fi < 4; fi++) {
+      if (canPlaceOnFoundation(card, fi)) {
+        startTimer();
+        saveState();
+        removeFromSource(hit);
+        foundations[fi].push(card);
+        score += 10;
+        moves++;
+        checkWin();
+        if (!gameWon) tryAutoMoveToFoundation();
+        return;
+      }
+    }
+    // Try free cell
+    for (let i = 0; i < 4; i++) {
+      if (!freeCells[i]) {
+        startTimer();
+        saveState();
+        removeFromSource(hit);
+        freeCells[i] = card;
+        moves++;
+        return;
+      }
+    }
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'KeyZ' && !e.ctrlKey) { undo(); }
+  if (e.code === 'KeyN') { newGame(); }
+  if (e.code === 'KeyH') { findHint(); hintTimer = 120; }
+});
+
+// ==================== Game Loop ====================
+function gameLoop() {
+  if (hintTimer > 0) {
+    hintTimer--;
+    if (hintTimer === 0) { hintSource = null; hintTarget = null; }
+  }
+  if (!gameWon) render();
+  requestAnimationFrame(gameLoop);
+}
+
+newGame();
+gameLoop();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>俄罗斯方块</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ---- 常量 ----
+const COLS = 10, ROWS = 20;
+const CELL = 22;
+const BOARD_X = 250, BOARD_Y = 30;
+let score = 0;
+let state = 'title'; // title | playing | over
+
+// 七种方块的形状（每种 4 个旋转态用矩阵表示）
+const SHAPES = {
+  I: { color: '#00e5ff', cells: [[0,1],[1,1],[2,1],[3,1]], size: 4 },
+  O: { color: '#ffd600', cells: [[1,0],[2,0],[1,1],[2,1]], size: 4 },
+  T: { color: '#d500f9', cells: [[1,0],[0,1],[1,1],[2,1]], size: 3 },
+  S: { color: '#76ff03', cells: [[1,0],[2,0],[0,1],[1,1]], size: 3 },
+  Z: { color: '#ff1744', cells: [[0,0],[1,0],[1,1],[2,1]], size: 3 },
+  J: { color: '#2979ff', cells: [[0,0],[0,1],[1,1],[2,1]], size: 3 },
+  L: { color: '#ff9100', cells: [[2,0],[0,1],[1,1],[2,1]], size: 3 }
+};
+const TYPES = ['I','O','T','S','Z','J','L'];
+
+// SRS 踢墙数据
+const KICK_JLSTZ = {
+  '0>1': [[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+  '1>0': [[0,0],[1,0],[1,-1],[0,2],[1,2]],
+  '1>2': [[0,0],[1,0],[1,-1],[0,2],[1,2]],
+  '2>1': [[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+  '2>3': [[0,0],[1,0],[1,1],[0,-2],[1,-2]],
+  '3>2': [[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+  '3>0': [[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+  '0>3': [[0,0],[1,0],[1,1],[0,-2],[1,-2]]
+};
+const KICK_I = {
+  '0>1': [[0,0],[-2,0],[1,0],[-2,-1],[1,2]],
+  '1>0': [[0,0],[2,0],[-1,0],[2,1],[-1,-2]],
+  '1>2': [[0,0],[-1,0],[2,0],[-1,2],[2,-1]],
+  '2>1': [[0,0],[1,0],[-2,0],[1,-2],[-2,1]],
+  '2>3': [[0,0],[2,0],[-1,0],[2,1],[-1,-2]],
+  '3>2': [[0,0],[-2,0],[1,0],[-2,-1],[1,2]],
+  '3>0': [[0,0],[1,0],[-2,0],[1,-2],[-2,1]],
+  '0>3': [[0,0],[-1,0],[2,0],[-1,2],[2,-1]]
+};
+
+// ---- 游戏状态 ----
+let grid, current, nextQueue, hold, canHold;
+let level, lines, dropInterval, dropTimer, lastTime;
+let clearing = null; // { rows:[], t:0 } 消行动画
+let bag = [];
+
+function newGrid() {
+  const g = [];
+  for (let r = 0; r < ROWS; r++) { g.push(new Array(COLS).fill(null)); }
+  return g;
+}
+
+function refillBag() {
+  bag = TYPES.slice();
+  for (let i = bag.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [bag[i], bag[j]] = [bag[j], bag[i]];
+  }
+}
+
+function nextType() {
+  if (bag.length === 0) refillBag();
+  return bag.pop();
+}
+
+function makePiece(type) {
+  const s = SHAPES[type];
+  return {
+    type, color: s.color, size: s.size, rot: 0,
+    cells: s.cells.map(c => c.slice()),
+    x: Math.floor((COLS - s.size) / 2),
+    y: type === 'I' ? -1 : 0
+  };
+}
+
+function rotateCells(cells, size, dir) {
+  // dir = 1 顺时针, -1 逆时针
+  return cells.map(([x, y]) => {
+    if (dir === 1) return [size - 1 - y, x];
+    return [y, size - 1 - x];
+  });
+}
+
+function collides(piece, ox, oy, cells) {
+  cells = cells || piece.cells;
+  for (const [cx, cy] of cells) {
+    const gx = piece.x + cx + ox;
+    const gy = piece.y + cy + oy;
+    if (gx < 0 || gx >= COLS || gy >= ROWS) return true;
+    if (gy >= 0 && grid[gy][gx]) return true;
+  }
+  return false;
+}
+
+function initGame() {
+  grid = newGrid();
+  bag = [];
+  nextQueue = [nextType(), nextType(), nextType(), nextType()];
+  current = makePiece(nextQueue.shift());
+  nextQueue.push(nextType());
+  hold = null; canHold = true;
+  score = 0; level = 1; lines = 0;
+  dropInterval = 800; dropTimer = 0; lastTime = performance.now();
+  clearing = null;
+  state = 'playing';
+}
+
+function spawnNext() {
+  current = makePiece(nextQueue.shift());
+  nextQueue.push(nextType());
+  canHold = true;
+  if (collides(current, 0, 0)) { state = 'over'; }
+}
+
+function lockPiece() {
+  for (const [cx, cy] of current.cells) {
+    const gx = current.x + cx, gy = current.y + cy;
+    if (gy >= 0 && gy < ROWS) grid[gy][gx] = current.color;
+  }
+  // 检测满行
+  const full = [];
+  for (let r = 0; r < ROWS; r++) {
+    if (grid[r].every(c => c)) full.push(r);
+  }
+  if (full.length > 0) {
+    clearing = { rows: full, t: 0 };
+  } else {
+    spawnNext();
+  }
+}
+
+function finishClear() {
+  const rows = clearing.rows;
+  const n = rows.length;
+  // 移除行
+  for (const r of rows.sort((a, b) => a - b)) {
+    grid.splice(r, 1);
+    grid.unshift(new Array(COLS).fill(null));
+  }
+  // 计分 1/3/5/8 × level
+  const pts = [0, 1, 3, 5, 8][n] * level * 100;
+  score += pts;
+  lines += n;
+  level = Math.floor(lines / 10) + 1;
+  dropInterval = Math.max(80, 800 - (level - 1) * 70);
+  clearing = null;
+  spawnNext();
+}
+
+function move(dx) {
+  if (!collides(current, dx, 0)) { current.x += dx; return true; }
+  return false;
+}
+
+function softDrop() {
+  if (!collides(current, 0, 1)) { current.y++; score += 1; return true; }
+  lockPiece();
+  return false;
+}
+
+function hardDrop() {
+  let d = 0;
+  while (!collides(current, 0, 1)) { current.y++; d++; }
+  score += d * 2;
+  lockPiece();
+}
+
+function tryRotate(dir) {
+  if (current.type === 'O') return;
+  const newRot = (current.rot + dir + 4) % 4;
+  const newCells = rotateCells(current.cells, current.size, dir);
+  const key = current.rot + '>' + newRot;
+  const kicks = current.type === 'I' ? KICK_I[key] : KICK_JLSTZ[key];
+  for (const [kx, ky] of kicks) {
+    if (!collides(current, kx, -ky, newCells)) {
+      current.x += kx; current.y -= ky;
+      current.cells = newCells; current.rot = newRot;
+      return;
+    }
+  }
+}
+
+function doHold() {
+  if (!canHold) return;
+  const t = current.type;
+  if (hold) {
+    const h = hold;
+    current = makePiece(h);
+    hold = t;
+  } else {
+    hold = t;
+    current = makePiece(nextQueue.shift());
+    nextQueue.push(nextType());
+  }
+  canHold = false;
+}
+
+function ghostY() {
+  let gy = current.y;
+  while (!collides(current, 0, gy - current.y + 1)) gy++;
+  return gy;
+}
+
+// ---- 输入 ----
+let dasTimer = 0, dasDir = 0, dasDelay = 170, dasRepeat = 50, dasActive = false;
+const keys = {};
+
+document.addEventListener('keydown', e => {
+  if (state === 'title') {
+    if (e.code === 'Enter' || e.code === 'Space') initGame();
+    return;
+  }
+  if (state === 'over') {
+    if (e.code === 'Enter' || e.code === 'Space') state = 'title';
+    return;
+  }
+  if (state !== 'playing' || clearing) return;
+  if (e.repeat) return;
+  switch (e.code) {
+    case 'ArrowLeft': move(-1); dasDir = -1; dasTimer = 0; dasActive = false; e.preventDefault(); break;
+    case 'ArrowRight': move(1); dasDir = 1; dasTimer = 0; dasActive = false; e.preventDefault(); break;
+    case 'ArrowDown': softDrop(); e.preventDefault(); break;
+    case 'ArrowUp': case 'KeyX': tryRotate(1); e.preventDefault(); break;
+    case 'KeyZ': case 'ControlLeft': tryRotate(-1); break;
+    case 'Space': hardDrop(); e.preventDefault(); break;
+    case 'KeyC': case 'ShiftLeft': doHold(); break;
+  }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'ArrowLeft' && dasDir === -1) dasDir = 0;
+  if (e.code === 'ArrowRight' && dasDir === 1) dasDir = 0;
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  if (state === 'title') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) initGame();
+  } else if (state === 'over') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) state = 'title';
+  }
+});
+
+// ---- 绘制 ----
+function drawCell(px, py, color, ghost) {
+  if (ghost) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.4;
+    ctx.strokeRect(px + 2, py + 2, CELL - 4, CELL - 4);
+    ctx.globalAlpha = 1;
+    return;
+  }
+  ctx.fillStyle = color;
+  ctx.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
+  // 高光
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillRect(px + 1, py + 1, CELL - 2, 4);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.fillRect(px + 1, py + CELL - 5, CELL - 2, 4);
+}
+
+function drawBoard() {
+  // 背景
+  ctx.fillStyle = '#0a0a12';
+  ctx.fillRect(BOARD_X, BOARD_Y, COLS * CELL, ROWS * CELL);
+  // 网格线
+  ctx.strokeStyle = '#1a1a28';
+  ctx.lineWidth = 1;
+  for (let c = 0; c <= COLS; c++) {
+    ctx.beginPath();
+    ctx.moveTo(BOARD_X + c * CELL, BOARD_Y);
+    ctx.lineTo(BOARD_X + c * CELL, BOARD_Y + ROWS * CELL);
+    ctx.stroke();
+  }
+  for (let r = 0; r <= ROWS; r++) {
+    ctx.beginPath();
+    ctx.moveTo(BOARD_X, BOARD_Y + r * CELL);
+    ctx.lineTo(BOARD_X + COLS * CELL, BOARD_Y + r * CELL);
+    ctx.stroke();
+  }
+  // 已固定方块
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (grid[r][c]) {
+        let flash = false;
+        if (clearing && clearing.rows.includes(r)) {
+          flash = Math.floor(clearing.t / 60) % 2 === 0;
+        }
+        if (flash) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(BOARD_X + c * CELL + 1, BOARD_Y + r * CELL + 1, CELL - 2, CELL - 2);
+        } else {
+          drawCell(BOARD_X + c * CELL, BOARD_Y + r * CELL, grid[r][c], false);
+        }
+      }
+    }
+  }
+}
+
+function drawGhostAndCurrent() {
+  if (!current || clearing) return;
+  const gy = ghostY();
+  for (const [cx, cy] of current.cells) {
+    const px = BOARD_X + (current.x + cx) * CELL;
+    const py = BOARD_Y + (gy + cy) * CELL;
+    if (gy + cy >= 0) drawCell(px, py, current.color, true);
+  }
+  for (const [cx, cy] of current.cells) {
+    const px = BOARD_X + (current.x + cx) * CELL;
+    const py = BOARD_Y + (current.y + cy) * CELL;
+    if (current.y + cy >= 0) drawCell(px, py, current.color, false);
+  }
+}
+
+function drawMini(type, ox, oy, cellSize) {
+  if (!type) return;
+  const s = SHAPES[type];
+  const xs = s.cells.map(c => c[0]);
+  const ys = s.cells.map(c => c[1]);
+  const w = Math.max(...xs) - Math.min(...xs) + 1;
+  const h = Math.max(...ys) - Math.min(...ys) + 1;
+  const offX = ox + (4 - w) * cellSize / 2 - Math.min(...xs) * cellSize;
+  const offY = oy + (3 - h) * cellSize / 2 - Math.min(...ys) * cellSize;
+  for (const [cx, cy] of s.cells) {
+    const px = offX + cx * cellSize;
+    const py = offY + cy * cellSize;
+    ctx.fillStyle = s.color;
+    ctx.fillRect(px + 1, py + 1, cellSize - 2, cellSize - 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillRect(px + 1, py + 1, cellSize - 2, 3);
+  }
+}
+
+function drawPanel() {
+  // 右侧面板
+  const px = 500;
+  ctx.fillStyle = '#ff8a65';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('俄罗斯方块', px, 45);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('分数', px, 85);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(score.toString(), px, 115);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('等级  ' + level, px, 150);
+  ctx.fillText('行数  ' + lines, px, 175);
+
+  // 下一个
+  ctx.fillStyle = '#1a1a28';
+  ctx.fillRect(px, 195, 130, 90);
+  ctx.strokeStyle = '#333';
+  ctx.strokeRect(px, 195, 130, 90);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('下一个', px + 5, 212);
+  drawMini(nextQueue[0], px + 8, 218, 16);
+
+  // Hold
+  ctx.fillStyle = '#1a1a28';
+  ctx.fillRect(px + 150, 195, 110, 90);
+  ctx.strokeStyle = '#333';
+  ctx.strokeRect(px + 150, 195, 110, 90);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('暂存 (C)', px + 155, 212);
+  drawMini(hold, px + 158, 218, 16);
+
+  // 操作说明
+  ctx.fillStyle = '#666';
+  ctx.font = '13px sans-serif';
+  const help = [
+    '← → 移动', '↑ / X 旋转', 'Z 反向旋转',
+    '↓ 软降', '空格 硬降', 'C 暂存', 'Esc 退出'
+  ];
+  help.forEach((t, i) => ctx.fillText(t, px, 320 + i * 20));
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  // 装饰方块
+  const deco = ['I','O','T','S','Z','J','L'];
+  deco.forEach((t, i) => drawMini(t, 130 + i * 78, 60, 16));
+  ctx.fillStyle = '#00e5ff';
+  ctx.font = 'bold 52px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('俄罗斯方块', 400, 200);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('经典益智 · 消行得分 · 挑战高等级', 400, 245);
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(300, 320, 200, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('开始游戏', 400, 358);
+  ctx.fillStyle = '#666';
+  ctx.font = '15px sans-serif';
+  ctx.fillText('按 回车 或 点击按钮 开始', 400, 420);
+}
+
+function drawOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ff5252';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('游戏结束', 400, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '26px sans-serif';
+  ctx.fillText('最终分数: ' + score, 400, 230);
+  ctx.fillText('等级 ' + level + '  ·  消行 ' + lines, 400, 270);
+  ctx.fillStyle = '#1565c0';
+  ctx.fillRect(300, 320, 200, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 358);
+}
+
+// ---- 主循环 ----
+function update(dt) {
+  if (state !== 'playing') return;
+  if (clearing) {
+    clearing.t += dt;
+    if (clearing.t > 350) finishClear();
+    return;
+  }
+  // DAS 自动移动
+  if (dasDir !== 0) {
+    dasTimer += dt;
+    if (!dasActive && dasTimer > dasDelay) { dasActive = true; dasTimer = 0; move(dasDir); }
+    else if (dasActive && dasTimer > dasRepeat) { dasTimer = 0; move(dasDir); }
+  }
+  dropTimer += dt;
+  if (dropTimer > dropInterval) {
+    dropTimer = 0;
+    if (!collides(current, 0, 1)) current.y++;
+    else lockPiece();
+  }
+}
+
+function render(now) {
+  const dt = now - lastTime;
+  lastTime = now;
+  update(dt);
+
+  if (state === 'title') { drawTitle(); }
+  else if (state === 'playing') {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, 800, 480);
+    drawBoard();
+    drawGhostAndCurrent();
+    drawPanel();
+  } else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, 800, 480);
+    drawBoard();
+    drawPanel();
+    drawOver();
+  }
+  requestAnimationFrame(render);
+}
+lastTime = performance.now();
+requestAnimationFrame(render);
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

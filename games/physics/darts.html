@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>飞镖 Darts</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+
+const CX = 280, CY = 250;
+// radii for rings
+const R_BULL = 12, R_25 = 26, R_TRIPLE_IN = 92, R_TRIPLE_OUT = 104;
+const R_DOUBLE_IN = 152, R_DOUBLE_OUT = 164, R_BOARD = 175;
+// standard dartboard number order clockwise starting from top (20)
+const NUMBERS = [20,1,18,4,13,6,10,15,2,17,3,19,7,16,8,11,14,9,12,5];
+
+let state = 'start';
+let dartsLeft = 10;
+let thrown = [];      // {x,y,pts}
+let mouse = { x: CX, y: CY };
+let lastPts = 0, lastMsg = '', msgT = 0;
+
+function startGame() {
+  score = 0; dartsLeft = 10; thrown = []; lastMsg = ''; state = 'play';
+}
+
+function scoreAt(x, y) {
+  const dx = x - CX, dy = y - CY;
+  const d = Math.hypot(dx, dy);
+  if (d <= R_BULL) return 50;
+  if (d <= R_25) return 25;
+  if (d > R_DOUBLE_OUT) return 0;
+  // angle: 0 at top, clockwise
+  let ang = Math.atan2(dx, -dy); // 0 at top
+  if (ang < 0) ang += Math.PI * 2;
+  const seg = Math.floor(((ang + Math.PI / 20) % (Math.PI * 2)) / (Math.PI / 10));
+  const num = NUMBERS[seg];
+  if (d >= R_TRIPLE_IN && d <= R_TRIPLE_OUT) return num * 3;
+  if (d >= R_DOUBLE_IN && d <= R_DOUBLE_OUT) return num * 2;
+  return num;
+}
+
+function throwDart() {
+  if (state !== 'play' || dartsLeft <= 0) return;
+  // wobble increases slightly with distance from center for challenge
+  const wob = 8 + Math.random() * 10;
+  const tx = mouse.x + (Math.random() - 0.5) * wob;
+  const ty = mouse.y + (Math.random() - 0.5) * wob;
+  const pts = scoreAt(tx, ty);
+  thrown.push({ x: tx, y: ty, pts });
+  score += pts;
+  dartsLeft--;
+  lastPts = pts;
+  lastMsg = pts === 50 ? 'BULLSEYE! +50' : pts === 0 ? '脱靶!' : '+' + pts;
+  msgT = 70;
+  if (dartsLeft <= 0) setTimeout(() => { state = 'over'; }, 700);
+}
+
+function drawBoard() {
+  // outer surround
+  ctx.fillStyle = '#0a0a0a';
+  ctx.beginPath(); ctx.arc(CX, CY, R_BOARD + 12, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(CX, CY, R_BOARD + 12, 0, Math.PI * 2); ctx.stroke();
+
+  // segments
+  for (let i = 0; i < 20; i++) {
+    const a0 = -Math.PI / 2 + (i - 0.5) * (Math.PI / 10);
+    const a1 = a0 + Math.PI / 10;
+    const dark = i % 2 === 0;
+    // single inner area (between 25-ring and triple)
+    drawRingSeg(a0, a1, R_25, R_TRIPLE_IN, dark ? '#f0e0c0' : '#222');
+    // single outer area (between triple and double)
+    drawRingSeg(a0, a1, R_TRIPLE_OUT, R_DOUBLE_IN, dark ? '#f0e0c0' : '#222');
+    // triple ring
+    drawRingSeg(a0, a1, R_TRIPLE_IN, R_TRIPLE_OUT, dark ? '#e23b3b' : '#3ba55d');
+    // double ring
+    drawRingSeg(a0, a1, R_DOUBLE_IN, R_DOUBLE_OUT, dark ? '#e23b3b' : '#3ba55d');
+  }
+  // bull rings
+  ctx.fillStyle = '#3ba55d';
+  ctx.beginPath(); ctx.arc(CX, CY, R_25, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#e23b3b';
+  ctx.beginPath(); ctx.arc(CX, CY, R_BULL, 0, Math.PI * 2); ctx.fill();
+
+  // wire lines
+  ctx.strokeStyle = 'rgba(200,200,200,0.35)'; ctx.lineWidth = 1;
+  for (let i = 0; i < 20; i++) {
+    const a = -Math.PI / 2 + (i - 0.5) * (Math.PI / 10);
+    ctx.beginPath();
+    ctx.moveTo(CX + Math.cos(a) * R_25, CY + Math.sin(a) * R_25);
+    ctx.lineTo(CX + Math.cos(a) * R_DOUBLE_OUT, CY + Math.sin(a) * R_DOUBLE_OUT);
+    ctx.stroke();
+  }
+  [R_25, R_TRIPLE_IN, R_TRIPLE_OUT, R_DOUBLE_IN, R_DOUBLE_OUT].forEach(r => {
+    ctx.beginPath(); ctx.arc(CX, CY, r, 0, Math.PI * 2); ctx.stroke();
+  });
+
+  // numbers
+  ctx.fillStyle = '#ddd'; ctx.font = 'bold 16px Arial'; ctx.textAlign = 'center';
+  for (let i = 0; i < 20; i++) {
+    const a = -Math.PI / 2 + i * (Math.PI / 10);
+    ctx.fillText(NUMBERS[i], CX + Math.cos(a) * (R_BOARD + 1), CY + Math.sin(a) * (R_BOARD + 1) + 5);
+  }
+}
+
+function drawRingSeg(a0, a1, r0, r1, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(CX, CY, r1, a0, a1);
+  ctx.arc(CX, CY, r0, a1, a0, true);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function draw() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+
+  if (state === 'start') {
+    ctx.fillStyle = '#e23b3b'; ctx.font = 'bold 54px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('飞 镖 DARTS', W / 2, 150);
+    ctx.fillStyle = '#ccc'; ctx.font = '20px Arial';
+    ctx.fillText('移动鼠标瞄准，点击投掷飞镖', W / 2, 200);
+    ctx.fillText('靶心 50 分 · 共 10 支镖 · 有轻微抖动', W / 2, 235);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(W / 2 - 100, 290, 200, 60);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 26px Arial';
+    ctx.fillText('开始游戏', W / 2, 330);
+    ctx.fillStyle = '#777'; ctx.font = '14px Arial';
+    ctx.fillText('按 ESC 退出', W / 2, 420);
+    return;
+  }
+
+  drawBoard();
+
+  // thrown darts
+  thrown.forEach(d => {
+    ctx.fillStyle = '#ffd54a';
+    ctx.beginPath(); ctx.arc(d.x, d.y, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x + 8, d.y - 8); ctx.stroke();
+  });
+
+  // aim crosshair
+  if (state === 'play') {
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(mouse.x - 10, mouse.y); ctx.lineTo(mouse.x + 10, mouse.y);
+    ctx.moveTo(mouse.x, mouse.y - 10); ctx.lineTo(mouse.x, mouse.y + 10);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 6, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // HUD panel right
+  ctx.fillStyle = '#1c1c28'; ctx.fillRect(560, 30, 220, 200);
+  ctx.strokeStyle = '#333'; ctx.strokeRect(560, 30, 220, 200);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#ffd54a'; ctx.font = 'bold 26px Arial';
+  ctx.fillText('总分: ' + score, 580, 75);
+  ctx.fillStyle = '#7ec8ff'; ctx.font = '20px Arial';
+  ctx.fillText('剩余飞镖: ' + dartsLeft, 580, 115);
+  ctx.fillStyle = '#aaa'; ctx.font = '16px Arial';
+  ctx.fillText('最近 5 镖:', 580, 150);
+  thrown.slice(-5).forEach((d, i) => {
+    ctx.fillStyle = d.pts >= 40 ? '#ffd54a' : d.pts === 0 ? '#ff5555' : '#ccc';
+    ctx.fillText('  ' + d.pts + ' 分', 580, 175 + i * 18);
+  });
+
+  if (msgT > 0) {
+    ctx.fillStyle = lastPts >= 40 ? '#ffd54a' : lastPts === 0 ? '#ff5555' : '#4caf50';
+    ctx.font = 'bold 34px Arial'; ctx.textAlign = 'center';
+    ctx.globalAlpha = Math.min(1, msgT / 25);
+    ctx.fillText(lastMsg, CX, CY - R_BOARD - 25);
+    ctx.globalAlpha = 1; msgT--;
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffd54a'; ctx.font = 'bold 50px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('投掷结束!', W / 2, 160);
+    ctx.fillStyle = '#fff'; ctx.font = '30px Arial';
+    ctx.fillText('总得分: ' + score, W / 2, 220);
+    const avg = (score / 10).toFixed(1);
+    ctx.fillStyle = '#aaa'; ctx.font = '20px Arial';
+    ctx.fillText('平均每镖: ' + avg + ' 分', W / 2, 258);
+    ctx.fillStyle = '#4caf50'; ctx.fillRect(W / 2 - 100, 300, 200, 60);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 24px Arial';
+    ctx.fillText('再来一次', W / 2, 338);
+  }
+}
+
+function loop() { draw(); requestAnimationFrame(loop); }
+
+function getPos(e) {
+  const rect = cv.getBoundingClientRect();
+  return { x: (e.clientX - rect.left) * (W / rect.width), y: (e.clientY - rect.top) * (H / rect.height) };
+}
+cv.addEventListener('mousemove', e => { mouse = getPos(e); });
+cv.addEventListener('click', e => {
+  const p = getPos(e);
+  if (state === 'start') {
+    if (p.x > W / 2 - 100 && p.x < W / 2 + 100 && p.y > 290 && p.y < 350) startGame();
+    return;
+  }
+  if (state === 'over') {
+    if (p.x > W / 2 - 100 && p.x < W / 2 + 100 && p.y > 300 && p.y < 360) startGame();
+    return;
+  }
+  if (state === 'play') { mouse = p; throwDart(); }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if ((state === 'start' || state === 'over') && e.code === 'Enter') startGame();
+  if (state === 'play' && e.code === 'Space') { e.preventDefault(); throwDart(); }
+});
+
+loop();
+</script>
+</body>
+</html>

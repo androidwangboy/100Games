@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>大金刚 - Donkey Kong</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Game state
+let score = 0;
+let lives = 3;
+let level = 1;
+let gameState = 'ready'; // ready, playing, dying, gameover, win
+let stateTimer = 0;
+let animFrame = 0;
+let jumpScore = 100;
+
+// Physics constants
+const GRAVITY = 0.5;
+const JUMP_FORCE = -8;
+const MOVE_SPEED = 2.5;
+const CLIMB_SPEED = 2;
+
+// Platform definitions for each level
+// Each platform: {x, y, width, slope}
+function generatePlatforms() {
+  const platforms = [];
+  const gap = 80;
+  const baseY = 440;
+  // 6 platforms with alternating slopes
+  for (let i = 0; i < 6; i++) {
+    let y = baseY - i * gap;
+    let slope = (i % 2 === 0) ? 0.02 : -0.02;
+    let x = (i % 2 === 0) ? 40 : 80;
+    let width = (i % 2 === 0) ? 720 : 680;
+    platforms.push({ x, y, width, slope, index: i });
+  }
+  return platforms;
+}
+
+// Ladder definitions
+function generateLadders() {
+  const ladders = [];
+  const gap = 80;
+  const baseY = 440;
+  // Ladders connecting platforms
+  const ladderPositions = [
+    // From platform 0 to 1
+    { x: 650, fromY: baseY, toY: baseY - gap },
+    { x: 200, fromY: baseY, toY: baseY - gap },
+    // From platform 1 to 2
+    { x: 150, fromY: baseY - gap, toY: baseY - gap * 2 },
+    { x: 550, fromY: baseY - gap, toY: baseY - gap * 2 },
+    // From platform 2 to 3
+    { x: 600, fromY: baseY - gap * 2, toY: baseY - gap * 3 },
+    { x: 300, fromY: baseY - gap * 2, toY: baseY - gap * 3 },
+    // From platform 3 to 4
+    { x: 200, fromY: baseY - gap * 3, toY: baseY - gap * 4 },
+    { x: 500, fromY: baseY - gap * 3, toY: baseY - gap * 4 },
+    // From platform 4 to 5
+    { x: 400, fromY: baseY - gap * 4, toY: baseY - gap * 5 },
+    { x: 650, fromY: baseY - gap * 4, toY: baseY - gap * 5 },
+  ];
+  ladderPositions.forEach(l => {
+    ladders.push({ x: l.x, topY: l.toY, bottomY: l.fromY, height: l.fromY - l.toY });
+  });
+  return ladders;
+}
+
+let platforms = generatePlatforms();
+let ladders = generateLadders();
+
+// Player (Mario)
+let player = {
+  x: 80, y: 420, w: 20, h: 28,
+  vx: 0, vy: 0,
+  onGround: false, onLadder: false, climbing: false,
+  facing: 1, // 1=right, -1=left
+  jumping: false,
+  hasHammer: false, hammerTimer: 0,
+  hammerSwing: 0,
+  walkFrame: 0,
+  alive: true
+};
+
+// Donkey Kong
+let dk = {
+  x: 80, y: 30, w: 60, h: 50,
+  throwTimer: 0, throwInterval: 2500,
+  animFrame: 0, throwing: false, throwAnim: 0
+};
+
+// Pauline (princess at top)
+let pauline = { x: 380, y: 18, w: 16, h: 28 };
+
+// Barrels
+let barrels = [];
+class Barrel {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.w = 16;
+    this.h = 14;
+    this.vx = 1.5 + level * 0.3;
+    this.vy = 0;
+    this.onGround = false;
+    this.rotation = 0;
+    this.falling = false;
+    this.active = true;
+    this.scored = false;
+  }
+}
+
+// Hammer power-ups
+let hammers = [];
+function placeHammers() {
+  hammers = [
+    { x: 350, y: 340, active: true },
+    { x: 550, y: 180, active: true }
+  ];
+}
+
+// Fireballs (appear at higher levels)
+let fireballs = [];
+class Fireball {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.w = 12;
+    this.h = 12;
+    this.vx = (Math.random() > 0.5 ? 1 : -1) * (1 + level * 0.2);
+    this.vy = 0;
+    this.onGround = false;
+    this.animFrame = 0;
+  }
+}
+
+// Input
+let keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') {
+    if (gameState === 'ready') { gameState = 'playing'; }
+    else if (gameState === 'gameover') { startGame(); }
+    else if (gameState === 'win') { nextLevel(); }
+    else if (gameState === 'playing' && player.onGround && !player.climbing) {
+      player.vy = JUMP_FORCE;
+      player.jumping = true;
+      player.onGround = false;
+    }
+  }
+  e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function startGame() {
+  score = 0;
+  lives = 3;
+  level = 1;
+  initLevel();
+  gameState = 'ready';
+}
+
+function nextLevel() {
+  level++;
+  initLevel();
+  gameState = 'ready';
+}
+
+function initLevel() {
+  platforms = generatePlatforms();
+  ladders = generateLadders();
+  player.x = 80;
+  player.y = 420;
+  player.vx = 0;
+  player.vy = 0;
+  player.onGround = false;
+  player.climbing = false;
+  player.hasHammer = false;
+  player.hammerTimer = 0;
+  player.alive = true;
+  player.jumping = false;
+  barrels = [];
+  fireballs = [];
+  dk.throwTimer = 0;
+  dk.throwInterval = Math.max(2500 - level * 200, 1000);
+  placeHammers();
+  // Add fireballs at level 2+
+  if (level >= 2) {
+    let numFire = Math.min(level - 1, 4);
+    for (let i = 0; i < numFire; i++) {
+      fireballs.push(new Fireball(200 + i * 150, 200 - i * 60));
+    }
+  }
+}
+
+function getPlatformYAt(x, platform) {
+  return platform.y + (x - platform.x) * platform.slope;
+}
+
+function findPlatformBelow(x, y) {
+  for (let p of platforms) {
+    if (x >= p.x && x <= p.x + p.width) {
+      let py = getPlatformYAt(x, p);
+      if (y >= py - 5 && y <= py + 15) {
+        return p;
+      }
+    }
+  }
+  return null;
+}
+
+function isOnLadder(x, y) {
+  for (let l of ladders) {
+    if (Math.abs(x - l.x) < 12 && y >= l.topY - 5 && y <= l.bottomY + 5) {
+      return l;
+    }
+  }
+  return null;
+}
+
+function isLadderAbove(x, y) {
+  for (let l of ladders) {
+    if (Math.abs(x - l.x) < 12 && y >= l.topY - 10 && y <= l.bottomY + 5) {
+      return l;
+    }
+  }
+  return null;
+}
+
+function updatePlayer(dt) {
+  if (!player.alive) return;
+
+  let ladder = isOnLadder(player.x + player.w / 2, player.y + player.h);
+  let wantUp = keys['ArrowUp'] || keys['KeyW'];
+  let wantDown = keys['ArrowDown'] || keys['KeyS'];
+  let wantLeft = keys['ArrowLeft'] || keys['KeyA'];
+  let wantRight = keys['ArrowRight'] || keys['KeyD'];
+
+  // Ladder climbing
+  if (ladder && (wantUp || wantDown) && !player.jumping) {
+    player.climbing = true;
+    player.onLadder = true;
+  }
+
+  if (player.climbing) {
+    if (!ladder) {
+      player.climbing = false;
+      player.onLadder = false;
+    } else {
+      player.vy = 0;
+      player.vx = 0;
+      if (wantUp) player.y -= CLIMB_SPEED;
+      if (wantDown) player.y += CLIMB_SPEED;
+      // Snap to ladder center
+      player.x = ladder.x - player.w / 2;
+      // Check if reached top or bottom
+      if (player.y + player.h <= ladder.topY) {
+        player.y = ladder.topY - player.h;
+        player.climbing = false;
+        player.onGround = true;
+      }
+      if (player.y + player.h >= ladder.bottomY + 5) {
+        player.climbing = false;
+      }
+      player.walkFrame += 0.1;
+      return;
+    }
+  }
+
+  // Horizontal movement
+  if (wantLeft) {
+    player.vx = -MOVE_SPEED;
+    player.facing = -1;
+    player.walkFrame += 0.15;
+  } else if (wantRight) {
+    player.vx = MOVE_SPEED;
+    player.facing = 1;
+    player.walkFrame += 0.15;
+  } else {
+    player.vx = 0;
+  }
+
+  // Apply gravity
+  if (!player.onGround) {
+    player.vy += GRAVITY;
+  }
+
+  // Move
+  player.x += player.vx;
+  player.y += player.vy;
+
+  // Platform collision
+  player.onGround = false;
+  for (let p of platforms) {
+    if (player.x + player.w > p.x && player.x < p.x + p.width) {
+      let py = getPlatformYAt(player.x + player.w / 2, p);
+      if (player.y + player.h >= py && player.y + player.h <= py + 20 && player.vy >= 0) {
+        player.y = py - player.h;
+        player.vy = 0;
+        player.onGround = true;
+        player.jumping = false;
+      }
+    }
+  }
+
+  // Boundaries
+  if (player.x < 20) player.x = 20;
+  if (player.x + player.w > 780) player.x = 780 - player.w;
+  if (player.y > 470) {
+    killPlayer();
+  }
+
+  // Hammer timer
+  if (player.hasHammer) {
+    player.hammerTimer -= dt;
+    player.hammerSwing += 0.2;
+    if (player.hammerTimer <= 0) {
+      player.hasHammer = false;
+    }
+  }
+
+  // Check hammer pickup
+  for (let h of hammers) {
+    if (h.active && Math.abs(player.x + player.w/2 - h.x) < 20 && Math.abs(player.y + player.h/2 - h.y) < 20) {
+      h.active = false;
+      player.hasHammer = true;
+      player.hammerTimer = 7000;
+    }
+  }
+
+  // Check win condition (reach Pauline)
+  if (Math.abs(player.x + player.w/2 - pauline.x) < 30 && Math.abs(player.y - pauline.y) < 40) {
+    gameState = 'win';
+    score += 1000 + level * 500;
+    stateTimer = 3000;
+  }
+}
+
+function updateDK(dt) {
+  dk.throwTimer += dt;
+  dk.animFrame += 0.05;
+
+  if (dk.throwTimer >= dk.throwInterval) {
+    dk.throwTimer = 0;
+    dk.throwing = true;
+    dk.throwAnim = 20;
+    // Spawn barrel
+    let barrel = new Barrel(dk.x + dk.w, dk.y + dk.h - 10);
+    barrel.vx = 2 + level * 0.3;
+    barrels.push(barrel);
+  }
+
+  if (dk.throwAnim > 0) dk.throwAnim--;
+  else dk.throwing = false;
+}
+
+function updateBarrels(dt) {
+  for (let barrel of barrels) {
+    if (!barrel.active) continue;
+
+    // Apply gravity
+    barrel.vy += GRAVITY * 0.8;
+    barrel.x += barrel.vx;
+    barrel.y += barrel.vy;
+    barrel.rotation += barrel.vx * 0.1;
+
+    // Platform collision
+    barrel.onGround = false;
+    for (let p of platforms) {
+      if (barrel.x + barrel.w > p.x && barrel.x < p.x + p.width) {
+        let py = getPlatformYAt(barrel.x + barrel.w / 2, p);
+        if (barrel.y + barrel.h >= py && barrel.y + barrel.h <= py + 18 && barrel.vy >= 0) {
+          barrel.y = py - barrel.h;
+          barrel.vy = 0;
+          barrel.onGround = true;
+          // Roll direction based on slope
+          barrel.vx = (p.slope > 0 ? 1 : -1) * (1.5 + level * 0.3);
+        }
+      }
+    }
+
+    // Ladder fall - barrels randomly fall through ladders
+    if (barrel.onGround) {
+      for (let l of ladders) {
+        if (Math.abs(barrel.x + barrel.w/2 - l.x) < 10 && Math.abs(barrel.y + barrel.h - l.topY) < 8) {
+          if (Math.random() < 0.02 + level * 0.005) {
+            barrel.vy = 2;
+            barrel.vx = 0;
+            barrel.onGround = false;
+          }
+        }
+      }
+    }
+
+    // Bounce off walls
+    if (barrel.x < 20 || barrel.x + barrel.w > 780) {
+      barrel.vx *= -1;
+      barrel.x = Math.max(20, Math.min(780 - barrel.w, barrel.x));
+    }
+
+    // Remove if off screen
+    if (barrel.y > 500) {
+      barrel.active = false;
+    }
+
+    // Collision with player
+    if (player.alive && !player.hasHammer) {
+      if (rectCollide(player, barrel)) {
+        killPlayer();
+      }
+    }
+
+    // Hammer destroy
+    if (player.hasHammer && player.alive) {
+      let hammerX = player.x + player.w/2 + player.facing * 20;
+      let hammerY = player.y - 5;
+      if (Math.abs(barrel.x + barrel.w/2 - hammerX) < 25 && Math.abs(barrel.y + barrel.h/2 - hammerY) < 25) {
+        barrel.active = false;
+        score += 300;
+      }
+    }
+
+    // Score for jumping over
+    if (!barrel.scored && player.alive && player.jumping) {
+      if (Math.abs(barrel.x + barrel.w/2 - (player.x + player.w/2)) < 25 &&
+          player.y + player.h < barrel.y) {
+        barrel.scored = true;
+        score += 100;
+      }
+    }
+  }
+
+  barrels = barrels.filter(b => b.active);
+}
+
+function updateFireballs(dt) {
+  for (let fb of fireballs) {
+    fb.animFrame += 0.1;
+    fb.vy += GRAVITY * 0.5;
+    fb.x += fb.vx;
+    fb.y += fb.vy;
+
+    // Platform collision
+    for (let p of platforms) {
+      if (fb.x + fb.w > p.x && fb.x < p.x + p.width) {
+        let py = getPlatformYAt(fb.x + fb.w / 2, p);
+        if (fb.y + fb.h >= py && fb.y + fb.h <= py + 15 && fb.vy >= 0) {
+          fb.y = py - fb.h;
+          fb.vy = -3; // bounce
+        }
+      }
+    }
+
+    // Bounce off walls
+    if (fb.x < 20 || fb.x + fb.w > 780) {
+      fb.vx *= -1;
+    }
+    if (fb.y > 480) {
+      fb.y = 100;
+      fb.vy = 0;
+    }
+
+    // Collision with player
+    if (player.alive && !player.hasHammer && rectCollide(player, fb)) {
+      killPlayer();
+    }
+
+    // Hammer destroy
+    if (player.hasHammer && player.alive) {
+      let hammerX = player.x + player.w/2 + player.facing * 20;
+      let hammerY = player.y - 5;
+      if (Math.abs(fb.x - hammerX) < 25 && Math.abs(fb.y - hammerY) < 25) {
+        fb.y = -100;
+        fb.vy = 0;
+        score += 300;
+      }
+    }
+  }
+}
+
+function rectCollide(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function killPlayer() {
+  if (!player.alive) return;
+  player.alive = false;
+  lives--;
+  gameState = 'dying';
+  stateTimer = 1500;
+}
+
+// Drawing functions
+function drawPlatforms() {
+  for (let p of platforms) {
+    ctx.strokeStyle = '#FF4444';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x + p.width, p.y + p.width * p.slope);
+    ctx.stroke();
+    // Girder pattern
+    ctx.strokeStyle = '#CC2222';
+    ctx.lineWidth = 1;
+    for (let x = p.x; x < p.x + p.width; x += 20) {
+      let y1 = getPlatformYAt(x, p);
+      ctx.beginPath();
+      ctx.moveTo(x, y1);
+      ctx.lineTo(x + 10, y1 + 6);
+      ctx.lineTo(x + 20, y1);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawLadders() {
+  ctx.strokeStyle = '#44CCFF';
+  ctx.lineWidth = 2;
+  for (let l of ladders) {
+    // Side rails
+    ctx.beginPath();
+    ctx.moveTo(l.x - 8, l.topY);
+    ctx.lineTo(l.x - 8, l.bottomY);
+    ctx.moveTo(l.x + 8, l.topY);
+    ctx.lineTo(l.x + 8, l.bottomY);
+    ctx.stroke();
+    // Rungs
+    for (let y = l.topY; y < l.bottomY; y += 12) {
+      ctx.beginPath();
+      ctx.moveTo(l.x - 8, y);
+      ctx.lineTo(l.x + 8, y);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawPlayer() {
+  if (!player.alive) return;
+  let x = player.x;
+  let y = player.y;
+  let f = player.facing;
+
+  ctx.save();
+  ctx.translate(x + player.w / 2, y + player.h / 2);
+  ctx.scale(f, 1);
+
+  // Body
+  ctx.fillStyle = '#FF0000';
+  ctx.fillRect(-8, -6, 16, 14);
+  // Head
+  ctx.fillStyle = '#FFCC99';
+  ctx.fillRect(-6, -14, 12, 10);
+  // Hat
+  ctx.fillStyle = '#FF0000';
+  ctx.fillRect(-7, -16, 14, 5);
+  // Legs
+  ctx.fillStyle = '#0000CC';
+  let legOffset = player.climbing ? Math.sin(player.walkFrame * 3) * 3 : Math.sin(player.walkFrame * 2) * 3;
+  ctx.fillRect(-7, 8, 6, 8 + legOffset);
+  ctx.fillRect(1, 8, 6, 8 - legOffset);
+
+  // Hammer
+  if (player.hasHammer) {
+    let swing = Math.sin(player.hammerSwing) * 0.8;
+    ctx.save();
+    ctx.rotate(swing - 0.5);
+    ctx.fillStyle = '#8B4513';
+    ctx.fillRect(8, -20, 4, 20);
+    ctx.fillStyle = '#FFD700';
+    ctx.fillRect(4, -28, 12, 10);
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+function drawDK() {
+  let x = dk.x;
+  let y = dk.y;
+  let bounce = Math.sin(dk.animFrame) * 3;
+
+  ctx.save();
+  ctx.translate(x + dk.w / 2, y + dk.h / 2 + bounce);
+
+  // Body
+  ctx.fillStyle = '#8B4513';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 28, 24, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Face
+  ctx.fillStyle = '#D2691E';
+  ctx.beginPath();
+  ctx.ellipse(0, -5, 18, 15, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eyes
+  ctx.fillStyle = '#FFF';
+  ctx.beginPath();
+  ctx.arc(-8, -10, 5, 0, Math.PI * 2);
+  ctx.arc(8, -10, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(-7, -10, 2, 0, Math.PI * 2);
+  ctx.arc(9, -10, 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Mouth
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(0, 3, 10, 6, 0, 0, Math.PI);
+  ctx.fill();
+
+  // Arms
+  ctx.fillStyle = '#8B4513';
+  if (dk.throwing) {
+    // Throwing pose
+    ctx.fillRect(20, -15, 20, 10);
+    ctx.fillRect(-40, -15, 20, 10);
+  } else {
+    ctx.fillRect(22, -5, 14, 10);
+    ctx.fillRect(-36, -5, 14, 10);
+  }
+
+  // Tie
+  ctx.fillStyle = '#FF0000';
+  ctx.beginPath();
+  ctx.moveTo(-5, 10);
+  ctx.lineTo(5, 10);
+  ctx.lineTo(0, 22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#FFD700';
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('DK', 0, 19);
+
+  ctx.restore();
+}
+
+function drawPauline() {
+  let x = pauline.x;
+  let y = pauline.y;
+  let bounce = Math.sin(animFrame * 0.05) * 2;
+
+  ctx.save();
+  ctx.translate(x, y + bounce);
+  // Dress
+  ctx.fillStyle = '#FF69B4';
+  ctx.beginPath();
+  ctx.moveTo(-6, 5);
+  ctx.lineTo(6, 5);
+  ctx.lineTo(10, 28);
+  ctx.lineTo(-10, 28);
+  ctx.closePath();
+  ctx.fill();
+  // Head
+  ctx.fillStyle = '#FFCC99';
+  ctx.beginPath();
+  ctx.arc(0, 0, 7, 0, Math.PI * 2);
+  ctx.fill();
+  // Hair
+  ctx.fillStyle = '#8B4513';
+  ctx.beginPath();
+  ctx.arc(0, -3, 7, Math.PI, 0);
+  ctx.fill();
+  // Help text
+  ctx.fillStyle = '#FFF';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  if (Math.floor(animFrame / 30) % 2 === 0) {
+    ctx.fillText('救命!', 0, -15);
+  }
+  ctx.restore();
+}
+
+function drawBarrels() {
+  for (let barrel of barrels) {
+    ctx.save();
+    ctx.translate(barrel.x + barrel.w / 2, barrel.y + barrel.h / 2);
+    ctx.rotate(barrel.rotation);
+    // Barrel body
+    ctx.fillStyle = '#D2691E';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, barrel.w / 2, barrel.h / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Bands
+    ctx.strokeStyle = '#8B4513';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-barrel.w / 2, -2);
+    ctx.lineTo(barrel.w / 2, -2);
+    ctx.moveTo(-barrel.w / 2, 3);
+    ctx.lineTo(barrel.w / 2, 3);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawFireballs() {
+  for (let fb of fireballs) {
+    let flicker = Math.sin(fb.animFrame * 5) * 2;
+    ctx.fillStyle = '#FF4500';
+    ctx.beginPath();
+    ctx.arc(fb.x + fb.w/2, fb.y + fb.h/2, 6 + flicker, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#FFD700';
+    ctx.beginPath();
+    ctx.arc(fb.x + fb.w/2, fb.y + fb.h/2, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawHammers() {
+  for (let h of hammers) {
+    if (!h.active) continue;
+    let bob = Math.sin(animFrame * 0.08) * 3;
+    ctx.save();
+    ctx.translate(h.x, h.y + bob);
+    // Handle
+    ctx.fillStyle = '#8B4513';
+    ctx.fillRect(-2, -5, 4, 18);
+    // Head
+    ctx.fillStyle = '#FFD700';
+    ctx.fillRect(-8, -12, 16, 10);
+    ctx.restore();
+  }
+}
+
+function drawUI() {
+  ctx.fillStyle = '#FFF';
+  ctx.font = '14px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('分数: ' + score, 10, 20);
+  ctx.fillText('关卡: ' + level, 10, 40);
+
+  // Lives
+  ctx.textAlign = 'right';
+  ctx.fillText('生命: ', 720, 20);
+  for (let i = 0; i < lives; i++) {
+    ctx.fillStyle = '#FF0000';
+    ctx.fillRect(725 + i * 20, 10, 12, 14);
+  }
+
+  // Hammer timer
+  if (player.hasHammer) {
+    ctx.fillStyle = '#FFD700';
+    ctx.textAlign = 'center';
+    let barWidth = (player.hammerTimer / 7000) * 100;
+    ctx.fillRect(350, 465, barWidth, 8);
+    ctx.strokeStyle = '#FFF';
+    ctx.strokeRect(350, 465, 100, 8);
+  }
+}
+
+function drawOverlay(text, subtext) {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#FFD700';
+  ctx.font = 'bold 32px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, 400, 210);
+  if (subtext) {
+    ctx.fillStyle = '#FFF';
+    ctx.font = '16px monospace';
+    ctx.fillText(subtext, 400, 260);
+  }
+}
+
+// Main game loop
+let lastTime = 0;
+function gameLoop(timestamp) {
+  let dt = timestamp - lastTime;
+  lastTime = timestamp;
+  if (dt > 100) dt = 16;
+  animFrame++;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 800, 480);
+
+  switch (gameState) {
+    case 'ready':
+      drawPlatforms();
+      drawLadders();
+      drawHammers();
+      drawDK();
+      drawPauline();
+      drawPlayer();
+      drawUI();
+      drawOverlay('大金刚', '第 ' + level + ' 关 - 按空格键开始');
+      break;
+
+    case 'playing':
+      updatePlayer(dt);
+      updateDK(dt);
+      updateBarrels(dt);
+      updateFireballs(dt);
+      drawPlatforms();
+      drawLadders();
+      drawHammers();
+      drawBarrels();
+      drawFireballs();
+      drawDK();
+      drawPauline();
+      drawPlayer();
+      drawUI();
+      break;
+
+    case 'dying':
+      drawPlatforms();
+      drawLadders();
+      drawBarrels();
+      drawDK();
+      drawPauline();
+      drawUI();
+      // Death animation
+      ctx.save();
+      ctx.translate(player.x + player.w/2, player.y + player.h/2);
+      ctx.rotate(stateTimer * 0.01);
+      ctx.fillStyle = '#FF0000';
+      ctx.fillRect(-10, -14, 20, 28);
+      ctx.restore();
+      stateTimer -= dt;
+      if (stateTimer <= 0) {
+        if (lives <= 0) {
+          gameState = 'gameover';
+        } else {
+          initLevel();
+          gameState = 'playing';
+        }
+      }
+      break;
+
+    case 'gameover':
+      drawPlatforms();
+      drawLadders();
+      drawDK();
+      drawUI();
+      drawOverlay('游戏结束', '最终分数: ' + score + ' | 按空格键重新开始');
+      break;
+
+    case 'win':
+      drawPlatforms();
+      drawLadders();
+      drawDK();
+      drawPauline();
+      drawPlayer();
+      drawUI();
+      drawOverlay('关卡完成!', '奖励: ' + (1000 + level * 500) + ' | 按空格键继续');
+      break;
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+startGame();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

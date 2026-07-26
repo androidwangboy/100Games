@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>单词搜索</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0, bestScore = 0;
+let grid = [], gridSize = 12, cellSize = 34;
+let words = [], foundWords = [], selectedCells = [];
+let isSelecting = false, selStart = null, selEnd = null;
+let timer = 0, timerRunning = false, frameCount = 0;
+let currentTheme = 0, particles = [], hintCells = [];
+let gridOffsetX = 30, gridOffsetY = 35;
+let hoverCell = null, lastFoundTime = 0;
+let comboCount = 0, message = '', messageTimer = 0;
+
+const THEMES = [
+  { name: '动物', icon: '🐾', words: ['TIGER','PANDA','EAGLE','SHARK','WHALE','SNAKE','HORSE','ZEBRA','MOUSE','RABBIT','CAMEL','OTTER'] },
+  { name: '食物', icon: '🍕', words: ['PIZZA','BREAD','GRAPE','MANGO','STEAK','SALAD','HONEY','LEMON','PEACH','OLIVE','BACON','CREAM'] },
+  { name: '颜色', icon: '🎨', words: ['GREEN','BLACK','WHITE','BROWN','CORAL','IVORY','AMBER','GOLD','BLUE','PINK','CYAN','RED'] },
+  { name: '自然', icon: '🌿', words: ['OCEAN','RIVER','CLOUD','STONE','FLAME','FROST','STORM','BLOOM','CEDAR','CORAL','FERN','MOSS'] },
+  { name: '太空', icon: '🚀', words: ['COMET','ORBIT','LUNAR','SOLAR','VENUS','MARS','PLUTO','NOVA','STAR','MOON','ALIEN','ROCKET'] },
+  { name: '运动', icon: '⚽', words: ['RUGBY','TENNIS','BOXING','SKIING','DIVING','RACING','ARCHERY','FENCING','ROWING','JUDO','POLO','SURF'] },
+];
+
+const DIRECTIONS = [
+  [0, 1], [1, 0], [1, 1], [-1, 1],
+  [0, -1], [-1, 0], [-1, -1], [1, -1]
+];
+
+const FOUND_COLORS = ['#e74c3c','#f39c12','#2ecc71','#3498db','#9b59b6','#1abc9c','#e67e22','#e91e63','#00bcd4','#8bc34a'];
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (state === 'title' && (e.code === 'Space' || e.code === 'Enter')) startGame();
+  else if (state === 'gameover' && (e.code === 'Space' || e.code === 'Enter')) state = 'title';
+});
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (state === 'title') {
+    handleTitleClick(mx, my);
+    return;
+  }
+  if (state === 'gameover') { state = 'title'; return; }
+  if (state !== 'playing') return;
+
+  const cell = getCellAt(mx, my);
+  if (cell) {
+    isSelecting = true;
+    selStart = cell; selEnd = cell;
+    updateSelection();
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  hoverCell = getCellAt(mx, my);
+
+  if (!isSelecting || state !== 'playing') return;
+  const cell = getCellAt(mx, my);
+  if (cell) { selEnd = cell; updateSelection(); }
+});
+
+canvas.addEventListener('mouseup', () => {
+  if (!isSelecting || state !== 'playing') return;
+  isSelecting = false;
+  checkSelection();
+  selectedCells = [];
+  selStart = null; selEnd = null;
+});
+
+function handleTitleClick(mx, my) {
+  const startY = H / 2 + 30;
+  for (let i = 0; i < THEMES.length; i++) {
+    const bx = W / 2 - 210 + (i % 3) * 145;
+    const by = startY + Math.floor(i / 3) * 55;
+    if (mx >= bx && mx <= bx + 130 && my >= by && my <= by + 42) {
+      currentTheme = i;
+      startGame();
+      return;
+    }
+  }
+}
+
+function getCellAt(mx, my) {
+  const col = Math.floor((mx - gridOffsetX) / cellSize);
+  const row = Math.floor((my - gridOffsetY) / cellSize);
+  if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) return { row, col };
+  return null;
+}
+
+function updateSelection() {
+  if (!selStart || !selEnd) { selectedCells = []; return; }
+  const dr = selEnd.row - selStart.row;
+  const dc = selEnd.col - selStart.col;
+
+  if (dr === 0 && dc === 0) { selectedCells = [selStart]; return; }
+
+  let stepR = 0, stepC = 0;
+  if (dr === 0) stepC = dc > 0 ? 1 : -1;
+  else if (dc === 0) stepR = dr > 0 ? 1 : -1;
+  else if (Math.abs(dr) === Math.abs(dc)) { stepR = dr > 0 ? 1 : -1; stepC = dc > 0 ? 1 : -1; }
+  else { selectedCells = [selStart]; return; }
+
+  const steps = Math.max(Math.abs(dr), Math.abs(dc));
+  selectedCells = [];
+  for (let i = 0; i <= steps; i++) {
+    selectedCells.push({ row: selStart.row + stepR * i, col: selStart.col + stepC * i });
+  }
+}
+
+function checkSelection() {
+  if (selectedCells.length < 2) return;
+  const selectedWord = selectedCells.map(c => grid[c.row][c.col]).join('');
+  const reversedWord = [...selectedWord].reverse().join('');
+
+  for (const w of words) {
+    if (foundWords.includes(w.text)) continue;
+    if (selectedWord === w.text || reversedWord === w.text) {
+      foundWords.push(w.text);
+      w.foundCells = [...selectedCells];
+      const now = Date.now();
+      if (now - lastFoundTime < 5000) comboCount++;
+      else comboCount = 1;
+      lastFoundTime = now;
+
+      const bonus = comboCount > 1 ? comboCount * 5 : 0;
+      const pts = w.text.length * 10 + bonus;
+      score += pts;
+
+      if (comboCount > 1) {
+        message = `连找 x${comboCount}! +${pts}`;
+        messageTimer = 60;
+      }
+
+      const colorIdx = foundWords.length - 1;
+      for (const c of selectedCells) {
+        for (let p = 0; p < 3; p++) {
+          particles.push({
+            x: gridOffsetX + c.col * cellSize + cellSize / 2,
+            y: gridOffsetY + c.row * cellSize + cellSize / 2,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6 - 2,
+            life: 30 + Math.random() * 15,
+            color: FOUND_COLORS[colorIdx % FOUND_COLORS.length],
+            radius: 2 + Math.random() * 3
+          });
+        }
+      }
+
+      if (foundWords.length === words.length) {
+        const timeBonus = Math.max(0, 300 - Math.floor(timer / 60) * 3);
+        score += timeBonus;
+        if (score > bestScore) bestScore = score;
+        message = `全部找到! 时间奖励 +${timeBonus}`;
+        messageTimer = 120;
+        setTimeout(() => { state = 'gameover'; }, 1500);
+      }
+      return;
+    }
+  }
+}
+
+function startGame() {
+  state = 'playing';
+  score = 0; foundWords = []; selectedCells = [];
+  particles = []; hintCells = []; timer = 0; timerRunning = true;
+  frameCount = 0; comboCount = 0; message = ''; messageTimer = 0;
+  lastFoundTime = 0;
+  generateGrid();
+}
+
+function generateGrid() {
+  grid = Array.from({ length: gridSize }, () => Array(gridSize).fill(''));
+  words = [];
+  const theme = THEMES[currentTheme];
+  const wordList = [...theme.words].sort(() => Math.random() - 0.5).slice(0, 8 + Math.floor(Math.random() * 3));
+
+  for (const word of wordList) {
+    let placed = false;
+    for (let attempt = 0; attempt < 300 && !placed; attempt++) {
+      const dir = DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
+      let startRow, startCol;
+
+      if (dir[0] === 0) startRow = Math.floor(Math.random() * gridSize);
+      else if (dir[0] > 0) startRow = Math.floor(Math.random() * (gridSize - word.length + 1));
+      else startRow = word.length - 1 + Math.floor(Math.random() * (gridSize - word.length + 1));
+
+      if (dir[1] === 0) startCol = Math.floor(Math.random() * gridSize);
+      else if (dir[1] > 0) startCol = Math.floor(Math.random() * (gridSize - word.length + 1));
+      else startCol = word.length - 1 + Math.floor(Math.random() * (gridSize - word.length + 1));
+
+      let canPlace = true;
+      const cells = [];
+      for (let i = 0; i < word.length; i++) {
+        const r = startRow + dir[0] * i;
+        const c = startCol + dir[1] * i;
+        if (r < 0 || r >= gridSize || c < 0 || c >= gridSize) { canPlace = false; break; }
+        if (grid[r][c] !== '' && grid[r][c] !== word[i]) { canPlace = false; break; }
+        cells.push({ row: r, col: c });
+      }
+
+      if (canPlace) {
+        for (let i = 0; i < word.length; i++) {
+          grid[cells[i].row][cells[i].col] = word[i];
+        }
+        words.push({ text: word, cells, foundCells: null, dir });
+        placed = true;
+      }
+    }
+  }
+
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
+      if (grid[r][c] === '') grid[r][c] = letters[Math.floor(Math.random() * 26)];
+    }
+  }
+}
+
+function update() {
+  frameCount++;
+  if (state === 'playing' && timerRunning) timer++;
+  if (messageTimer > 0) messageTimer--;
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function drawGrid() {
+  ctx.fillStyle = 'rgba(30, 30, 46, 0.5)';
+  ctx.beginPath();
+  ctx.roundRect(gridOffsetX - 5, gridOffsetY - 5, gridSize * cellSize + 10, gridSize * cellSize + 10, 8);
+  ctx.fill();
+
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
+      const x = gridOffsetX + c * cellSize;
+      const y = gridOffsetY + r * cellSize;
+
+      let bg = (r + c) % 2 === 0 ? '#1e1e2e' : '#22223a';
+      let textColor = '#c8c8d4';
+      let borderColor = '#2a2a40';
+
+      const isSelected = selectedCells.some(s => s.row === r && s.col === c);
+      if (isSelected) {
+        bg = 'rgba(241, 196, 15, 0.25)';
+        borderColor = '#f1c40f';
+        textColor = '#f1c40f';
+      }
+
+      for (let fi = 0; fi < foundWords.length; fi++) {
+        const w = words.find(wd => wd.text === foundWords[fi]);
+        if (w && w.foundCells && w.foundCells.some(fc => fc.row === r && fc.col === c)) {
+          const fc = FOUND_COLORS[fi % FOUND_COLORS.length];
+          bg = fc + '33';
+          borderColor = fc + '88';
+          textColor = fc;
+          break;
+        }
+      }
+
+      if (hoverCell && hoverCell.row === r && hoverCell.col === c && !isSelected) {
+        bg = 'rgba(255,255,255,0.08)';
+      }
+
+      ctx.fillStyle = bg;
+      ctx.beginPath(); ctx.roundRect(x + 1, y + 1, cellSize - 2, cellSize - 2, 4); ctx.fill();
+      ctx.strokeStyle = borderColor; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.roundRect(x + 1, y + 1, cellSize - 2, cellSize - 2, 4); ctx.stroke();
+
+      ctx.fillStyle = textColor;
+      ctx.font = 'bold 15px monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(grid[r][c], x + cellSize / 2, y + cellSize / 2 + 1);
+    }
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawWordList() {
+  const listX = gridOffsetX + gridSize * cellSize + 35;
+  const theme = THEMES[currentTheme];
+
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(`${theme.icon} ${theme.name}`, listX, 45);
+
+  ctx.fillStyle = '#888'; ctx.font = '14px sans-serif';
+  ctx.fillText(`已找到: ${foundWords.length}/${words.length}`, listX, 70);
+
+  const progW = 150, progH = 6;
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.roundRect(listX, 78, progW, progH, 3); ctx.fill();
+  if (words.length > 0) {
+    ctx.fillStyle = '#2ecc71';
+    ctx.beginPath(); ctx.roundRect(listX, 78, progW * foundWords.length / words.length, progH, 3); ctx.fill();
+  }
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const y = 108 + i * 32;
+    const found = foundWords.includes(w.text);
+
+    if (found) {
+      const color = FOUND_COLORS[i % FOUND_COLORS.length];
+      ctx.fillStyle = color;
+      ctx.font = 'bold 15px sans-serif';
+      ctx.fillText(`✓ ${w.text}`, listX, y);
+      const tw = ctx.measureText(`✓ ${w.text}`).width;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(listX, y + 4); ctx.lineTo(listX + tw, y + 4); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#777';
+      ctx.font = '15px sans-serif';
+      ctx.fillText(`○ ${w.text}`, listX, y);
+      ctx.fillStyle = '#555';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(`(${w.text.length}字母)`, listX + ctx.measureText(`○ ${w.text}`).width + 8, y);
+    }
+  }
+}
+
+function drawHUD() {
+  const seconds = Math.floor(timer / 60);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+
+  ctx.fillStyle = '#aaa'; ctx.font = '15px sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText(`⏱ ${mins}:${secs.toString().padStart(2, '0')}`, W - 20, H - 12);
+  ctx.textAlign = 'left';
+  ctx.fillText(`分数: ${score}`, gridOffsetX, H - 12);
+
+  if (comboCount > 1 && Date.now() - lastFoundTime < 5000) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f39c12'; ctx.font = 'bold 14px sans-serif';
+    ctx.fillText(`连找 x${comboCount}`, W / 2, H - 12);
+  }
+}
+
+function drawMessage() {
+  if (messageTimer > 0 && message) {
+    const alpha = Math.min(1, messageTimer / 20);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    const tw = ctx.measureText(message).width;
+    ctx.font = 'bold 18px sans-serif';
+    const bw = tw + 40;
+    ctx.beginPath(); ctx.roundRect(W / 2 - bw / 2, 5, bw, 30, 6); ctx.fill();
+    ctx.fillStyle = '#f1c40f'; ctx.textAlign = 'center';
+    ctx.fillText(message, W / 2, 25);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = p.life / 40;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = 'rgba(52, 152, 219, 0.05)';
+  for (let x = 0; x < W; x += 34) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 34) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  ctx.textAlign = 'center';
+  const pulse = Math.sin(frameCount * 0.04) * 2;
+  ctx.fillStyle = '#3498db'; ctx.font = `bold ${44 + pulse}px sans-serif`;
+  ctx.fillText('🔍 单词搜索', W / 2, H / 2 - 120);
+  ctx.fillStyle = '#d4d4d4'; ctx.font = '18px sans-serif';
+  ctx.fillText('在字母网格中找出隐藏的单词', W / 2, H / 2 - 75);
+  ctx.fillStyle = '#999'; ctx.font = '15px sans-serif';
+  ctx.fillText('点击拖动选择字母（支持横/竖/斜/反向）', W / 2, H / 2 - 48);
+  ctx.fillText('快速连续找到单词可获得连找奖励', W / 2, H / 2 - 25);
+
+  ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 17px sans-serif';
+  ctx.fillText('选择主题开始游戏:', W / 2, H / 2 + 10);
+
+  const startY = H / 2 + 30;
+  for (let i = 0; i < THEMES.length; i++) {
+    const bx = W / 2 - 210 + (i % 3) * 145;
+    const by = startY + Math.floor(i / 3) * 55;
+    const isHover = hoverCell === null;
+
+    ctx.fillStyle = '#1e2a3a';
+    ctx.beginPath(); ctx.roundRect(bx, by, 130, 42, 8); ctx.fill();
+    ctx.strokeStyle = '#3498db';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.roundRect(bx, by, 130, 42, 8); ctx.stroke();
+    ctx.fillStyle = '#ecf0f1'; ctx.font = '15px sans-serif';
+    ctx.fillText(`${THEMES[i].icon} ${THEMES[i].name}`, bx + 65, by + 26);
+  }
+
+  if (bestScore > 0) {
+    ctx.fillStyle = '#95a5a6'; ctx.font = '16px sans-serif';
+    ctx.fillText(`最高分: ${bestScore}`, W / 2, H - 30);
+  }
+}
+
+function drawGameOver() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#2ecc71'; ctx.font = 'bold 44px sans-serif';
+  ctx.fillText('🎉 全部找到!', W / 2, H / 2 - 80);
+
+  const seconds = Math.floor(timer / 60);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  ctx.fillStyle = '#fff'; ctx.font = '24px sans-serif';
+  ctx.fillText(`用时: ${mins}分${secs}秒`, W / 2, H / 2 - 30);
+  ctx.fillText(`分数: ${score}`, W / 2, H / 2 + 10);
+
+  ctx.fillStyle = '#bbb'; ctx.font = '18px sans-serif';
+  ctx.fillText(`主题: ${THEMES[currentTheme].icon} ${THEMES[currentTheme].name}`, W / 2, H / 2 + 50);
+  ctx.fillText(`找到单词: ${words.length}个`, W / 2, H / 2 + 80);
+
+  ctx.fillStyle = '#f1c40f'; ctx.font = '20px sans-serif';
+  ctx.fillText(`最高分: ${bestScore}`, W / 2, H / 2 + 120);
+
+  ctx.fillStyle = '#95a5a6'; ctx.font = '17px sans-serif';
+  ctx.fillText('点击返回主题选择', W / 2, H / 2 + 165);
+}
+
+function render() {
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'gameover') { drawGameOver(); return; }
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  drawGrid();
+  drawWordList();
+  drawHUD();
+  drawParticles();
+  drawMessage();
+}
+
+function loop() { update(); render(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

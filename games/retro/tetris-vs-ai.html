@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>俄罗斯方块对战</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'title';
+let score = 0;
+const COLS = 10, ROWS = 20, BLOCK = 20;
+const COLORS = ['#00f0f0','#0000f0','#f0a000','#f0f000','#00f000','#a000f0','#f00000'];
+const SHAPES = [
+  [[1,1,1,1]],
+  [[1,0,0],[1,1,1]],
+  [[0,0,1],[1,1,1]],
+  [[1,1],[1,1]],
+  [[0,1,1],[1,1,0]],
+  [[0,1,0],[1,1,1]],
+  [[1,1,0],[0,1,1]]
+];
+
+let player, ai, pieceQueue, gameOver = false, winner = '';
+let keys = {};
+let aiTimer = 0, aiMoveInterval = 8;
+
+document.addEventListener('keydown', e => {
+  if (state === 'title' && e.code === 'Enter') { startGame(); return; }
+  if (state === 'gameover' && e.code === 'Enter') { state = 'title'; return; }
+  if (state !== 'playing') return;
+  keys[e.code] = true;
+  e.preventDefault();
+  if (e.code === 'ArrowLeft') movePiece(player, -1, 0);
+  if (e.code === 'ArrowRight') movePiece(player, 1, 0);
+  if (e.code === 'ArrowDown') { movePiece(player, 0, 1); player.dropTimer = 0; }
+  if (e.code === 'ArrowUp') rotatePiece(player);
+  if (e.code === 'Space') hardDrop(player);
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function createBoard() {
+  return Array.from({length: ROWS}, () => Array(COLS).fill(0));
+}
+
+function nextPieceType() {
+  if (pieceQueue.length < 2) {
+    for (let i = 0; i < 7; i++) pieceQueue.push(Math.floor(Math.random() * 7));
+  }
+  return pieceQueue.shift();
+}
+
+function spawnPiece(board) {
+  let type = nextPieceType();
+  let shape = SHAPES[type].map(r => [...r]);
+  return {
+    shape: shape, type: type,
+    x: Math.floor((COLS - shape[0].length) / 2), y: 0,
+    dropTimer: 0, dropInterval: 30
+  };
+}
+
+function collides(board, shape, px, py) {
+  for (let r = 0; r < shape.length; r++) {
+    for (let c = 0; c < shape[r].length; c++) {
+      if (!shape[r][c]) continue;
+      let nx = px + c, ny = py + r;
+      if (nx < 0 || nx >= COLS || ny >= ROWS) return true;
+      if (ny >= 0 && board[ny][nx]) return true;
+    }
+  }
+  return false;
+}
+
+function movePiece(p, dx, dy) {
+  if (!collides(p.board, p.piece.shape, p.piece.x + dx, p.piece.y + dy)) {
+    p.piece.x += dx; p.piece.y += dy; return true;
+  }
+  return false;
+}
+
+function rotatePiece(p) {
+  let s = p.piece.shape;
+  let rotated = s[0].map((_, i) => s.map(row => row[i]).reverse());
+  if (!collides(p.board, rotated, p.piece.x, p.piece.y)) {
+    p.piece.shape = rotated;
+  } else if (!collides(p.board, rotated, p.piece.x - 1, p.piece.y)) {
+    p.piece.shape = rotated; p.piece.x--;
+  } else if (!collides(p.board, rotated, p.piece.x + 1, p.piece.y)) {
+    p.piece.shape = rotated; p.piece.x++;
+  }
+}
+
+function hardDrop(p) {
+  while (movePiece(p, 0, 1)) {}
+  lockPiece(p);
+}
+
+function lockPiece(p) {
+  let s = p.piece.shape;
+  for (let r = 0; r < s.length; r++) {
+    for (let c = 0; c < s[r].length; c++) {
+      if (!s[r][c]) continue;
+      let ny = p.piece.y + r, nx = p.piece.x + c;
+      if (ny < 0) { p.dead = true; return; }
+      p.board[ny][nx] = p.piece.type + 1;
+    }
+  }
+  clearLines(p);
+  p.piece = spawnPiece(p.board);
+  if (collides(p.board, p.piece.shape, p.piece.x, p.piece.y)) p.dead = true;
+}
+
+function clearLines(p) {
+  let cleared = 0;
+  for (let r = ROWS - 1; r >= 0; r--) {
+    if (p.board[r].every(c => c !== 0)) {
+      p.board.splice(r, 1);
+      p.board.unshift(Array(COLS).fill(0));
+      cleared++; r++;
+    }
+  }
+  if (cleared > 0) {
+    p.lines += cleared;
+    p.score += [0, 100, 300, 500, 800][cleared];
+    // Send garbage
+    let send = 0;
+    if (cleared === 2) send = 1;
+    else if (cleared === 3) send = 2;
+    else if (cleared >= 4) send = 4;
+    if (send > 0) p.pendingGarbage += send;
+  }
+}
+
+function addGarbage(p, lines) {
+  for (let i = 0; i < lines; i++) {
+    p.board.shift();
+    let row = Array(COLS).fill(8);
+    let gap = Math.floor(Math.random() * COLS);
+    row[gap] = 0;
+    p.board.push(row);
+  }
+  if (p.board[0].some(c => c !== 0)) p.dead = true;
+}
+
+function startGame() {
+  pieceQueue = [];
+  for (let i = 0; i < 14; i++) pieceQueue.push(Math.floor(Math.random() * 7));
+  player = { board: createBoard(), piece: null, dead: false, lines: 0, score: 0, pendingGarbage: 0, name: '玩家' };
+  ai = { board: createBoard(), piece: null, dead: false, lines: 0, score: 0, pendingGarbage: 0, name: 'AI' };
+  // Shared sequence: both get same pieces
+  let sharedQueue = [...pieceQueue];
+  pieceQueue = [...sharedQueue];
+  let aiQueue = [...sharedQueue];
+  player.piece = spawnPiece(player.board);
+  // For AI, use separate queue copy
+  pieceQueue = [...aiQueue];
+  ai.piece = spawnPiece(ai.board);
+  // Reset to shared
+  pieceQueue = [];
+  for (let i = 0; i < 14; i++) pieceQueue.push(Math.floor(Math.random() * 7));
+  player.nextType = pieceQueue[0];
+  ai.nextType = pieceQueue[0];
+  score = 0; gameOver = false; winner = '';
+  aiTimer = 0;
+  state = 'playing';
+}
+
+// AI heuristic evaluation
+function evaluate(board) {
+  let heights = Array(COLS).fill(0);
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < ROWS; r++) {
+      if (board[r][c]) { heights[c] = ROWS - r; break; }
+    }
+  }
+  let totalHeight = heights.reduce((a, b) => a + b, 0);
+  let holes = 0;
+  for (let c = 0; c < COLS; c++) {
+    let found = false;
+    for (let r = 0; r < ROWS; r++) {
+      if (board[r][c]) found = true;
+      else if (found) holes++;
+    }
+  }
+  let bumpiness = 0;
+  for (let c = 0; c < COLS - 1; c++) bumpiness += Math.abs(heights[c] - heights[c + 1]);
+  // Complete lines bonus
+  let completeLines = 0;
+  for (let r = 0; r < ROWS; r++) {
+    if (board[r].every(c => c !== 0)) completeLines++;
+  }
+  return -0.51 * totalHeight + 0.76 * completeLines - 0.36 * holes - 0.18 * bumpiness;
+}
+
+function aiBestMove() {
+  let best = { score: -Infinity, x: ai.piece.x, rot: 0 };
+  let origShape = ai.piece.shape.map(r => [...r]);
+  for (let rot = 0; rot < 4; rot++) {
+    let shape = origShape.map(r => [...r]);
+    for (let i = 0; i < rot; i++) {
+      shape = shape[0].map((_, ci) => shape.map(row => row[ci]).reverse());
+    }
+    for (let x = -2; x < COLS + 2; x++) {
+      if (collides(ai.board, shape, x, 0) && collides(ai.board, shape, x, 1)) continue;
+      let y = 0;
+      while (!collides(ai.board, shape, x, y + 1)) y++;
+      // Simulate
+      let testBoard = ai.board.map(r => [...r]);
+      let valid = true;
+      for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+          if (!shape[r][c]) continue;
+          let ny = y + r, nx = x + c;
+          if (ny < 0 || ny >= ROWS || nx < 0 || nx >= COLS) { valid = false; break; }
+          testBoard[ny][nx] = 1;
+        }
+        if (!valid) break;
+      }
+      if (!valid) continue;
+      let sc = evaluate(testBoard);
+      if (sc > best.score) best = { score: sc, x: x, rot: rot };
+    }
+  }
+  return best;
+}
+
+let aiTarget = null;
+function updateAI() {
+  if (ai.dead) return;
+  aiTimer++;
+  if (aiTimer < aiMoveInterval) return;
+  aiTimer = 0;
+
+  if (!aiTarget) aiTarget = aiBestMove();
+
+  // Rotate towards target
+  let curRot = 0; // simplified: just move and drop
+  if (ai.piece.x < aiTarget.x) { movePiece(ai, 1, 0); }
+  else if (ai.piece.x > aiTarget.x) { movePiece(ai, -1, 0); }
+  else {
+    // Rotate if needed
+    let s = ai.piece.shape;
+    let targetShape = SHAPES[ai.piece.type].map(r => [...r]);
+    for (let i = 0; i < aiTarget.rot; i++) {
+      targetShape = targetShape[0].map((_, ci) => targetShape.map(row => row[ci]).reverse());
+    }
+    let same = s.length === targetShape.length && s.every((row, ri) => row.every((v, ci) => v === targetShape[ri][ci]));
+    if (!same) { rotatePiece(ai); }
+    else { hardDrop(ai); aiTarget = null; }
+  }
+}
+
+function update() {
+  if (state !== 'playing') return;
+
+  // Player gravity
+  player.piece.dropTimer++;
+  if (player.piece.dropTimer >= player.piece.dropInterval) {
+    player.piece.dropTimer = 0;
+    if (!movePiece(player, 0, 1)) lockPiece(player);
+  }
+
+  // AI
+  updateAI();
+  ai.piece.dropTimer++;
+  if (ai.piece.dropTimer >= 25) {
+    ai.piece.dropTimer = 0;
+    if (!movePiece(ai, 0, 1)) lockPiece(ai);
+  }
+
+  // Exchange garbage
+  if (player.pendingGarbage > 0) { addGarbage(ai, player.pendingGarbage); player.pendingGarbage = 0; }
+  if (ai.pendingGarbage > 0) { addGarbage(player, ai.pendingGarbage); ai.pendingGarbage = 0; }
+
+  score = player.score;
+
+  // Check game over
+  if (player.dead || ai.dead) {
+    state = 'gameover';
+    winner = player.dead ? 'AI' : '玩家';
+  }
+}
+
+function drawBoard(board, ox, oy, label, lines, sc, pending) {
+  // Border
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(ox - 1, oy - 1, COLS * BLOCK + 2, ROWS * BLOCK + 2);
+  // Grid bg
+  ctx.fillStyle = '#0a0a14';
+  ctx.fillRect(ox, oy, COLS * BLOCK, ROWS * BLOCK);
+  // Grid lines
+  ctx.strokeStyle = '#1a1a2a';
+  ctx.lineWidth = 0.5;
+  for (let r = 0; r <= ROWS; r++) { ctx.beginPath(); ctx.moveTo(ox, oy + r * BLOCK); ctx.lineTo(ox + COLS * BLOCK, oy + r * BLOCK); ctx.stroke(); }
+  for (let c = 0; c <= COLS; c++) { ctx.beginPath(); ctx.moveTo(ox + c * BLOCK, oy); ctx.lineTo(ox + c * BLOCK, oy + ROWS * BLOCK); ctx.stroke(); }
+  // Blocks
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c]) {
+        let color = board[r][c] === 8 ? '#666' : COLORS[board[r][c] - 1];
+        ctx.fillStyle = color;
+        ctx.fillRect(ox + c * BLOCK + 1, oy + r * BLOCK + 1, BLOCK - 2, BLOCK - 2);
+      }
+    }
+  }
+  // Label
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, ox + COLS * BLOCK / 2, oy - 10);
+  ctx.font = '12px monospace';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('行: ' + lines + '  分: ' + sc, ox + COLS * BLOCK / 2, oy + ROWS * BLOCK + 18);
+  if (pending > 0) {
+    ctx.fillStyle = '#f44';
+    ctx.fillText('垃圾: +' + pending, ox + COLS * BLOCK / 2, oy + ROWS * BLOCK + 34);
+  }
+  ctx.textAlign = 'left';
+}
+
+function drawPiece(p, ox, oy) {
+  let s = p.piece.shape;
+  ctx.fillStyle = COLORS[p.piece.type];
+  for (let r = 0; r < s.length; r++) {
+    for (let c = 0; c < s[r].length; c++) {
+      if (!s[r][c]) continue;
+      let px = ox + (p.piece.x + c) * BLOCK + 1;
+      let py = oy + (p.piece.y + r) * BLOCK + 1;
+      ctx.fillRect(px, py, BLOCK - 2, BLOCK - 2);
+    }
+  }
+  // Ghost piece
+  let gy = p.piece.y;
+  while (!collides(p.board, s, p.piece.x, gy + 1)) gy++;
+  ctx.globalAlpha = 0.25;
+  for (let r = 0; r < s.length; r++) {
+    for (let c = 0; c < s[r].length; c++) {
+      if (!s[r][c]) continue;
+      ctx.fillRect(ox + (p.piece.x + c) * BLOCK + 1, oy + (gy + r) * BLOCK + 1, BLOCK - 2, BLOCK - 2);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state === 'title') { drawTitle(); return; }
+  if (state === 'gameover') { drawGameOver(); return; }
+
+  let pOx = 80, pOy = 40;
+  let aOx = 520, aOy = 40;
+
+  drawBoard(player.board, pOx, pOy, '玩家', player.lines, player.score, player.pendingGarbage);
+  drawPiece(player, pOx, pOy);
+  drawBoard(ai.board, aOx, aOy, 'AI', ai.lines, ai.score, ai.pendingGarbage);
+  drawPiece(ai, aOx, aOy);
+
+  // Center info
+  ctx.fillStyle = '#ff0';
+  ctx.font = 'bold 16px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('VS', W / 2, 60);
+  ctx.fillStyle = '#888';
+  ctx.font = '12px monospace';
+  ctx.fillText('消2行送1行', W / 2, 100);
+  ctx.fillText('消4行送4行', W / 2, 120);
+  ctx.fillText('← → 移动', W / 2, 180);
+  ctx.fillText('↑ 旋转', W / 2, 200);
+  ctx.fillText('↓ 加速', W / 2, 220);
+  ctx.fillText('空格 硬降', W / 2, 240);
+  ctx.textAlign = 'left';
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f44';
+  ctx.font = 'bold 42px monospace';
+  ctx.fillText('俄罗斯方块对战', W/2, 130);
+  ctx.fillStyle = '#888';
+  ctx.font = '18px monospace';
+  ctx.fillText('TETRIS VS AI', W/2, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px monospace';
+  ctx.fillText('与AI同场竞技，消除行发送垃圾给对手', W/2, 230);
+  ctx.fillText('消2行送1行 | 消3行送2行 | 消4行送4行', W/2, 265);
+  ctx.fillText('← → 移动 | ↑ 旋转 | ↓ 加速 | 空格 硬降', W/2, 310);
+  ctx.fillText('先溢出者输!', W/2, 350);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '20px monospace';
+  ctx.fillText('按 ENTER 开始游戏', W/2, 420);
+  ctx.textAlign = 'left';
+}
+
+function drawGameOver() {
+  ctx.textAlign = 'center';
+  let isWin = winner === '玩家';
+  ctx.fillStyle = isWin ? '#4f4' : '#f44';
+  ctx.font = 'bold 44px monospace';
+  ctx.fillText(isWin ? '你赢了!' : '你输了!', W/2, 150);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px monospace';
+  ctx.fillText('玩家分数: ' + player.score + '  行数: ' + player.lines, W/2, 220);
+  ctx.fillText('AI 分数: ' + ai.score + '  行数: ' + ai.lines, W/2, 260);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '18px monospace';
+  ctx.fillText('按 ENTER 返回标题', W/2, 380);
+  ctx.textAlign = 'left';
+}
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

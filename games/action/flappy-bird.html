@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>像素鸟</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const GRAVITY = 0.45, FLAP = -7.5;
+const PIPE_W = 55, GAP = 140, PIPE_SPEED = 3;
+
+let state = 'start';
+let score = 0, highScore = 0;
+let bird, pipes, frame, groundX;
+
+function init() {
+  bird = {x: 150, y: H/2, vy: 0, rot: 0, flapFrame: 0};
+  pipes = [];
+  frame = 0;
+  score = 0;
+  groundX = 0;
+}
+
+function flap() {
+  bird.vy = FLAP;
+  bird.flapFrame = 10;
+}
+
+function spawnPipe() {
+  const minY = 80, maxY = H - 80 - GAP;
+  const gapY = minY + Math.random() * (maxY - minY);
+  pipes.push({x: W, gapY, scored: false});
+}
+
+function update() {
+  frame++;
+  groundX = (groundX + PIPE_SPEED) % 40;
+
+  bird.vy += GRAVITY;
+  bird.y += bird.vy;
+  bird.rot = Math.min(Math.PI/4, Math.max(-Math.PI/6, bird.vy * 0.06));
+  if (bird.flapFrame > 0) bird.flapFrame--;
+
+  if (frame % 90 === 0) spawnPipe();
+
+  pipes.forEach(p => {
+    p.x -= PIPE_SPEED;
+    if (!p.scored && p.x + PIPE_W < bird.x) {
+      p.scored = true;
+      score++;
+    }
+  });
+  pipes = pipes.filter(p => p.x > -PIPE_W);
+
+  // Collision
+  const bx = bird.x, by = bird.y, br = 12;
+  if (by + br > H - 40 || by - br < 0) { gameOver(); return; }
+  for (const p of pipes) {
+    if (bx + br > p.x && bx - br < p.x + PIPE_W) {
+      if (by - br < p.gapY || by + br > p.gapY + GAP) { gameOver(); return; }
+    }
+  }
+}
+
+function gameOver() {
+  state = 'over';
+  if (score > highScore) highScore = score;
+}
+
+function drawBird() {
+  ctx.save();
+  ctx.translate(bird.x, bird.y);
+  ctx.rotate(bird.rot);
+
+  // Body
+  ctx.fillStyle = '#fd0';
+  ctx.fillRect(-12, -10, 24, 20);
+  // Wing
+  ctx.fillStyle = bird.flapFrame > 0 ? '#fa0' : '#e90';
+  ctx.fillRect(-8, bird.flapFrame > 0 ? -14 : -4, 14, 8);
+  // Eye
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(4, -8, 8, 8);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(8, -6, 4, 4);
+  // Beak
+  ctx.fillStyle = '#f60';
+  ctx.fillRect(12, -2, 8, 6);
+
+  ctx.restore();
+}
+
+function drawPipe(p) {
+  const grad1 = ctx.createLinearGradient(p.x, 0, p.x + PIPE_W, 0);
+  grad1.addColorStop(0, '#2a2');
+  grad1.addColorStop(0.5, '#4d4');
+  grad1.addColorStop(1, '#2a2');
+  ctx.fillStyle = grad1;
+
+  // Top pipe
+  ctx.fillRect(p.x, 0, PIPE_W, p.gapY);
+  ctx.fillRect(p.x - 4, p.gapY - 20, PIPE_W + 8, 20);
+  // Bottom pipe
+  ctx.fillRect(p.x, p.gapY + GAP, PIPE_W, H - p.gapY - GAP);
+  ctx.fillRect(p.x - 4, p.gapY + GAP, PIPE_W + 8, 20);
+
+  ctx.strokeStyle = '#181';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(p.x, 0, PIPE_W, p.gapY);
+  ctx.strokeRect(p.x, p.gapY + GAP, PIPE_W, H - p.gapY - GAP);
+}
+
+function draw() {
+  // Sky gradient
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#1a1a3a');
+  sky.addColorStop(1, '#2a2a4a');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  ctx.fillStyle = '#ffffff33';
+  for (let i = 0; i < 30; i++) {
+    ctx.fillRect((i*137+50)%W, (i*89+20)%(H-80), 2, 2);
+  }
+
+  if (state === 'start') {
+    ctx.fillStyle = '#fd0';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('像素鸟', 400, 140);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px monospace';
+    ctx.fillText('空格键 / 鼠标点击 扇动翅膀', 400, 230);
+    ctx.fillText('穿过管道间隙得分', 400, 270);
+    ctx.fillStyle = '#ff0';
+    ctx.font = '24px monospace';
+    ctx.fillText('按 空格键 开始', 400, 350);
+    ctx.fillStyle = '#666';
+    ctx.font = '16px monospace';
+    ctx.fillText('ESC 退出游戏', 400, 420);
+    drawBird();
+    return;
+  }
+
+  // Ground
+  ctx.fillStyle = '#3a2a1a';
+  ctx.fillRect(0, H-40, W, 40);
+  ctx.fillStyle = '#4a3a2a';
+  for (let x = -groundX; x < W; x += 40) {
+    ctx.fillRect(x, H-40, 20, 5);
+  }
+
+  pipes.forEach(drawPipe);
+  drawBird();
+
+  // Score
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 36px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#000';
+  ctx.shadowBlur = 4;
+  ctx.fillText(score, W/2, 50);
+  ctx.shadowBlur = 0;
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#f44';
+    ctx.font = 'bold 44px monospace';
+    ctx.fillText('游戏结束', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '28px monospace';
+    ctx.fillText(`得分: ${score}`, 400, 230);
+    ctx.fillStyle = '#ff0';
+    ctx.fillText(`最高分: ${highScore}`, 400, 275);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '22px monospace';
+    ctx.fillText('按 空格键 重新开始', 400, 360);
+  }
+}
+
+function loop() {
+  if (state === 'play') update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state === 'start') { init(); state = 'play'; flap(); }
+    else if (state === 'play') flap();
+    else if (state === 'over') { init(); state = 'play'; flap(); }
+  }
+});
+canvas.addEventListener('click', () => {
+  if (state === 'start') { init(); state = 'play'; flap(); }
+  else if (state === 'play') flap();
+  else if (state === 'over') { init(); state = 'play'; flap(); }
+});
+
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

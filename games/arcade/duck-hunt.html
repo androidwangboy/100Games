@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>打鸭子</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+
+let state = 'start';
+let score = 0, round, ducksInRound, shotsLeft, ducks, dog, duckTimer, roundMsg, roundMsgTimer;
+const DUCKS_PER_ROUND = 5, SHOTS_PER_DUCK = 3, TOTAL_ROUNDS = 3;
+
+function init() {
+  score = 0; round = 1; ducksInRound = 0; shotsLeft = SHOTS_PER_DUCK;
+  ducks = []; dog = null; duckTimer = 0;
+  roundMsg = `第 ${round} 回合`; roundMsgTimer = 90;
+}
+
+function spawnDuck() {
+  const dir = Math.random() > 0.5 ? 1 : -1;
+  ducks.push({
+    x: dir > 0 ? -40 : W + 40,
+    y: 100 + Math.random() * 200,
+    vx: dir * (2 + Math.random() * 2 + round * 0.5),
+    vy: (Math.random() - 0.5) * 3,
+    alive: true, falling: false, frame: 0,
+    color: ['#4af','#fa4','#f4a'][Math.floor(Math.random()*3)]
+  });
+  shotsLeft = SHOTS_PER_DUCK;
+}
+
+function update() {
+  if (roundMsgTimer > 0) { roundMsgTimer--; return; }
+
+  if (ducks.length === 0 && ducksInRound < DUCKS_PER_ROUND) {
+    duckTimer++;
+    if (duckTimer > 40) { duckTimer = 0; spawnDuck(); ducksInRound++; }
+  }
+
+  ducks.forEach(d => {
+    d.frame++;
+    if (d.falling) {
+      d.y += 5;
+      d.vy = 0; d.vx = 0;
+    } else if (d.alive) {
+      d.x += d.vx;
+      d.y += d.vy;
+      if (d.y < 50 || d.y > 320) d.vy *= -1;
+      if (Math.random() < 0.02) d.vy = (Math.random()-0.5)*4;
+    }
+  });
+
+  // Remove off-screen or fallen ducks
+  const before = ducks.length;
+  ducks = ducks.filter(d => {
+    if (d.falling && d.y > H + 50) return false;
+    if (d.alive && (d.x < -60 || d.x > W + 60)) {
+      // Duck escaped - dog laughs
+      dog = {x: W/2, y: H - 80, timer: 80, laughing: true};
+      return false;
+    }
+    return true;
+  });
+
+  // Check round end
+  if (ducksInRound >= DUCKS_PER_ROUND && ducks.length === 0 && !dog) {
+    if (round >= TOTAL_ROUNDS) { state = 'over'; }
+    else {
+      round++;
+      ducksInRound = 0;
+      roundMsg = `第 ${round} 回合`;
+      roundMsgTimer = 90;
+    }
+  }
+
+  if (dog) { dog.timer--; if (dog.timer <= 0) dog = null; }
+}
+
+function shoot(mx, my) {
+  if (state !== 'play' || shotsLeft <= 0 || roundMsgTimer > 0) return;
+  shotsLeft--;
+
+  let hit = false;
+  for (const d of ducks) {
+    if (d.alive && !d.falling &&
+        mx > d.x - 25 && mx < d.x + 25 && my > d.y - 20 && my < d.y + 20) {
+      d.alive = false; d.falling = true;
+      score += 100;
+      hit = true;
+      dog = {x: d.x, y: H - 80, timer: 60, laughing: false};
+      break;
+    }
+  }
+
+  if (!hit && shotsLeft <= 0) {
+    // Missed all shots - remaining ducks fly away
+    setTimeout(() => { ducks.forEach(d => { if(d.alive) { d.vx *= 3; } }); }, 300);
+  }
+}
+
+function drawDuck(d) {
+  ctx.save();
+  ctx.translate(d.x, d.y);
+  if (d.falling) { ctx.rotate(Math.PI); }
+  else if (d.vx < 0) { ctx.scale(-1, 1); }
+
+  const wingUp = Math.sin(d.frame * 0.3) > 0;
+  // Body
+  ctx.fillStyle = d.color;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 20, 14, 0, 0, Math.PI*2);
+  ctx.fill();
+  // Wing
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.ellipse(-2, wingUp ? -12 : 4, 12, 7, wingUp ? -0.3 : 0.3, 0, Math.PI*2);
+  ctx.fill();
+  // Head
+  ctx.fillStyle = d.color;
+  ctx.beginPath();
+  ctx.arc(16, -8, 9, 0, Math.PI*2);
+  ctx.fill();
+  // Eye
+  ctx.fillStyle = d.falling ? '#f00' : '#000';
+  ctx.beginPath();
+  ctx.arc(19, -10, 3, 0, Math.PI*2);
+  ctx.fill();
+  if (d.falling) { ctx.fillText('x', 16, -7); }
+  // Beak
+  ctx.fillStyle = '#fa0';
+  ctx.fillRect(24, -9, 8, 5);
+
+  ctx.restore();
+}
+
+function drawDog() {
+  if (!dog) return;
+  const {x, y, laughing} = dog;
+  ctx.save();
+  ctx.translate(x, y);
+  // Body
+  ctx.fillStyle = '#a67';
+  ctx.fillRect(-15, 0, 30, 35);
+  // Head
+  ctx.fillStyle = '#c89';
+  ctx.beginPath();
+  ctx.arc(0, -10, 18, 0, Math.PI*2);
+  ctx.fill();
+  // Ears
+  ctx.fillStyle = '#865';
+  ctx.fillRect(-20, -22, 10, 18);
+  ctx.fillRect(10, -22, 10, 18);
+  // Eyes
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(-6, -12, 3, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(6, -12, 3, 0, Math.PI*2); ctx.fill();
+  // Mouth
+  if (laughing) {
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, -2, 10, 0.1, Math.PI-0.1);
+    ctx.stroke();
+    ctx.fillStyle = '#f66';
+    ctx.beginPath();
+    ctx.arc(0, -2, 8, 0.2, Math.PI-0.2);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(0, -3, 4, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function draw() {
+  // Sky
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#1a2a4a');
+  sky.addColorStop(0.7, '#2a4a3a');
+  sky.addColorStop(1, '#1a3a1a');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // Grass
+  ctx.fillStyle = '#2a5a2a';
+  ctx.fillRect(0, H-60, W, 60);
+  ctx.fillStyle = '#3a6a3a';
+  for (let x = 0; x < W; x += 15) {
+    ctx.fillRect(x, H-60-Math.random()*5, 3, 10);
+  }
+
+  if (state === 'start') {
+    ctx.fillStyle = '#fd0';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('打鸭子', 400, 130);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '20px monospace';
+    ctx.fillText('鼠标点击 射击飞过的鸭子', 400, 220);
+    ctx.fillText(`每只鸭子 ${SHOTS_PER_DUCK} 发子弹，共 ${TOTAL_ROUNDS} 回合`, 400, 260);
+    ctx.fillText(`每回合 ${DUCKS_PER_ROUND} 只鸭子`, 400, 300);
+    ctx.fillStyle = '#ff0';
+    ctx.font = '24px monospace';
+    ctx.fillText('按 空格键 开始', 400, 370);
+    ctx.fillStyle = '#666';
+    ctx.font = '16px monospace';
+    ctx.fillText('ESC 退出游戏', 400, 430);
+    return;
+  }
+
+  ducks.forEach(drawDuck);
+  drawDog();
+
+  if (state === 'play') {
+    // HUD
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`分数: ${score}`, 15, 30);
+    ctx.fillText(`回合: ${round}/${TOTAL_ROUNDS}`, 15, 58);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = shotsLeft > 1 ? '#4f4' : '#f44';
+    ctx.fillText(`子弹: ${'●'.repeat(shotsLeft)}${'○'.repeat(SHOTS_PER_DUCK-shotsLeft)}`, 785, 30);
+
+    if (roundMsgTimer > 0) {
+      ctx.fillStyle = '#ff0';
+      ctx.font = 'bold 36px monospace';
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = roundMsgTimer / 90;
+      ctx.fillText(roundMsg, 400, 200);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  if (state === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fd0';
+    ctx.font = 'bold 44px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('游戏结束', 400, 160);
+    ctx.fillStyle = '#fff';
+    ctx.font = '28px monospace';
+    ctx.fillText(`最终得分: ${score}`, 400, 230);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '22px monospace';
+    ctx.fillText('按 空格键 重新开始', 400, 330);
+  }
+
+  // Crosshair cursor indicator
+  ctx.strokeStyle = '#f004';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(W/2, H/2, 2, 0, Math.PI*2); ctx.stroke();
+}
+
+function loop() {
+  if (state === 'play') update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (state === 'start' || state === 'over') { init(); state = 'play'; }
+  }
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+  if (state === 'play') shoot(mx, my);
+});
+
+canvas.style.cursor = 'crosshair';
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

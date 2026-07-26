@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>21点 (Blackjack)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let gameState = 'title'; // title, betting, playing, dealerTurn, result
+let balance = 1000;
+let bet = 0;
+let currentBet = 0;
+let playerHand = [];
+let dealerHand = [];
+let deck = [];
+let message = '';
+let animCards = [];
+let animTimer = 0;
+let dealerRevealed = false;
+let resultMsg = '';
+let canDouble = false;
+let doubled = false;
+let buttons = [];
+let chipButtons = [];
+let titleAlpha = 0;
+let titleDir = 1;
+
+const SUITS = ['♠','♥','♦','♣'];
+const VALUES = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+const CARD_W = 60, CARD_H = 84;
+
+function createDeck() {
+  deck = [];
+  for (let s of SUITS) for (let v of VALUES) deck.push({suit: s, value: v});
+  for (let i = deck.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+}
+
+function cardValue(card) {
+  if (card.value === 'A') return 11;
+  if (['J','Q','K'].includes(card.value)) return 10;
+  return parseInt(card.value);
+}
+
+function handValue(hand) {
+  let total = 0, aces = 0;
+  for (let c of hand) {
+    total += cardValue(c);
+    if (c.value === 'A') aces++;
+  }
+  while (total > 21 && aces > 0) { total -= 10; aces--; }
+  return total;
+}
+
+function isBlackjack(hand) {
+  return hand.length === 2 && handValue(hand) === 21;
+}
+
+function isRed(suit) { return suit === '♥' || suit === '♦'; }
+
+function drawCard(x, y, card, faceUp, highlight) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 6;
+  ctx.shadowOffsetY = 3;
+  ctx.fillStyle = faceUp ? '#fff' : '#1a3a6b';
+  ctx.strokeStyle = highlight ? '#ffd700' : '#555';
+  ctx.lineWidth = highlight ? 3 : 1;
+  roundRect(x, y, CARD_W, CARD_H, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  if (!faceUp) {
+    ctx.fillStyle = '#2a5aab';
+    roundRect(x + 5, y + 5, CARD_W - 10, CARD_H - 10, 4);
+    ctx.fill();
+    ctx.strokeStyle = '#4a7adb';
+    ctx.lineWidth = 1;
+    roundRect(x + 8, y + 8, CARD_W - 16, CARD_H - 16, 3);
+    ctx.stroke();
+    return;
+  }
+  ctx.fillStyle = isRed(card.suit) ? '#d32f2f' : '#222';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(card.value, x + 5, y + 18);
+  ctx.font = '14px Arial';
+  ctx.fillText(card.suit, x + 5, y + 34);
+  ctx.font = '28px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(card.suit, x + CARD_W / 2, y + CARD_H / 2 + 10);
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'right';
+  ctx.save();
+  ctx.translate(x + CARD_W - 5, y + CARD_H - 6);
+  ctx.rotate(Math.PI);
+  ctx.textAlign = 'left';
+  ctx.fillText(card.value, 0, 12);
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawButton(x, y, w, h, text, color, enabled) {
+  ctx.save();
+  ctx.globalAlpha = enabled ? 1 : 0.4;
+  ctx.fillStyle = color;
+  roundRect(x, y, w, h, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  roundRect(x, y, w, h, 8);
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + h / 2);
+  ctx.restore();
+  return {x, y, w, h, enabled};
+}
+
+function drawChip(x, y, value, selected) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, 24, 0, Math.PI * 2);
+  ctx.fillStyle = selected ? '#ffd700' : (value === 10 ? '#4caf50' : value === 25 ? '#2196f3' : value === 50 ? '#f44336' : '#9c27b0');
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([4, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(value, x, y);
+  ctx.restore();
+  return {x: x - 24, y: y - 24, w: 48, h: 48, value};
+}
+
+function drawFelt() {
+  let grad = ctx.createRadialGradient(W/2, H/2, 50, W/2, H/2, 450);
+  grad.addColorStop(0, '#1b5e20');
+  grad.addColorStop(1, '#0d3311');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,215,0,0.2)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(W/2, H/2, 350, 200, 0, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawTitle() {
+  drawFelt();
+  titleAlpha += 0.02 * titleDir;
+  if (titleAlpha > 1) { titleAlpha = 1; titleDir = -1; }
+  if (titleAlpha < 0.5) { titleAlpha = 0.5; titleDir = 1; }
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 52px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('21点', W/2, 140);
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px Arial';
+  ctx.fillText('BLACKJACK', W/2, 180);
+  ctx.globalAlpha = titleAlpha;
+  ctx.fillStyle = '#aaffaa';
+  ctx.font = '20px Arial';
+  ctx.fillText('点击任意位置开始', W/2, 320);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px Arial';
+  ctx.fillText('规则：庄家16点必须要牌，17点停牌', W/2, 380);
+  ctx.fillText('Blackjack 赔率 3:2 | 按 ESC 退出', W/2, 405);
+  drawCard(W/2 - 100, 210, {suit:'♠', value:'A'}, true, false);
+  drawCard(W/2 + 40, 210, {suit:'♥', value:'K'}, true, false);
+}
+
+function drawBetting() {
+  drawFelt();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 24px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('请下注', W/2, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px Arial';
+  ctx.fillText('余额: $' + balance, W/2, 85);
+  if (bet > 0) {
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText('当前下注: $' + bet, W/2, 115);
+  }
+  chipButtons = [];
+  let chips = [10, 25, 50, 100];
+  let startX = W/2 - 150;
+  for (let i = 0; i < chips.length; i++) {
+    chipButtons.push(drawChip(startX + i * 100, 200, chips[i], false));
+  }
+  buttons = [];
+  buttons.push({...drawButton(W/2 - 160, 300, 100, 44, '清除', '#666', bet > 0), action: 'clear'});
+  buttons.push({...drawButton(W/2 - 50, 300, 100, 44, '发牌', '#4caf50', bet > 0), action: 'deal'});
+  buttons.push({...drawButton(W/2 + 60, 300, 100, 44, '全押', '#f44336', balance > 0), action: 'allin'});
+  ctx.fillStyle = '#aaa';
+  ctx.font = '13px Arial';
+  ctx.fillText('选择筹码下注，然后点击发牌', W/2, 420);
+}
+
+function startDeal() {
+  createDeck();
+  playerHand = [];
+  dealerHand = [];
+  currentBet = bet;
+  dealerRevealed = false;
+  doubled = false;
+  resultMsg = '';
+  playerHand.push(deck.pop());
+  dealerHand.push(deck.pop());
+  playerHand.push(deck.pop());
+  dealerHand.push(deck.pop());
+  canDouble = balance >= currentBet;
+  if (isBlackjack(playerHand)) {
+    dealerRevealed = true;
+    endRound();
+  } else if (isBlackjack(dealerHand)) {
+    dealerRevealed = true;
+    endRound();
+  } else {
+    gameState = 'playing';
+  }
+}
+
+function playerHit() {
+  playerHand.push(deck.pop());
+  canDouble = false;
+  if (handValue(playerHand) > 21) {
+    dealerRevealed = true;
+    endRound();
+  } else if (handValue(playerHand) === 21) {
+    playerStand();
+  }
+}
+
+function playerStand() {
+  dealerRevealed = true;
+  gameState = 'dealerTurn';
+  dealerPlay();
+}
+
+function playerDouble() {
+  if (!canDouble || balance < currentBet) return;
+  balance -= currentBet;
+  currentBet *= 2;
+  doubled = true;
+  playerHand.push(deck.pop());
+  canDouble = false;
+  if (handValue(playerHand) > 21) {
+    dealerRevealed = true;
+    endRound();
+  } else {
+    playerStand();
+  }
+}
+
+function dealerPlay() {
+  while (handValue(dealerHand) < 17) {
+    dealerHand.push(deck.pop());
+  }
+  endRound();
+}
+
+function endRound() {
+  gameState = 'result';
+  let pv = handValue(playerHand);
+  let dv = handValue(dealerHand);
+  let pBJ = isBlackjack(playerHand);
+  let dBJ = isBlackjack(dealerHand);
+  if (pv > 21) {
+    resultMsg = '爆牌！你输了';
+    score += 0;
+  } else if (pBJ && !dBJ) {
+    let win = Math.floor(currentBet * 2.5);
+    balance += win;
+    resultMsg = 'Blackjack! 赢得 $' + win;
+    score += win;
+  } else if (dBJ && !pBJ) {
+    resultMsg = '庄家Blackjack！你输了';
+  } else if (dv > 21) {
+    balance += currentBet * 2;
+    resultMsg = '庄家爆牌！赢得 $' + (currentBet * 2);
+    score += currentBet * 2;
+  } else if (pv > dv) {
+    balance += currentBet * 2;
+    resultMsg = '你赢了！赢得 $' + (currentBet * 2);
+    score += currentBet * 2;
+  } else if (pv < dv) {
+    resultMsg = '庄家赢了';
+  } else {
+    balance += currentBet;
+    resultMsg = '平局，退回赌注';
+  }
+}
+
+function drawPlaying() {
+  drawFelt();
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('余额: $' + balance, 20, 30);
+  ctx.fillText('下注: $' + currentBet, 20, 55);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText('庄家', W/2, 30);
+  let dx = W/2 - (dealerHand.length * (CARD_W + 8)) / 2;
+  for (let i = 0; i < dealerHand.length; i++) {
+    let show = dealerRevealed || i === 0;
+    drawCard(dx + i * (CARD_W + 8), 40, dealerHand[i], show, false);
+  }
+  if (dealerRevealed) {
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px Arial';
+    ctx.fillText('点数: ' + handValue(dealerHand), W/2, 140);
+  }
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText('你的手牌', W/2, 240);
+  let px = W/2 - (playerHand.length * (CARD_W + 8)) / 2;
+  for (let i = 0; i < playerHand.length; i++) {
+    drawCard(px + i * (CARD_W + 8), 255, playerHand[i], true, false);
+  }
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText('点数: ' + handValue(playerHand), W/2, 365);
+  buttons = [];
+  if (gameState === 'playing') {
+    buttons.push({...drawButton(W/2 - 200, 400, 90, 42, '要牌', '#4caf50', true), action: 'hit'});
+    buttons.push({...drawButton(W/2 - 95, 400, 90, 42, '停牌', '#f44336', true), action: 'stand'});
+    buttons.push({...drawButton(W/2 + 10, 400, 110, 42, '加倍', '#ff9800', canDouble && playerHand.length === 2), action: 'double'});
+  }
+}
+
+function drawResult() {
+  drawPlaying();
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = resultMsg.includes('赢') ? '#ffd700' : (resultMsg.includes('输') ? '#f44336' : '#fff');
+  ctx.font = 'bold 32px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(resultMsg, W/2, H/2 - 30);
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px Arial';
+  ctx.fillText('余额: $' + balance, W/2, H/2 + 20);
+  buttons = [];
+  if (balance > 0) {
+    buttons.push({...drawButton(W/2 - 70, H/2 + 50, 140, 46, '继续游戏', '#4caf50', true), action: 'continue'});
+  } else {
+    ctx.fillStyle = '#f44336';
+    ctx.font = 'bold 22px Arial';
+    ctx.fillText('你破产了！游戏结束', W/2, H/2 + 70);
+    buttons.push({...drawButton(W/2 - 70, H/2 + 90, 140, 46, '重新开始', '#ff9800', true), action: 'restart'});
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (gameState === 'title') drawTitle();
+  else if (gameState === 'betting') drawBetting();
+  else if (gameState === 'playing' || gameState === 'dealerTurn') drawPlaying();
+  else if (gameState === 'result') drawResult();
+  requestAnimationFrame(render);
+}
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+  if (gameState === 'title') {
+    gameState = 'betting';
+    return;
+  }
+  if (gameState === 'betting') {
+    for (let chip of chipButtons) {
+      if (mx >= chip.x && mx <= chip.x + chip.w && my >= chip.y && my <= chip.y + chip.h) {
+        if (balance >= chip.value) { bet += chip.value; balance -= chip.value; }
+        return;
+      }
+    }
+    for (let btn of buttons) {
+      if (btn.enabled && mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h) {
+        if (btn.action === 'clear') { balance += bet; bet = 0; }
+        else if (btn.action === 'deal') { startDeal(); }
+        else if (btn.action === 'allin') { bet = balance; balance = 0; if (bet > 0) startDeal(); }
+        return;
+      }
+    }
+  }
+  if (gameState === 'playing') {
+    for (let btn of buttons) {
+      if (btn.enabled && mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h) {
+        if (btn.action === 'hit') playerHit();
+        else if (btn.action === 'stand') playerStand();
+        else if (btn.action === 'double') playerDouble();
+        return;
+      }
+    }
+  }
+  if (gameState === 'result') {
+    for (let btn of buttons) {
+      if (btn.enabled && mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h) {
+        if (btn.action === 'continue') { gameState = 'betting'; bet = 0; }
+        else if (btn.action === 'restart') { balance = 1000; score = 0; gameState = 'betting'; bet = 0; }
+        return;
+      }
+    }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (gameState === 'playing') {
+    if (e.code === 'KeyH') playerHit();
+    if (e.code === 'KeyS') playerStand();
+    if (e.code === 'KeyD' && canDouble && playerHand.length === 2) playerDouble();
+  }
+  if (gameState === 'title' && e.code === 'Enter') gameState = 'betting';
+});
+
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>西蒙记忆</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+const W = 800, H = 480;
+let state = 'title'; // title, showing, input, over
+let score = 0, level = 0;
+let seq = [], inputIdx = 0;
+let flashIdx = -1, flashTimer = 0, showStep = 0, showTimer = 0;
+let lastTime = 0;
+
+const CX = W / 2, CY = H / 2 + 20, GAP = 12, SIZE = 150;
+const PADS = [
+  { x: CX - SIZE - GAP / 2, y: CY - SIZE - GAP / 2, base: '#1b5e20', lit: '#69f0ae', key: '1' },
+  { x: CX + GAP / 2,        y: CY - SIZE - GAP / 2, base: '#b71c1c', lit: '#ff5252', key: '2' },
+  { x: CX - SIZE - GAP / 2, y: CY + GAP / 2,        base: '#0d47a1', lit: '#448aff', key: '3' },
+  { x: CX + GAP / 2,        y: CY + GAP / 2,        base: '#e65100', lit: '#ffab40', key: '4' }
+];
+
+function start() {
+  score = 0; level = 0; seq = [];
+  addNext();
+}
+function addNext() {
+  seq.push(Math.floor(Math.random() * 4));
+  level = seq.length;
+  inputIdx = 0;
+  showStep = 0; showTimer = 0; flashIdx = -1;
+  state = 'showing';
+}
+function press(i) {
+  if (state !== 'input') return;
+  flashIdx = i; flashTimer = performance.now();
+  if (i === seq[inputIdx]) {
+    inputIdx++;
+    score += 5;
+    if (inputIdx >= seq.length) {
+      score += 10; // round clear bonus
+      setTimeout(addNext, 700);
+      state = 'wait';
+    }
+  } else {
+    state = 'over';
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (state === 'title' || state === 'over') {
+    if (e.code === 'Space' || e.code === 'Enter') start();
+    return;
+  }
+  const map = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3,
+    ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3 };
+  if (e.code in map) { e.preventDefault(); press(map[e.code]); }
+});
+cv.addEventListener('mousedown', e => {
+  if (state === 'title' || state === 'over') { start(); return; }
+  const r = cv.getBoundingClientRect();
+  const mx = (e.clientX - r.left) * (W / r.width);
+  const my = (e.clientY - r.top) * (H / r.height);
+  for (let i = 0; i < 4; i++) {
+    const p = PADS[i];
+    if (mx >= p.x && mx <= p.x + SIZE && my >= p.y && my <= p.y + SIZE) { press(i); break; }
+  }
+});
+
+function centerText(t, y, s, c, w) {
+  ctx.fillStyle = c; ctx.font = (w || 'bold') + ' ' + s + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(t, W / 2, y);
+}
+function drawPads(now) {
+  for (let i = 0; i < 4; i++) {
+    const p = PADS[i];
+    const lit = (flashIdx === i && now - flashTimer < 250);
+    ctx.fillStyle = lit ? p.lit : p.base;
+    ctx.fillRect(p.x, p.y, SIZE, SIZE);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+    ctx.strokeRect(p.x, p.y, SIZE, SIZE);
+    ctx.fillStyle = lit ? '#000' : 'rgba(255,255,255,0.4)';
+    ctx.font = '24px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(p.key, p.x + SIZE / 2, p.y + SIZE / 2);
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  centerText('西蒙记忆', 120, 60, '#00e5ff');
+  centerText('Simon Says', 175, 22, '#666', 'normal');
+  centerText('记住闪烁顺序并复述', 260, 26, '#eee', 'normal');
+  centerText('点击方块 或 按 1-4 / 方向键', 305, 20, '#888', 'normal');
+  centerText('每轮序列变长，出错即结束', 340, 18, '#888', 'normal');
+  centerText('按空格开始', 420, 24, '#ffd54f');
+}
+function drawOver() {
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+  centerText('游戏结束', 150, 56, '#ff5252');
+  centerText('到达关卡 ' + level, 230, 30, '#fff');
+  centerText('得分 ' + score, 290, 40, '#ffd54f');
+  centerText('按空格再来一次', 400, 22, '#888', 'normal');
+}
+
+function loop() {
+  const now = performance.now();
+  const dt = now - lastTime; lastTime = now;
+
+  if (state === 'title') { drawTitle(); requestAnimationFrame(loop); return; }
+  if (state === 'over') { drawOver(); requestAnimationFrame(loop); return; }
+
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, W, H);
+
+  if (state === 'showing') {
+    showTimer += dt;
+    const stepLen = Math.max(280, 600 - level * 20);
+    if (showTimer >= stepLen) {
+      showTimer = 0;
+      showStep++;
+      if (showStep > seq.length) { state = 'input'; flashIdx = -1; }
+    }
+    if (showStep < seq.length && showTimer < stepLen * 0.6) {
+      flashIdx = seq[showStep]; flashTimer = now;
+    } else if (state === 'showing') {
+      flashIdx = -1;
+    }
+    centerText('观察...', 40, 26, '#ffd54f');
+  } else if (state === 'input' || state === 'wait') {
+    centerText('你的回合  (' + inputIdx + '/' + seq.length + ')', 40, 26, '#69f0ae');
+  }
+
+  drawPads(now);
+  ctx.fillStyle = '#fff'; ctx.font = '18px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('关卡 ' + level + '   得分 ' + score, 16, 26);
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

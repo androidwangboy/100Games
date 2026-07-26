@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>蜘蛛纸牌 - Spider Solitaire</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+(function() {
+'use strict';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const CARD_W = 62, CARD_H = 84;
+const TAB_FAN_UP = 20, TAB_FAN_DOWN = 8;
+const SUITS = ['\u2660', '\u2665', '\u2666', '\u2663'];
+const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+
+let score = 500, moves = 0, timer = 0, timerInterval = null;
+let gameWon = false, gameStarted = false, showMenu = true;
+let difficulty = 1; // 1, 2, or 4 suits
+let tableau = [], stock = [], completed = 0;
+let dragging = null, dragOffsetX = 0, dragOffsetY = 0, dragCards = [], dragSource = null;
+let undoStack = [];
+let winAnimCards = [], winAnimFrame = 0;
+let hintSource = null, hintTarget = null, hintTimer = 0;
+let removeAnim = null;
+
+// ==================== Utility ====================
+function isRed(suit) { return suit === 1 || suit === 2; }
+function cardColor(card) { return isRed(card.suit) ? '#cc2222' : '#1a1a1a'; }
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function createSpiderDeck(numSuits) {
+  let deck = [];
+  let suitsUsed = [];
+  if (numSuits === 1) suitsUsed = [0,0,0,0,0,0,0,0];
+  else if (numSuits === 2) suitsUsed = [0,0,0,0,1,1,1,1];
+  else suitsUsed = [0,0,1,1,2,2,3,3];
+  for (let i = 0; i < 8; i++) {
+    let s = suitsUsed[i];
+    for (let r = 0; r < 13; r++) {
+      deck.push({ suit: s, rank: r, faceUp: false, id: deck.length });
+    }
+  }
+  return deck;
+}
+
+function deepCopyPiles(piles) { return piles.map(p => p.map(c => ({...c}))); }
+function deepCopy(arr) { return arr.map(c => ({...c})); }
+
+// ==================== Game State ====================
+function newGame(numSuits) {
+  difficulty = numSuits;
+  score = 500; moves = 0; timer = 0;
+  gameWon = false; gameStarted = false; showMenu = false;
+  undoStack = []; winAnimCards = []; winAnimFrame = 0;
+  hintSource = null; hintTarget = null; hintTimer = 0;
+  removeAnim = null; completed = 0;
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = null;
+
+  let deck = shuffle(createSpiderDeck(numSuits));
+  tableau = [];
+  for (let i = 0; i < 10; i++) tableau.push([]);
+
+  // Deal 54 cards: first 4 columns get 6, remaining 6 get 5
+  let idx = 0;
+  for (let col = 0; col < 10; col++) {
+    let count = (col < 4) ? 6 : 5;
+    for (let r = 0; r < count; r++) {
+      let card = deck[idx++];
+      card.faceUp = (r === count - 1);
+      tableau[col].push(card);
+    }
+  }
+  // Remaining 50 cards go to stock (5 deals of 10)
+  stock = deck.slice(idx);
+  stock.forEach(c => c.faceUp = false);
+}
+
+function startTimer() {
+  if (!gameStarted) {
+    gameStarted = true;
+    timerInterval = setInterval(() => { if (!gameWon) timer++; }, 1000);
+  }
+}
+
+function saveState() {
+  undoStack.push({
+    tableau: deepCopyPiles(tableau),
+    stock: deepCopy(stock),
+    score: score, moves: moves, completed: completed
+  });
+  if (undoStack.length > 200) undoStack.shift();
+}
+
+function undo() {
+  if (undoStack.length === 0 || gameWon) return;
+  let st = undoStack.pop();
+  tableau = st.tableau;
+  stock = st.stock;
+  score = st.score; moves = st.moves; completed = st.completed;
+  hintSource = null; hintTarget = null;
+}
+
+// ==================== Layout ====================
+function tabPos(col) { return { x: 8 + col * (CARD_W + 8), y: 50 }; }
+function stockPos() { return { x: W - CARD_W - 10, y: H - CARD_H - 38 }; }
+function completedPos(i) { return { x: 8 + i * (CARD_W + 4), y: H - CARD_H - 38 }; }
+
+function tabCardY(col, idx) {
+  let y = tabPos(col).y;
+  for (let i = 0; i < idx; i++) {
+    y += tableau[col][i].faceUp ? TAB_FAN_UP : TAB_FAN_DOWN;
+  }
+  return y;
+}
+
+// ==================== Drawing ====================
+function drawRoundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawCardBack(x, y) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 3;
+  ctx.shadowOffsetX = 1;
+  ctx.shadowOffsetY = 1;
+  drawRoundRect(x, y, CARD_W, CARD_H, 4);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawRoundRect(x + 2, y + 2, CARD_W - 4, CARD_H - 4, 3);
+  ctx.fillStyle = '#2a1a5a';
+  ctx.fill();
+  ctx.strokeStyle = '#6a4aaa';
+  ctx.lineWidth = 0.5;
+  for (let i = -CARD_H; i < CARD_W + CARD_H; i += 6) {
+    ctx.beginPath();
+    ctx.moveTo(x + 3 + i, y + 3);
+    ctx.lineTo(x + 3 + i - (CARD_H - 6), y + CARD_H - 3);
+    ctx.stroke();
+  }
+  drawRoundRect(x + 5, y + 5, CARD_W - 10, CARD_H - 10, 2);
+  ctx.strokeStyle = '#8a6acc';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCardFace(x, y, card, highlight) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 3;
+  ctx.shadowOffsetX = 1;
+  ctx.shadowOffsetY = 1;
+  drawRoundRect(x, y, CARD_W, CARD_H, 4);
+  ctx.fillStyle = '#fefefe';
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawRoundRect(x, y, CARD_W, CARD_H, 4);
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  let col = cardColor(card);
+  let suitChar = SUITS[card.suit];
+  let rankStr = RANKS[card.rank];
+
+  ctx.fillStyle = col;
+  ctx.font = 'bold 12px "Segoe UI", Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(rankStr, x + 3, y + 2);
+  ctx.font = '11px Arial';
+  ctx.fillText(suitChar, x + 4, y + 15);
+
+  ctx.save();
+  ctx.translate(x + CARD_W - 3, y + CARD_H - 2);
+  ctx.rotate(Math.PI);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.font = 'bold 12px "Segoe UI", Arial, sans-serif';
+  ctx.fillText(rankStr, 0, 0);
+  ctx.font = '11px Arial';
+  ctx.fillText(suitChar, 1, 13);
+  ctx.restore();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (card.rank >= 10) {
+    ctx.font = 'bold 20px "Times New Roman", serif';
+    ctx.fillStyle = col;
+    ctx.fillText(rankStr, x + CARD_W / 2, y + CARD_H / 2 - 6);
+    ctx.font = '18px Arial';
+    ctx.fillText(suitChar, x + CARD_W / 2, y + CARD_H / 2 + 13);
+  } else if (card.rank === 0) {
+    ctx.font = '30px Arial';
+    ctx.fillStyle = col;
+    ctx.fillText(suitChar, x + CARD_W / 2, y + CARD_H / 2 + 2);
+  } else {
+    drawPips(x, y, card);
+  }
+
+  if (highlight) {
+    drawRoundRect(x - 2, y - 2, CARD_W + 4, CARD_H + 4, 6);
+    ctx.strokeStyle = '#ffe000';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,224,0,0.06)';
+    drawRoundRect(x, y, CARD_W, CARD_H, 4);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPips(x, y, card) {
+  let col = cardColor(card);
+  let suitChar = SUITS[card.suit];
+  ctx.font = '12px Arial';
+  ctx.fillStyle = col;
+  let cx = x + CARD_W / 2;
+  let cy = y + CARD_H / 2;
+  let n = card.rank + 1;
+  let dx = 11, dy = 14;
+  let positions = [];
+  switch(n) {
+    case 2: positions = [{x:cx,y:cy-dy},{x:cx,y:cy+dy,flip:true}]; break;
+    case 3: positions = [{x:cx,y:cy-dy},{x:cx,y:cy},{x:cx,y:cy+dy,flip:true}]; break;
+    case 4: positions = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 5: positions = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 6: positions = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx-dx,y:cy},{x:cx+dx,y:cy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 7: positions = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy-dy/2},{x:cx-dx,y:cy},{x:cx+dx,y:cy},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 8: positions = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy-dy/2},{x:cx-dx,y:cy},{x:cx+dx,y:cy},{x:cx,y:cy+dy/2,flip:true},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 9: positions = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx-dx,y:cy-dy/3},{x:cx+dx,y:cy-dy/3},{x:cx,y:cy},{x:cx-dx,y:cy+dy/3,flip:true},{x:cx+dx,y:cy+dy/3,flip:true},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    case 10: positions = [{x:cx-dx,y:cy-dy},{x:cx+dx,y:cy-dy},{x:cx,y:cy-dy*0.6},{x:cx-dx,y:cy-dy/3},{x:cx+dx,y:cy-dy/3},{x:cx-dx,y:cy+dy/3,flip:true},{x:cx+dx,y:cy+dy/3,flip:true},{x:cx,y:cy+dy*0.6,flip:true},{x:cx-dx,y:cy+dy,flip:true},{x:cx+dx,y:cy+dy,flip:true}]; break;
+    default: positions = [{x:cx,y:cy}];
+  }
+  for (let p of positions) {
+    ctx.save();
+    if (p.flip) {
+      ctx.translate(p.x, p.y);
+      ctx.rotate(Math.PI);
+      ctx.fillText(suitChar, 0, 0);
+    } else {
+      ctx.fillText(suitChar, p.x, p.y);
+    }
+    ctx.restore();
+  }
+}
+
+function drawCard(x, y, card, highlight) {
+  if (card.faceUp) drawCardFace(x, y, card, highlight);
+  else drawCardBack(x, y);
+}
+
+function drawEmptySlot(x, y) {
+  ctx.save();
+  drawRoundRect(x, y, CARD_W, CARD_H, 4);
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawButton(x, y, w, h, text, active) {
+  ctx.save();
+  drawRoundRect(x, y, w, h, 4);
+  ctx.fillStyle = active ? '#4a2a8a' : '#333';
+  ctx.fill();
+  ctx.strokeStyle = active ? '#8a6acc' : '#555';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = '#eee';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + h / 2);
+  ctx.restore();
+}
+
+// ==================== Main Render ====================
+function render() {
+  // Dark green felt
+  ctx.fillStyle = '#1a4a2a';
+  ctx.fillRect(0, 0, W, H);
+  let grad = ctx.createRadialGradient(W/2, H/2, 30, W/2, H/2, 500);
+  grad.addColorStop(0, 'rgba(80,180,100,0.06)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.3)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  if (showMenu) {
+    renderMenu();
+    return;
+  }
+
+  // Top bar
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(0, 0, W, 42);
+  ctx.fillStyle = '#ddd';
+  ctx.font = '13px Arial';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  let min = Math.floor(timer / 60), sec = timer % 60;
+  let timeStr = min + ':' + (sec < 10 ? '0' : '') + sec;
+  let diffStr = difficulty === 1 ? '\u5355\u8272' : difficulty === 2 ? '\u53CC\u8272' : '\u56DB\u8272';
+  ctx.fillText('\u8718\u86DB\u7EB8\u724C - ' + diffStr, 10, 21);
+  ctx.fillText('\u5206\u6570: ' + score, 180, 21);
+  ctx.fillText('\u6B65\u6570: ' + moves, 270, 21);
+  ctx.fillText('\u65F6\u95F4: ' + timeStr, 355, 21);
+  ctx.fillText('\u5B8C\u6210: ' + completed + '/8', 455, 21);
+
+  drawButton(W - 195, 10, 55, 22, '\u65B0\u6E38\u620F', false);
+  drawButton(W - 134, 10, 55, 22, '\u64A4\u9500 Z', false);
+  drawButton(W - 73, 10, 55, 22, '\u63D0\u793A H', false);
+
+  // Tableau
+  for (let col = 0; col < 10; col++) {
+    let tp = tabPos(col);
+    let pile = tableau[col];
+    if (pile.length === 0) {
+      drawEmptySlot(tp.x, tp.y);
+      continue;
+    }
+    for (let idx = 0; idx < pile.length; idx++) {
+      let isDrag = dragging && dragSource && dragSource.index === col && idx >= dragSource.cardIndex;
+      if (isDrag) continue;
+      let cy = tabCardY(col, idx);
+      let hl = hintSource && hintSource.index === col && idx >= hintSource.cardIndex;
+      drawCard(tp.x, cy, pile[idx], hl);
+    }
+  }
+
+  // Stock
+  let sp = stockPos();
+  if (stock.length > 0) {
+    let piles = Math.ceil(stock.length / 10);
+    for (let i = 0; i < piles; i++) {
+      drawCardBack(sp.x - i * 3, sp.y - i * 1);
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(stock.length + '\u5F20', sp.x + CARD_W / 2, sp.y + CARD_H + 2);
+  } else {
+    drawEmptySlot(sp.x, sp.y);
+  }
+
+  // Completed suits display
+  for (let i = 0; i < completed; i++) {
+    let cp = completedPos(i);
+    ctx.save();
+    drawRoundRect(cp.x, cp.y, CARD_W, CARD_H, 4);
+    ctx.fillStyle = '#2a6a3a';
+    ctx.fill();
+    ctx.strokeStyle = '#4a9a5a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(SUITS[0], cp.x + CARD_W / 2, cp.y + CARD_H / 2);
+    ctx.restore();
+  }
+
+  // Hint target highlight
+  if (hintTarget && hintTimer > 0) {
+    let tp = tabPos(hintTarget.index);
+    let pile = tableau[hintTarget.index];
+    let ty = (pile.length > 0) ? tabCardY(hintTarget.index, pile.length - 1) : tp.y;
+    drawRoundRect(tp.x - 2, ty - 2, CARD_W + 4, CARD_H + 4, 6);
+    ctx.strokeStyle = 'rgba(255,224,0,0.6)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // Remove animation
+  if (removeAnim) {
+    for (let i = 0; i < removeAnim.cards.length; i++) {
+      let c = removeAnim.cards[i];
+      drawCardFace(removeAnim.x + removeAnim.dx * removeAnim.frame,
+                   removeAnim.y + removeAnim.dy * removeAnim.frame - i * 2, c, false);
+    }
+  }
+
+  // Dragging cards
+  if (dragging && dragCards.length > 0) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 3;
+    ctx.shadowOffsetY = 5;
+    for (let i = 0; i < dragCards.length; i++) {
+      drawCardFace(dragging.x, dragging.y + i * TAB_FAN_UP, dragCards[i], false);
+    }
+    ctx.restore();
+  }
+
+  // Bottom status
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(0, H - 28, W, 28);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u62D6\u62FD\u79FB\u52A8\u724C | \u70B9\u51FB\u53F3\u4E0B\u89D2\u53D1\u724C | \u540C\u82B1\u8272K\u5230A\u81EA\u52A8\u6536\u96C6 | Esc\u9000\u51FA', 10, H - 14);
+
+  // Win overlay
+  if (gameWon) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, W, H);
+    for (let wc of winAnimCards) {
+      if (wc.active) drawCardFace(wc.x, wc.y, wc.card, false);
+    }
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 42px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('\u606D\u559C\u901A\u5173\uFF01', W/2, H/2 - 50);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.fillText('\u5206\u6570: ' + score + '   \u65F6\u95F4: ' + timeStr + '   \u6B65\u6570: ' + moves, W/2, H/2);
+    ctx.font = '14px Arial';
+    ctx.fillStyle = '#bbb';
+    ctx.fillText('\u6309 N \u65B0\u6E38\u620F | Esc \u9000\u51FA', W/2, H/2 + 40);
+  }
+}
+
+function renderMenu() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 36px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u8718\u86DB\u7EB8\u724C', W/2, 100);
+  ctx.fillStyle = '#ddd';
+  ctx.font = '16px Arial';
+  ctx.fillText('\u8BF7\u9009\u62E9\u96BE\u5EA6', W/2, 160);
+
+  // Difficulty buttons
+  let btnW = 200, btnH = 50;
+  let startX = W/2 - btnW/2;
+  let labels = ['\u5355\u8272 (\u7B80\u5355)', '\u53CC\u8272 (\u4E2D\u7B49)', '\u56DB\u8272 (\u56F0\u96BE)'];
+  let descs = ['\u53EA\u7528\u2660\u82B1\u8272', '\u7528\u2660\u548C\u2665\u4E24\u79CD\u82B1\u8272', '\u7528\u5168\u90E84\u79CD\u82B1\u8272'];
+  for (let i = 0; i < 3; i++) {
+    let by = 200 + i * 70;
+    drawRoundRect(startX, by, btnW, btnH, 8);
+    ctx.fillStyle = '#2a4a3a';
+    ctx.fill();
+    ctx.strokeStyle = '#5a9a6a';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText(labels[i], W/2, by + 18);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '12px Arial';
+    ctx.fillText(descs[i], W/2, by + 38);
+  }
+}
+
+// ==================== Hit Testing ====================
+function hitTableau(mx, my) {
+  for (let col = 0; col < 10; col++) {
+    let pile = tableau[col];
+    let tp = tabPos(col);
+    if (mx < tp.x || mx > tp.x + CARD_W) continue;
+    if (pile.length === 0) {
+      if (my >= tp.y && my <= tp.y + CARD_H) {
+        return { index: col, cardIndex: 0, cards: [] };
+      }
+      continue;
+    }
+    for (let idx = pile.length - 1; idx >= 0; idx--) {
+      let cy = tabCardY(col, idx);
+      let cardBottom = (idx === pile.length - 1) ? cy + CARD_H : tabCardY(col, idx + 1);
+      if (my >= cy && my < cardBottom) {
+        if (!pile[idx].faceUp) return null;
+        let cards = pile.slice(idx);
+        if (isMovableSequence(cards)) {
+          return { index: col, cardIndex: idx, cards: cards };
+        }
+        return null;
+      }
+    }
+    let lastY = tabCardY(col, pile.length - 1);
+    if (my >= lastY && my <= lastY + CARD_H) {
+      let lastCard = pile[pile.length - 1];
+      if (!lastCard.faceUp) return null;
+      return { index: col, cardIndex: pile.length - 1, cards: [lastCard] };
+    }
+  }
+  return null;
+}
+
+function hitStock(mx, my) {
+  let sp = stockPos();
+  return mx >= sp.x - 15 && mx <= sp.x + CARD_W + 5 && my >= sp.y - 5 && my <= sp.y + CARD_H + 5;
+}
+
+function getDropColumn(mx, my) {
+  for (let col = 0; col < 10; col++) {
+    let tp = tabPos(col);
+    let pile = tableau[col];
+    let bottomY = (pile.length > 0) ? tabCardY(col, pile.length - 1) + CARD_H : tp.y + CARD_H;
+    if (mx >= tp.x - 5 && mx <= tp.x + CARD_W + 5 && my >= tp.y - 10 && my <= bottomY + 30) {
+      return col;
+    }
+  }
+  return -1;
+}
+
+// ==================== Game Logic ====================
+function isMovableSequence(cards) {
+  // Can move any descending sequence (even mixed suits)
+  for (let i = 0; i < cards.length - 1; i++) {
+    if (cards[i].rank !== cards[i+1].rank + 1) return false;
+  }
+  return true;
+}
+
+function isSameSuitSequence(cards) {
+  for (let i = 0; i < cards.length - 1; i++) {
+    if (cards[i].suit !== cards[i+1].suit) return false;
+    if (cards[i].rank !== cards[i+1].rank + 1) return false;
+  }
+  return true;
+}
+
+function canPlaceOnColumn(card, col) {
+  let pile = tableau[col];
+  if (pile.length === 0) return true;
+  let top = pile[pile.length - 1];
+  if (!top.faceUp) return false;
+  return top.rank === card.rank + 1;
+}
+
+function dealFromStock() {
+  if (stock.length === 0) return;
+  // Check all columns non-empty
+  for (let col = 0; col < 10; col++) {
+    if (tableau[col].length === 0) {
+      // Flash warning - can't deal with empty columns
+      return;
+    }
+  }
+  startTimer();
+  saveState();
+  for (let col = 0; col < 10; col++) {
+    if (stock.length === 0) break;
+    let card = stock.pop();
+    card.faceUp = true;
+    tableau[col].push(card);
+  }
+  moves++;
+  score--;
+  checkCompletedSuits();
+}
+
+function checkCompletedSuits() {
+  for (let col = 0; col < 10; col++) {
+    let pile = tableau[col];
+    if (pile.length < 13) continue;
+    let start = pile.length - 13;
+    let seq = pile.slice(start);
+    // Must be K down to A, same suit
+    if (seq[0].rank !== 12) continue;
+    if (seq[12].rank !== 0) continue;
+    if (!isSameSuitSequence(seq)) continue;
+    // Remove the completed suit
+    saveState();
+    let removed = pile.splice(start, 13);
+    completed++;
+    score += 500;
+    // Flip new top card
+    if (pile.length > 0 && !pile[pile.length - 1].faceUp) {
+      pile[pile.length - 1].faceUp = true;
+    }
+    // Animation
+    let tp = tabPos(col);
+    removeAnim = {
+      cards: removed,
+      x: tp.x, y: tabCardY(col, Math.max(0, start - 1)),
+      dx: -3, dy: -2, frame: 0
+    };
+    animateRemove();
+    if (completed === 8) {
+      gameWon = true;
+      if (timerInterval) clearInterval(timerInterval);
+      setTimeout(startWinAnimation, 500);
+    }
+    return;
+  }
+}
+
+function animateRemove() {
+  if (!removeAnim) return;
+  removeAnim.frame++;
+  if (removeAnim.frame > 30) {
+    removeAnim = null;
+    return;
+  }
+  render();
+  requestAnimationFrame(animateRemove);
+}
+
+function flipTopCards() {
+  for (let col = 0; col < 10; col++) {
+    let pile = tableau[col];
+    if (pile.length > 0 && !pile[pile.length - 1].faceUp) {
+      pile[pile.length - 1].faceUp = true;
+    }
+  }
+}
+
+function findHint() {
+  hintSource = null; hintTarget = null;
+  // Look for same-suit sequence moves first
+  for (let col = 0; col < 10; col++) {
+    let pile = tableau[col];
+    for (let idx = pile.length - 1; idx >= 0; idx--) {
+      if (!pile[idx].faceUp) break;
+      let seq = pile.slice(idx);
+      if (!isMovableSequence(seq)) break;
+      for (let tcol = 0; tcol < 10; tcol++) {
+        if (tcol === col) continue;
+        if (canPlaceOnColumn(seq[0], tcol)) {
+          // Prefer same-suit connections
+          let tp = tableau[tcol];
+          if (tp.length > 0 && tp[tp.length-1].suit === seq[0].suit) {
+            hintSource = { index: col, cardIndex: idx };
+            hintTarget = { index: tcol };
+            return;
+          }
+        }
+      }
+    }
+  }
+  // Any valid move
+  for (let col = 0; col < 10; col++) {
+    let pile = tableau[col];
+    for (let idx = pile.length - 1; idx >= 0; idx--) {
+      if (!pile[idx].faceUp) break;
+      let seq = pile.slice(idx);
+      if (!isMovableSequence(seq)) break;
+      for (let tcol = 0; tcol < 10; tcol++) {
+        if (tcol === col) continue;
+        if (tableau[tcol].length === 0 && idx === 0) continue;
+        if (canPlaceOnColumn(seq[0], tcol)) {
+          hintSource = { index: col, cardIndex: idx };
+          hintTarget = { index: tcol };
+          return;
+        }
+      }
+    }
+  }
+  // Suggest dealing
+  if (stock.length > 0) {
+    hintSource = null;
+    hintTarget = null;
+  }
+}
+
+// ==================== Win Animation ====================
+function startWinAnimation() {
+  winAnimCards = [];
+  winAnimFrame = 0;
+  let allCards = [];
+  for (let s = 0; s < 4; s++)
+    for (let r = 12; r >= 0; r--)
+      allCards.push({ suit: s, rank: r, faceUp: true });
+  for (let i = 0; i < allCards.length; i++) {
+    winAnimCards.push({
+      card: allCards[i],
+      x: W / 2 - CARD_W / 2,
+      y: H / 2,
+      vx: (Math.random() - 0.5) * 14,
+      vy: -(Math.random() * 12 + 4),
+      active: false,
+      delay: i * 2
+    });
+  }
+  requestAnimationFrame(animateWin);
+}
+
+function animateWin() {
+  if (!gameWon) return;
+  winAnimFrame++;
+  for (let wc of winAnimCards) {
+    if (winAnimFrame >= wc.delay) {
+      wc.active = true;
+      wc.x += wc.vx;
+      wc.y += wc.vy;
+      wc.vy += 0.4;
+      if (wc.y > H + 50) {
+        wc.y = -CARD_H - 20;
+        wc.x = Math.random() * (W - CARD_W);
+        wc.vy = Math.random() * 3 + 2;
+        wc.vx = (Math.random() - 0.5) * 4;
+      }
+    }
+  }
+  render();
+  requestAnimationFrame(animateWin);
+}
+
+// ==================== Input Handling ====================
+canvas.addEventListener('mousedown', function(e) {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (showMenu) {
+    let btnW = 200, startX = W/2 - btnW/2;
+    for (let i = 0; i < 3; i++) {
+      let by = 200 + i * 70;
+      if (mx >= startX && mx <= startX + btnW && my >= by && my <= by + 50) {
+        newGame([1, 2, 4][i]);
+        return;
+      }
+    }
+    return;
+  }
+
+  if (gameWon) return;
+
+  // Top buttons
+  if (my >= 10 && my <= 32) {
+    if (mx >= W - 195 && mx <= W - 140) { showMenu = true; return; }
+    if (mx >= W - 134 && mx <= W - 79) { undo(); return; }
+    if (mx >= W - 73 && mx <= W - 18) { findHint(); hintTimer = 120; return; }
+  }
+
+  // Stock click
+  if (hitStock(mx, my)) { dealFromStock(); return; }
+
+  // Tableau pickup
+  let hit = hitTableau(mx, my);
+  if (hit && hit.cards.length > 0) {
+    startTimer();
+    hintSource = null; hintTarget = null;
+    dragCards = hit.cards;
+    dragSource = hit;
+    let tp = tabPos(hit.index);
+    let srcX = tp.x;
+    let srcY = tabCardY(hit.index, hit.cardIndex);
+    dragOffsetX = mx - srcX;
+    dragOffsetY = my - srcY;
+    dragging = { x: srcX, y: srcY };
+  }
+});
+
+canvas.addEventListener('mousemove', function(e) {
+  if (!dragging) return;
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+  dragging.x = mx - dragOffsetX;
+  dragging.y = my - dragOffsetY;
+});
+
+canvas.addEventListener('mouseup', function(e) {
+  if (!dragging) return;
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  let targetCol = getDropColumn(mx, my);
+  let success = false;
+
+  if (targetCol >= 0 && targetCol !== dragSource.index) {
+    if (canPlaceOnColumn(dragCards[0], targetCol)) {
+      saveState();
+      tableau[dragSource.index].splice(dragSource.cardIndex);
+      for (let c of dragCards) tableau[targetCol].push(c);
+      moves++;
+      score--;
+      // Flip new top card
+      let srcPile = tableau[dragSource.index];
+      if (srcPile.length > 0 && !srcPile[srcPile.length - 1].faceUp) {
+        srcPile[srcPile.length - 1].faceUp = true;
+      }
+      success = true;
+      checkCompletedSuits();
+    }
+  }
+
+  dragging = null; dragCards = []; dragSource = null;
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'KeyZ' && !e.ctrlKey) { undo(); }
+  if (e.code === 'KeyN') { showMenu = true; }
+  if (e.code === 'KeyH') { findHint(); hintTimer = 120; }
+  if (e.code === 'KeyD') { dealFromStock(); }
+});
+
+// ==================== Game Loop ====================
+function gameLoop() {
+  if (hintTimer > 0) {
+    hintTimer--;
+    if (hintTimer === 0) { hintSource = null; hintTarget = null; }
+  }
+  if (!gameWon && !removeAnim) render();
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+})();
+</script>
+</body>
+</html>

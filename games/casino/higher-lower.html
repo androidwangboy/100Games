@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>高低猜 (Higher or Lower)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title';
+let currentCard = null;
+let nextCard = null;
+let multiplier = 1;
+let winnings = 0;
+let baseBet = 10;
+let credits = 100;
+let message = '';
+let resultMsg = '';
+let revealAnim = 0;
+let history = [];
+let particles = [];
+
+const SUITS = ['♠','♥','♦','♣'];
+const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+
+function randomCard() {
+  return { suit: SUITS[Math.floor(Math.random()*4)], rank: Math.floor(Math.random()*13) };
+}
+
+function cardValue(c) { return c.rank; }
+function cardName(c) { return RANKS[c.rank] + c.suit; }
+
+function startGame() {
+  state = 'playing';
+  credits = 100;
+  score = 0;
+  winnings = 0;
+  multiplier = 1;
+  history = [];
+  currentCard = randomCard();
+  nextCard = null;
+  message = '下一张牌会比这张高还是低?';
+  resultMsg = '';
+}
+
+function guess(dir) {
+  if (state !== 'playing') return;
+  nextCard = randomCard();
+  state = 'revealing';
+  revealAnim = 0;
+  const cv = cardValue(currentCard);
+  const nv = cardValue(nextCard);
+  let correct = false;
+  if (dir === 'higher') correct = nv > cv;
+  else correct = nv < cv;
+  if (nv === cv) correct = true; // tie counts as correct
+
+  setTimeout(() => {
+    if (correct) {
+      multiplier += 0.5;
+      winnings = Math.floor(baseBet * multiplier);
+      resultMsg = `正确! 倍率 x${multiplier.toFixed(1)}`;
+      history.push(cardName(currentCard));
+      if (history.length > 6) history.shift();
+      currentCard = nextCard;
+      nextCard = null;
+      state = 'playing';
+      message = '继续猜或兑现?';
+      for (let i = 0; i < 8; i++) particles.push({x:400,y:200,vx:(Math.random()-0.5)*6,vy:-Math.random()*5-2,life:35,color:'#2ecc71'});
+    } else {
+      resultMsg = `错误! ${cardName(nextCard)} - 失去所有`;
+      winnings = 0;
+      multiplier = 1;
+      state = 'lost';
+      message = '';
+    }
+  }, 800);
+}
+
+function cashOut() {
+  if (state !== 'playing' || winnings === 0) return;
+  credits += winnings;
+  score += winnings;
+  resultMsg = `兑现 ${winnings} 积分!`;
+  winnings = 0;
+  multiplier = 1;
+  currentCard = randomCard();
+  nextCard = null;
+  message = '新一轮开始';
+  state = 'playing';
+  for (let i = 0; i < 15; i++) particles.push({x:400,y:300,vx:(Math.random()-0.5)*8,vy:-Math.random()*7-2,life:45,color:'#f1c40f'});
+}
+
+function drawCardShape(x, y, card, faceDown, scale) {
+  const w = 90 * (scale||1), h = 126 * (scale||1);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = faceDown ? '#2c3e50' : '#fefefe';
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-w/2, -h/2, w, h, 8);
+  ctx.fill();
+  ctx.stroke();
+  if (faceDown) {
+    ctx.fillStyle = '#8e44ad';
+    ctx.beginPath(); ctx.roundRect(-w/2+8, -h/2+8, w-16, h-16, 4); ctx.fill();
+    ctx.fillStyle = '#9b59b6';
+    ctx.font = `${24*(scale||1)}px serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('?', 0, 0);
+  } else {
+    const isRed = card.suit === '♥' || card.suit === '♦';
+    ctx.fillStyle = isRed ? '#c0392b' : '#2c3e50';
+    ctx.font = `bold ${20*(scale||1)}px monospace`;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(RANKS[card.rank], -w/2+8, -h/2+8);
+    ctx.font = `${16*(scale||1)}px serif`;
+    ctx.fillText(card.suit, -w/2+8, -h/2+30);
+    ctx.font = `${38*(scale||1)}px serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(card.suit, 0, 8);
+  }
+  ctx.restore();
+}
+
+function drawButton(x, y, w, h, text, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x+w/2, y+h/2);
+}
+
+function draw() {
+  ctx.fillStyle = '#1a472a';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = 'rgba(0,0,0,0.08)';
+  for (let i = 0; i < 800; i += 5) ctx.fillRect(i, 0, 2, 480);
+
+  if (state === 'title') {
+    ctx.fillStyle = '#f1c40f';
+    ctx.font = 'bold 46px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🃏 高低猜', 400, 130);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('猜下一张牌比当前牌高还是低', 400, 190);
+    ctx.fillText('连续猜对增加倍率，随时可以兑现', 400, 225);
+    ctx.fillText('猜错则失去当前所有奖金', 400, 260);
+    ctx.fillStyle = '#bdc3c7';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('A=最低, K=最高 | 平局算对', 400, 310);
+    ctx.fillText('初始积分: 100', 400, 340);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('[ 点击开始 ]', 400, 410);
+    return;
+  }
+
+  // HUD
+  ctx.fillStyle = '#f1c40f';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`积分: ${credits}`, 20, 30);
+  ctx.textAlign = 'right';
+  ctx.fillText(`得分: ${score}`, 780, 30);
+  ctx.textAlign = 'center';
+  if (multiplier > 1) {
+    ctx.fillStyle = '#e67e22';
+    ctx.fillText(`倍率: x${multiplier.toFixed(1)} | 奖金: ${winnings}`, 400, 30);
+  }
+
+  // History
+  if (history.length > 0) {
+    ctx.fillStyle = '#7f8c8d';
+    ctx.font = '13px sans-serif';
+    ctx.fillText('历史: ' + history.join(' → '), 400, 55);
+  }
+
+  // Current card
+  drawCardShape(300, 210, currentCard, false, 1);
+  ctx.fillStyle = '#bdc3c7';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('当前', 300, 290);
+
+  // Next card (face down or revealing)
+  if (state === 'revealing' && nextCard) {
+    const s = Math.min(1, revealAnim * 1.5);
+    drawCardShape(500, 210, nextCard, revealAnim < 0.5, s);
+  } else {
+    drawCardShape(500, 210, null, true, 1);
+    ctx.fillStyle = '#bdc3c7';
+    ctx.font = '14px sans-serif';
+    ctx.fillText('下一张', 500, 290);
+  }
+
+  // Result message
+  if (resultMsg) {
+    ctx.fillStyle = resultMsg.includes('错误') || resultMsg.includes('失去') ? '#e74c3c' : '#2ecc71';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText(resultMsg, 400, 330);
+  }
+
+  // Buttons
+  if (state === 'playing') {
+    drawButton(150, 370, 160, 50, '⬆ 更高', '#27ae60');
+    drawButton(330, 370, 160, 50, '⬇ 更低', '#c0392b');
+    if (winnings > 0) drawButton(530, 370, 160, 50, `💰 兑现 ${winnings}`, '#f39c12');
+  } else if (state === 'lost') {
+    ctx.fillStyle = '#e74c3c';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillText('游戏结束!', 400, 380);
+    ctx.fillStyle = '#ecf0f1';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(`最终得分: ${score}`, 400, 420);
+    ctx.fillStyle = '#f39c12';
+    ctx.font = '18px sans-serif';
+    ctx.fillText('[ 点击重新开始 ]', 400, 460);
+  }
+
+  // Particles
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / 45;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = '#7f8c8d';
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, 400, 470);
+}
+
+function update() {
+  if (state === 'revealing') revealAnim += 0.04;
+  particles = particles.filter(p => { p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--; return p.life > 0; });
+}
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') { startGame(); return; }
+  if (state === 'lost') { state = 'title'; return; }
+  if (state === 'playing') {
+    if (mx >= 150 && mx <= 310 && my >= 370 && my <= 420) { guess('higher'); return; }
+    if (mx >= 330 && mx <= 490 && my >= 370 && my <= 420) { guess('lower'); return; }
+    if (mx >= 530 && mx <= 690 && my >= 370 && my <= 420 && winnings > 0) { cashOut(); return; }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>

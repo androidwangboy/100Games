@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>五子棋 - Gomoku</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+  if (e.code === 'KeyZ' && gameState === 'playing') undoMove();
+});
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const SIZE = 15;
+const CELL = 28;
+const BOARD_X = (W - CELL * (SIZE - 1)) / 2;
+const BOARD_Y = (H - CELL * (SIZE - 1)) / 2;
+const EMPTY = 0, PLAYER = 1, AI = 2;
+
+let gameState = 'title';
+let board = [];
+let history = [];
+let currentTurn = PLAYER;
+let score = 0;
+let message = '';
+let winner = '';
+let lastMove = null;
+let winLine = [];
+let difficulty = 1; // 0=easy, 1=normal, 2=hard
+let aiThinking = false;
+
+function initBoard() {
+  board = Array.from({length: SIZE}, () => Array(SIZE).fill(EMPTY));
+  history = [];
+  currentTurn = PLAYER;
+  score = 0;
+  winner = '';
+  lastMove = null;
+  winLine = [];
+  aiThinking = false;
+  message = '你的回合（黑棋）- 点击落子';
+}
+
+function checkWin(brd, r, c, color) {
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  for (const [dr, dc] of dirs) {
+    let count = 1;
+    let cells = [[r, c]];
+    for (let i = 1; i < 5; i++) {
+      const nr = r + dr*i, nc = c + dc*i;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && brd[nr][nc] === color) {
+        count++; cells.push([nr, nc]);
+      } else break;
+    }
+    for (let i = 1; i < 5; i++) {
+      const nr = r - dr*i, nc = c - dc*i;
+      if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && brd[nr][nc] === color) {
+        count++; cells.push([nr, nc]);
+      } else break;
+    }
+    if (count >= 5) return cells;
+  }
+  return null;
+}
+
+function evaluateLine(brd, r, c, dr, dc, color) {
+  const opp = color === PLAYER ? AI : PLAYER;
+  let count = 0, block = 0, empty1 = 0, empty2 = 0;
+  // Forward
+  for (let i = 1; i <= 4; i++) {
+    const nr = r + dr*i, nc = c + dc*i;
+    if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) { block++; break; }
+    if (brd[nr][nc] === color) count++;
+    else if (brd[nr][nc] === EMPTY) { empty1++; break; }
+    else { block++; break; }
+  }
+  // Backward
+  for (let i = 1; i <= 4; i++) {
+    const nr = r - dr*i, nc = c - dc*i;
+    if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) { block++; break; }
+    if (brd[nr][nc] === color) count++;
+    else if (brd[nr][nc] === EMPTY) { empty2++; break; }
+    else { block++; break; }
+  }
+  if (count >= 4) return 100000;
+  if (block === 2) return 0;
+  if (count === 3) {
+    if (block === 0) return 10000;
+    return 1000;
+  }
+  if (count === 2) {
+    if (block === 0) return 500;
+    return 100;
+  }
+  if (count === 1) return 10;
+  return 0;
+}
+
+function evaluatePoint(brd, r, c, color) {
+  if (brd[r][c] !== EMPTY) return -1;
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  let total = 0;
+  brd[r][c] = color;
+  for (const [dr, dc] of dirs) {
+    total += evaluateLine(brd, r, c, dr, dc, color);
+  }
+  brd[r][c] = EMPTY;
+  return total;
+}
+
+function getCandidates(brd, range) {
+  const candidates = [];
+  const visited = new Set();
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if (brd[r][c] !== EMPTY) {
+        for (let dr = -range; dr <= range; dr++) {
+          for (let dc = -range; dc <= range; dc++) {
+            const nr = r + dr, nc = c + dc;
+            if (nr >= 0 && nr < SIZE && nc >= 0 && nc < SIZE && brd[nr][nc] === EMPTY) {
+              const key = nr * SIZE + nc;
+              if (!visited.has(key)) {
+                visited.add(key);
+                candidates.push([nr, nc]);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if (candidates.length === 0) candidates.push([7, 7]);
+  return candidates;
+}
+
+function aiMove() {
+  aiThinking = true;
+  message = 'AI思考中...';
+  setTimeout(() => {
+    const depth = difficulty === 0 ? 1 : (difficulty === 1 ? 2 : 4);
+    let best = null, bestScore = -Infinity;
+    const candidates = getCandidates(board, 2);
+    // Score and sort candidates
+    const scored = candidates.map(([r, c]) => {
+      const attack = evaluatePoint(board, r, c, AI);
+      const defend = evaluatePoint(board, r, c, PLAYER);
+      return { r, c, s: attack + defend * 0.9 };
+    }).sort((a, b) => b.s - a.s).slice(0, difficulty === 2 ? 15 : 10);
+
+    for (const {r, c} of scored) {
+      board[r][c] = AI;
+      const win = checkWin(board, r, c, AI);
+      if (win) { board[r][c] = EMPTY; best = [r, c]; bestScore = Infinity; break; }
+      let val = minimax(board, depth - 1, -Infinity, Infinity, false);
+      board[r][c] = EMPTY;
+      if (val > bestScore) { bestScore = val; best = [r, c]; }
+    }
+    if (!best) best = [scored[0].r, scored[0].c];
+    board[best[0]][best[1]] = AI;
+    history.push({ r: best[0], c: best[1], color: AI });
+    lastMove = best;
+    const win = checkWin(board, best[0], best[1], AI);
+    if (win) {
+      winLine = win;
+      winner = 'ai';
+      gameState = 'gameover';
+      message = 'AI赢了！';
+    } else {
+      currentTurn = PLAYER;
+      message = '你的回合（黑棋）';
+    }
+    aiThinking = false;
+  }, 100);
+}
+
+function minimax(brd, depth, alpha, beta, isMax) {
+  if (depth === 0) return evaluateBoard(brd);
+  const color = isMax ? AI : PLAYER;
+  const candidates = getCandidates(brd, 1);
+  const scored = candidates.map(([r, c]) => {
+    const s = evaluatePoint(brd, r, c, color) + evaluatePoint(brd, r, c, color === AI ? PLAYER : AI) * 0.8;
+    return { r, c, s };
+  }).sort((a, b) => b.s - a.s).slice(0, 8);
+
+  if (isMax) {
+    let best = -Infinity;
+    for (const {r, c} of scored) {
+      brd[r][c] = AI;
+      const win = checkWin(brd, r, c, AI);
+      if (win) { brd[r][c] = EMPTY; return 1000000; }
+      best = Math.max(best, minimax(brd, depth - 1, alpha, beta, false));
+      brd[r][c] = EMPTY;
+      alpha = Math.max(alpha, best);
+      if (beta <= alpha) break;
+    }
+    return best;
+  } else {
+    let best = Infinity;
+    for (const {r, c} of scored) {
+      brd[r][c] = PLAYER;
+      const win = checkWin(brd, r, c, PLAYER);
+      if (win) { brd[r][c] = EMPTY; return -1000000; }
+      best = Math.min(best, minimax(brd, depth - 1, alpha, beta, true));
+      brd[r][c] = EMPTY;
+      beta = Math.min(beta, best);
+      if (beta <= alpha) break;
+    }
+    return best;
+  }
+}
+
+function evaluateBoard(brd) {
+  let val = 0;
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++) {
+      if (brd[r][c] === AI) {
+        const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+        for (const [dr, dc] of dirs) val += evaluateLine(brd, r, c, dr, dc, AI);
+      } else if (brd[r][c] === PLAYER) {
+        const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+        for (const [dr, dc] of dirs) val -= evaluateLine(brd, r, c, dr, dc, PLAYER);
+      }
+    }
+  return val;
+}
+
+function undoMove() {
+  if (history.length < 2 || currentTurn !== PLAYER || aiThinking) return;
+  const aiLast = history.pop();
+  const playerLast = history.pop();
+  board[aiLast.r][aiLast.c] = EMPTY;
+  board[playerLast.r][playerLast.c] = EMPTY;
+  lastMove = history.length > 0 ? [history[history.length-1].r, history[history.length-1].c] : null;
+  winLine = [];
+  message = '已悔棋 - 你的回合';
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') {
+    // Difficulty buttons
+    if (my > 280 && my < 320) {
+      if (mx > W/2-200 && mx < W/2-80) difficulty = 0;
+      else if (mx > W/2-60 && mx < W/2+60) difficulty = 1;
+      else if (mx > W/2+80 && mx < W/2+200) difficulty = 2;
+    }
+    if (mx > W/2-80 && mx < W/2+80 && my > 340 && my < 390) {
+      gameState = 'playing'; initBoard();
+    }
+    return;
+  }
+  if (gameState === 'gameover') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 330 && my < 380) {
+      gameState = 'playing'; initBoard();
+    }
+    return;
+  }
+  if (gameState !== 'playing' || currentTurn !== PLAYER || aiThinking) return;
+
+  const c = Math.round((mx - BOARD_X) / CELL);
+  const r = Math.round((my - BOARD_Y) / CELL);
+  if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return;
+  if (board[r][c] !== EMPTY) return;
+
+  board[r][c] = PLAYER;
+  history.push({ r, c, color: PLAYER });
+  lastMove = [r, c];
+  score++;
+  const win = checkWin(board, r, c, PLAYER);
+  if (win) {
+    winLine = win;
+    winner = 'player';
+    gameState = 'gameover';
+    message = '你赢了！';
+    return;
+  }
+  // Check draw
+  if (history.length === SIZE * SIZE) {
+    winner = 'draw'; gameState = 'gameover'; message = '平局！'; return;
+  }
+  currentTurn = AI;
+  aiMove();
+});
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('五 子 棋', W/2, 130);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '18px sans-serif';
+  ctx.fillText('Gomoku - 人机对战', W/2, 180);
+  ctx.fillText('五子连珠获胜 | Z键悔棋', W/2, 220);
+  ctx.fillText('选择难度：', W/2, 265);
+  const labels = ['简单', '普通', '困难'];
+  const positions = [W/2-140, W/2, W/2+140];
+  for (let i = 0; i < 3; i++) {
+    ctx.fillStyle = difficulty === i ? '#e94560' : '#0f3460';
+    ctx.fillRect(positions[i]-55, 280, 110, 36);
+    ctx.fillStyle = '#fff';
+    ctx.font = '18px sans-serif';
+    ctx.fillText(labels[i], positions[i], 304);
+  }
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 340, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('开始游戏', W/2, 372);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = winner === 'player' ? '#4ecdc4' : (winner === 'ai' ? '#e94560' : '#ffd700');
+  ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W/2, 180);
+  ctx.fillStyle = '#ccc';
+  ctx.font = '20px sans-serif';
+  ctx.fillText(`总手数: ${history.length}`, W/2, 240);
+  ctx.fillStyle = '#0f3460';
+  ctx.fillRect(W/2-80, 330, 160, 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px sans-serif';
+  ctx.fillText('再来一局', W/2, 362);
+}
+
+function drawGame() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  // Board bg
+  ctx.fillStyle = '#2d2d44';
+  ctx.fillRect(BOARD_X - 20, BOARD_Y - 20, CELL*(SIZE-1)+40, CELL*(SIZE-1)+40);
+  // Grid lines
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < SIZE; i++) {
+    ctx.beginPath();
+    ctx.moveTo(BOARD_X, BOARD_Y + i * CELL);
+    ctx.lineTo(BOARD_X + (SIZE-1)*CELL, BOARD_Y + i * CELL);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(BOARD_X + i * CELL, BOARD_Y);
+    ctx.lineTo(BOARD_X + i * CELL, BOARD_Y + (SIZE-1)*CELL);
+    ctx.stroke();
+  }
+  // Star points
+  const stars = [[3,3],[3,11],[7,7],[11,3],[11,11]];
+  for (const [sr, sc] of stars) {
+    ctx.beginPath();
+    ctx.arc(BOARD_X + sc*CELL, BOARD_Y + sr*CELL, 4, 0, Math.PI*2);
+    ctx.fillStyle = '#888';
+    ctx.fill();
+  }
+  // Win line highlight
+  if (winLine.length > 0) {
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    const sorted = [...winLine].sort((a,b) => a[0]-b[0] || a[1]-b[1]);
+    ctx.moveTo(BOARD_X + sorted[0][1]*CELL, BOARD_Y + sorted[0][0]*CELL);
+    ctx.lineTo(BOARD_X + sorted[sorted.length-1][1]*CELL, BOARD_Y + sorted[sorted.length-1][0]*CELL);
+    ctx.stroke();
+  }
+  // Pieces
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if (board[r][c] !== EMPTY) {
+        const x = BOARD_X + c * CELL, y = BOARD_Y + r * CELL;
+        ctx.beginPath();
+        ctx.arc(x, y, CELL * 0.42, 0, Math.PI * 2);
+        if (board[r][c] === PLAYER) {
+          ctx.fillStyle = '#222';
+          ctx.fill();
+          ctx.strokeStyle = '#555';
+        } else {
+          ctx.fillStyle = '#f0f0f0';
+          ctx.fill();
+          ctx.strokeStyle = '#aaa';
+        }
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+  }
+  // Last move marker
+  if (lastMove) {
+    const x = BOARD_X + lastMove[1]*CELL, y = BOARD_Y + lastMove[0]*CELL;
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI*2);
+    ctx.fillStyle = '#e94560';
+    ctx.fill();
+  }
+  // HUD
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`手数: ${history.length}  |  Z:悔棋  |  难度: ${['简单','普通','困难'][difficulty]}`, 10, 20);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(message, W/2, H - 10);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#888';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('ESC 退出', W-10, 20);
+}
+
+function gameLoop() {
+  if (gameState === 'title') drawTitle();
+  else if (gameState === 'playing') drawGame();
+  else if (gameState === 'gameover') { drawGame(); drawGameOver(); }
+  requestAnimationFrame(gameLoop);
+}
+gameLoop();
+</script>
+</body>
+</html>

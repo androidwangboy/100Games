@@ -1,0 +1,1394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>洞穴探险</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; font-family: "Microsoft YaHei", sans-serif; color: #ddd; }
+canvas { border: 2px solid #333; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+// ===================== 洞穴探险 Spelunky Lite =====================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+const TILE = 32;
+const COLS = 25, ROWS = 15; // 每房间 25x15 格
+
+// 瓦片类型
+const T = {
+  EMPTY: 0, WALL: 1, PLATFORM: 2, SPIKE: 3, LADDER: 4,
+  DOOR_EXIT: 5, TORCH: 6, CHEST: 7, ROCK: 8
+};
+
+// 游戏状态
+const STATE = { TITLE: 0, PLAYING: 1, DEAD: 2, LEVELCLEAR: 3, WIN: 4 };
+let gameState = STATE.TITLE;
+let score = 0;
+
+// 关卡
+let levelNum = 1;
+let depth = 0;
+let rooms = [];       // 4x4 房间网格
+let currentRoom = { r: 0, c: 0 };
+let grid = [];        // 当前房间瓦片
+let entities = [];    // 当前房间实体
+let particles = [];
+let exitUnlocked = false;
+let keyCollected = false;
+let roomVisited = []; // 4x4 访问标记
+let camera = { x: 0, y: 0 };
+
+// 玩家
+let player = null;
+let keys = {};
+let prevKeys = {};
+
+// 物品计数
+let bombs = 2;
+let ropes = 2;
+
+// 帧计数
+let frame = 0;
+let shakeTimer = 0;
+let shakeIntensity = 0;
+let message = '';
+let messageTimer = 0;
+
+// ===================== 关卡生成 =====================
+function generateLevel() {
+  rooms = [];
+  roomVisited = Array.from({length: 4}, () => Array(4).fill(false));
+  exitUnlocked = false;
+  keyCollected = false;
+
+  // 生成4x4房间连接图 (简化: 所有房间可通行, 用门连接)
+  for (let r = 0; r < 4; r++) {
+    rooms[r] = [];
+    for (let c = 0; c < 4; c++) {
+      rooms[r][c] = generateRoom(r, c);
+    }
+  }
+
+  // 起始房间: 左上
+  currentRoom = { r: 0, c: 0 };
+  roomVisited[0][0] = true;
+
+  // 出口门在右下房间
+  const exitRoom = rooms[3][3];
+  placeExitDoor(exitRoom);
+
+  // 钥匙在随机中间房间
+  const keyR = 1 + Math.floor(Math.random() * 2);
+  const keyC = 1 + Math.floor(Math.random() * 2);
+  placeKey(rooms[keyR][keyC]);
+
+  loadRoom(0, 0);
+  player.x = 2 * TILE;
+  player.y = 10 * TILE;
+  player.vx = 0;
+  player.vy = 0;
+}
+
+function generateRoom(r, c) {
+  const g = Array.from({length: ROWS}, () => Array(COLS).fill(T.EMPTY));
+
+  // 边界墙
+  for (let x = 0; x < COLS; x++) {
+    g[0][x] = T.WALL;
+    g[ROWS - 1][x] = T.WALL;
+  }
+  for (let y = 0; y < ROWS; y++) {
+    g[y][0] = T.WALL;
+    g[y][COLS - 1] = T.WALL;
+  }
+
+  // 房间门洞 (上下左右)
+  // 上门
+  if (r > 0) { g[0][12] = T.EMPTY; g[0][13] = T.EMPTY; }
+  // 下门
+  if (r < 3) { g[ROWS-1][12] = T.EMPTY; g[ROWS-1][13] = T.EMPTY; }
+  // 左门
+  if (c > 0) { g[7][0] = T.EMPTY; g[8][0] = T.EMPTY; }
+  // 右门
+  if (c < 3) { g[7][COLS-1] = T.EMPTY; g[8][COLS-1] = T.EMPTY; }
+
+  // 地面层
+  const groundY = ROWS - 2;
+  for (let x = 1; x < COLS - 1; x++) {
+    g[groundY][x] = T.WALL;
+  }
+
+  // 随机平台
+  const platCount = 3 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < platCount; i++) {
+    const py = 3 + Math.floor(Math.random() * (ROWS - 6));
+    const px = 2 + Math.floor(Math.random() * (COLS - 8));
+    const pw = 3 + Math.floor(Math.random() * 4);
+    for (let x = px; x < px + pw && x < COLS - 1; x++) {
+      if (g[py][x] === T.EMPTY) g[py][x] = T.PLATFORM;
+    }
+  }
+
+  // 实体列表
+  const ents = [];
+
+  // 尖刺
+  const spikeCount = Math.floor(Math.random() * 3) + levelNum;
+  for (let i = 0; i < spikeCount; i++) {
+    const sx = 2 + Math.floor(Math.random() * (COLS - 4));
+    if (g[groundY][sx] === T.WALL && g[groundY - 1][sx] === T.EMPTY) {
+      g[groundY - 1][sx] = T.SPIKE;
+    }
+  }
+
+  // 蛇 (地面敌人)
+  const snakeCount = Math.floor(Math.random() * 2) + (levelNum > 1 ? 1 : 0);
+  for (let i = 0; i < snakeCount; i++) {
+    const sx = 4 + Math.floor(Math.random() * (COLS - 8));
+    ents.push({ type: 'snake', x: sx * TILE, y: (groundY - 1) * TILE, w: 28, h: 20, vx: 0.7, dir: 1, hp: 1, frame: 0 });
+  }
+
+  // 蝙蝠 (飞行敌人)
+  const batCount = Math.floor(Math.random() * 3);
+  for (let i = 0; i < batCount; i++) {
+    const bx = 3 + Math.floor(Math.random() * (COLS - 6));
+    const by = 2 + Math.floor(Math.random() * 5);
+    ents.push({ type: 'bat', x: bx * TILE, y: by * TILE, w: 24, h: 18, baseY: by * TILE, phase: Math.random() * Math.PI * 2, hp: 1, frame: 0, activated: false });
+  }
+
+  // 落石 (天花板)
+  const rockCount = Math.floor(Math.random() * 2);
+  for (let i = 0; i < rockCount; i++) {
+    const rx = 3 + Math.floor(Math.random() * (COLS - 6));
+    g[1][rx] = T.ROCK;
+  }
+
+  // 金块
+  const goldCount = 3 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < goldCount; i++) {
+    const gx = 2 + Math.floor(Math.random() * (COLS - 4));
+    const gy = 2 + Math.floor(Math.random() * (ROWS - 5));
+    if (g[gy][gx] === T.EMPTY) {
+      ents.push({ type: 'gold', x: gx * TILE + 8, y: gy * TILE + 8, w: 16, h: 16, value: 500 + Math.floor(Math.random() * 3) * 250, collected: false, frame: 0 });
+    }
+  }
+
+  // 宝石 (高价值)
+  if (Math.random() < 0.4) {
+    const gx = 3 + Math.floor(Math.random() * (COLS - 6));
+    const gy = 2 + Math.floor(Math.random() * 4);
+    if (g[gy][gx] === T.EMPTY) {
+      ents.push({ type: 'gem', x: gx * TILE + 6, y: gy * TILE + 6, w: 20, h: 20, value: 2000, collected: false, frame: 0, color: ['#4af','#f4a','#4fa'][Math.floor(Math.random()*3)] });
+    }
+  }
+
+  // 宝箱
+  if (Math.random() < 0.35) {
+    const cx = 3 + Math.floor(Math.random() * (COLS - 6));
+    if (g[groundY - 1][cx] === T.EMPTY) {
+      ents.push({ type: 'chest', x: cx * TILE, y: (groundY - 1) * TILE + 4, w: 28, h: 24, opened: false, value: 1000 + Math.floor(Math.random() * 2000) });
+    }
+  }
+
+  // 火把 (装饰 + 光源)
+  const torchCount = 2 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < torchCount; i++) {
+    const tx = 2 + Math.floor(Math.random() * (COLS - 4));
+    g[2][tx] = T.TORCH;
+  }
+
+  // 绳索 (可拾取)
+  if (Math.random() < 0.3) {
+    const rx = 2 + Math.floor(Math.random() * (COLS - 4));
+    const ry = 2 + Math.floor(Math.random() * 4);
+    if (g[ry][rx] === T.EMPTY) {
+      ents.push({ type: 'rope_item', x: rx * TILE + 8, y: ry * TILE + 4, w: 16, h: 24, collected: false });
+    }
+  }
+
+  // 炸弹 (可拾取)
+  if (Math.random() < 0.25) {
+    const bx = 2 + Math.floor(Math.random() * (COLS - 4));
+    const by = 2 + Math.floor(Math.random() * 4);
+    if (g[by][bx] === T.EMPTY) {
+      ents.push({ type: 'bomb_item', x: bx * TILE + 8, y: by * TILE + 8, w: 16, h: 16, collected: false });
+    }
+  }
+
+  return { grid: g, entities: ents };
+}
+
+function placeExitDoor(room) {
+  const g = room.grid;
+  const groundY = ROWS - 2;
+  // 在右下房间右侧放出口门
+  const dx = COLS - 4;
+  g[groundY - 1][dx] = T.DOOR_EXIT;
+  g[groundY - 2][dx] = T.DOOR_EXIT;
+}
+
+function placeKey(room) {
+  const groundY = ROWS - 2;
+  const kx = 5 + Math.floor(Math.random() * (COLS - 10));
+  room.entities.push({ type: 'key', x: kx * TILE + 6, y: (groundY - 2) * TILE, w: 20, h: 20, collected: false, frame: 0 });
+}
+
+function loadRoom(r, c) {
+  currentRoom = { r, c };
+  roomVisited[r][c] = true;
+  const room = rooms[r][c];
+  grid = room.grid.map(row => row.slice());
+  entities = room.entities.filter(e => !e.collected && !e.opened && e.hp === undefined || e.hp > 0);
+  // 保留原始引用以同步状态
+  entities = room.entities;
+  particles = [];
+}
+
+// ===================== 玩家 =====================
+function createPlayer() {
+  return {
+    x: 64, y: 320, w: 20, h: 28,
+    vx: 0, vy: 0,
+    onGround: false,
+    facing: 1,
+    hp: 4,
+    maxHp: 4,
+    invincible: 0,
+    whipTimer: 0,
+    whipCooldown: 0,
+    animFrame: 0,
+    animTimer: 0,
+    climbing: false,
+    dead: false
+  };
+}
+
+// ===================== 物理与碰撞 =====================
+function isSolid(gx, gy) {
+  if (gx < 0 || gx >= COLS || gy < 0 || gy >= ROWS) return true;
+  const t = grid[gy][gx];
+  return t === T.WALL || t === T.ROCK;
+}
+
+function isPlatform(gx, gy) {
+  if (gx < 0 || gx >= COLS || gy < 0 || gy >= ROWS) return false;
+  return grid[gy][gx] === T.PLATFORM;
+}
+
+function isLadder(gx, gy) {
+  if (gx < 0 || gx >= COLS || gy < 0 || gy >= ROWS) return false;
+  return grid[gy][gx] === T.LADDER;
+}
+
+function rectCollide(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function moveEntity(ent, dt) {
+  // 水平移动
+  ent.x += ent.vx * dt;
+  // 水平碰撞
+  const left = Math.floor(ent.x / TILE);
+  const right = Math.floor((ent.x + ent.w - 1) / TILE);
+  const top = Math.floor(ent.y / TILE);
+  const bottom = Math.floor((ent.y + ent.h - 1) / TILE);
+
+  for (let gy = top; gy <= bottom; gy++) {
+    for (let gx = left; gx <= right; gx++) {
+      if (isSolid(gx, gy)) {
+        if (ent.vx > 0) {
+          ent.x = gx * TILE - ent.w;
+        } else if (ent.vx < 0) {
+          ent.x = (gx + 1) * TILE;
+        }
+        ent.vx = 0;
+      }
+    }
+  }
+
+  // 垂直移动
+  ent.y += ent.vy * dt;
+  ent.onGround = false;
+  const left2 = Math.floor(ent.x / TILE);
+  const right2 = Math.floor((ent.x + ent.w - 1) / TILE);
+  const top2 = Math.floor(ent.y / TILE);
+  const bottom2 = Math.floor((ent.y + ent.h - 1) / TILE);
+
+  for (let gy = top2; gy <= bottom2; gy++) {
+    for (let gx = left2; gx <= right2; gx++) {
+      if (isSolid(gx, gy)) {
+        if (ent.vy > 0) {
+          ent.y = gy * TILE - ent.h;
+          ent.onGround = true;
+        } else if (ent.vy < 0) {
+          ent.y = (gy + 1) * TILE;
+        }
+        ent.vy = 0;
+      }
+      // 平台 (只从上方落下时碰撞)
+      if (isPlatform(gx, gy) && ent.vy > 0) {
+        const prevBottom = ent.y + ent.h - ent.vy * dt;
+        if (prevBottom <= gy * TILE + 4) {
+          ent.y = gy * TILE - ent.h;
+          ent.vy = 0;
+          ent.onGround = true;
+        }
+      }
+    }
+  }
+}
+
+// ===================== 更新逻辑 =====================
+function update() {
+  frame++;
+  if (shakeTimer > 0) shakeTimer--;
+  if (messageTimer > 0) messageTimer--;
+
+  if (gameState === STATE.TITLE) {
+    if (keys['Space'] || keys['Enter']) {
+      startGame();
+    }
+    return;
+  }
+  if (gameState === STATE.DEAD || gameState === STATE.WIN) {
+    if (keys['KeyR']) {
+      startGame();
+    }
+    return;
+  }
+  if (gameState === STATE.LEVELCLEAR) {
+    if (keys['Space'] || keys['Enter']) {
+      levelNum++;
+      if (levelNum > 4) {
+        gameState = STATE.WIN;
+        score += 5000;
+      } else {
+        depth += 10;
+        generateLevel();
+        gameState = STATE.PLAYING;
+        showMessage('第 ' + levelNum + ' 层');
+      }
+    }
+    return;
+  }
+
+  updatePlayer();
+  updateEntities();
+  updateParticles();
+  checkRoomTransition();
+
+  prevKeys = {...keys};
+}
+
+function updatePlayer() {
+  if (player.dead) return;
+  const p = player;
+  const speed = 3.2;
+  const gravity = 0.55;
+  const jumpForce = -10.5;
+
+  // 无敌帧
+  if (p.invincible > 0) p.invincible--;
+  if (p.whipCooldown > 0) p.whipCooldown--;
+
+  // 水平输入
+  let moveX = 0;
+  if (keys['ArrowLeft'] || keys['KeyA']) moveX = -1;
+  if (keys['ArrowRight'] || keys['KeyD']) moveX = 1;
+  p.vx = moveX * speed;
+  if (moveX !== 0) p.facing = moveX;
+
+  // 跳跃
+  if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && p.onGround) {
+    p.vy = jumpForce;
+    p.onGround = false;
+    spawnParticles(p.x + p.w/2, p.y + p.h, 4, '#888', 2);
+  }
+
+  // 下蹲/拾取 (下键)
+  if (keys['ArrowDown'] || keys['KeyS']) {
+    tryPickup();
+  }
+
+  // 鞭子攻击 (X)
+  if (keys['KeyX'] && p.whipCooldown === 0) {
+    p.whipTimer = 12;
+    p.whipCooldown = 20;
+    doWhipAttack();
+  }
+  if (p.whipTimer > 0) p.whipTimer--;
+
+  // 放炸弹 (B)
+  if (keys['KeyB'] && !prevKeys['KeyB'] && bombs > 0) {
+    bombs--;
+    spawnBomb(p.x + p.facing * 20, p.y);
+  }
+
+  // 放绳索 (R)
+  if (keys['KeyR'] && !prevKeys['KeyR'] && ropes > 0) {
+    ropes--;
+    spawnRope(p.x, p.y);
+  }
+
+  // 重力
+  p.vy += gravity;
+  if (p.vy > 12) p.vy = 12;
+
+  // 移动与碰撞
+  moveEntity(p, 1);
+
+  // 动画
+  if (Math.abs(p.vx) > 0.5 && p.onGround) {
+    p.animTimer++;
+    if (p.animTimer > 6) { p.animTimer = 0; p.animFrame = (p.animFrame + 1) % 4; }
+  } else {
+    p.animFrame = 0;
+  }
+
+  // 尖刺伤害
+  checkSpikeDamage();
+
+  // 落石检测
+  checkFallingRocks();
+
+  // 掉出屏幕
+  if (p.y > ROWS * TILE + 100) {
+    damagePlayer(4);
+  }
+
+  // 出口门
+  if (exitUnlocked) {
+    const pcx = Math.floor((p.x + p.w/2) / TILE);
+    const pcy = Math.floor((p.y + p.h/2) / TILE);
+    if (pcy >= 0 && pcy < ROWS && pcx >= 0 && pcx < COLS && grid[pcy][pcx] === T.DOOR_EXIT) {
+      levelClear();
+    }
+  }
+}
+
+function doWhipAttack() {
+  const p = player;
+  const whipBox = {
+    x: p.facing > 0 ? p.x + p.w : p.x - 36,
+    y: p.y + 4,
+    w: 36,
+    h: 20
+  };
+  spawnParticles(whipBox.x + whipBox.w/2, whipBox.y + whipBox.h/2, 3, '#ff8', 1);
+
+  for (const ent of entities) {
+    if (ent.hp !== undefined && ent.hp > 0) {
+      if (rectCollide(whipBox, ent)) {
+        ent.hp--;
+        if (ent.hp <= 0) {
+          score += 100;
+          spawnParticles(ent.x + ent.w/2, ent.y + ent.h/2, 8, '#f84', 3);
+        }
+      }
+    }
+    // 打开宝箱
+    if (ent.type === 'chest' && !ent.opened && rectCollide(whipBox, ent)) {
+      ent.opened = true;
+      score += ent.value;
+      showMessage('+' + ent.value + ' 金币!');
+      spawnParticles(ent.x + ent.w/2, ent.y, 10, '#ff0', 4);
+    }
+  }
+}
+
+function tryPickup() {
+  const p = player;
+  const pBox = { x: p.x - 8, y: p.y - 8, w: p.w + 16, h: p.h + 16 };
+  for (const ent of entities) {
+    if (ent.collected || ent.opened) continue;
+    if ((ent.type === 'gold' || ent.type === 'gem' || ent.type === 'key' ||
+         ent.type === 'rope_item' || ent.type === 'bomb_item') && rectCollide(pBox, ent)) {
+      collectItem(ent);
+      return;
+    }
+    if (ent.type === 'chest' && !ent.opened && rectCollide(pBox, ent)) {
+      ent.opened = true;
+      score += ent.value;
+      showMessage('+' + ent.value + ' 金币!');
+      spawnParticles(ent.x + ent.w/2, ent.y, 10, '#ff0', 4);
+      return;
+    }
+  }
+}
+
+function collectItem(ent) {
+  ent.collected = true;
+  if (ent.type === 'gold') {
+    score += ent.value;
+    showMessage('+' + ent.value);
+    spawnParticles(ent.x + 8, ent.y + 8, 5, '#ff0', 2);
+  } else if (ent.type === 'gem') {
+    score += ent.value;
+    showMessage('宝石! +' + ent.value);
+    spawnParticles(ent.x + 10, ent.y + 10, 8, ent.color, 3);
+  } else if (ent.type === 'key') {
+    keyCollected = true;
+    exitUnlocked = true;
+    showMessage('获得钥匙! 出口已开启');
+    spawnParticles(ent.x + 10, ent.y + 10, 12, '#ff0', 4);
+  } else if (ent.type === 'rope_item') {
+    ropes += 2;
+    showMessage('绳索 +2');
+  } else if (ent.type === 'bomb_item') {
+    bombs += 2;
+    showMessage('炸弹 +2');
+  }
+}
+
+function checkSpikeDamage() {
+  const p = player;
+  if (p.invincible > 0) return;
+  const cx = Math.floor((p.x + p.w/2) / TILE);
+  const cy = Math.floor((p.y + p.h - 2) / TILE);
+  if (cy >= 0 && cy < ROWS && cx >= 0 && cx < COLS) {
+    if (grid[cy][cx] === T.SPIKE) {
+      damagePlayer(1);
+      p.vy = -6;
+    }
+  }
+}
+
+function checkFallingRocks() {
+  const p = player;
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (grid[y][x] === T.ROCK) {
+        // 玩家在下方时触发
+        const pcx = Math.floor((p.x + p.w/2) / TILE);
+        if (Math.abs(pcx - x) <= 1 && p.y > y * TILE && p.y - y * TILE < TILE * 4) {
+          // 转为落石实体
+          grid[y][x] = T.EMPTY;
+          entities.push({ type: 'falling_rock', x: x * TILE + 2, y: y * TILE, w: 28, h: 28, vy: 0, hp: 1, active: true });
+        }
+      }
+    }
+  }
+}
+
+function spawnBomb(x, y) {
+  entities.push({ type: 'bomb', x, y, w: 14, h: 14, vy: -4, vx: player.facing * 3, timer: 90, hp: undefined });
+}
+
+function spawnRope(x, y) {
+  // 向下放置绳索 (变为梯子)
+  const gx = Math.floor((x + player.w/2) / TILE);
+  let gy = Math.floor((y + player.h) / TILE);
+  for (let i = 0; i < 5 && gy + i < ROWS - 1; i++) {
+    if (grid[gy + i][gx] === T.EMPTY) {
+      grid[gy + i][gx] = T.LADDER;
+    } else break;
+  }
+  showMessage('放置绳索');
+}
+
+function damagePlayer(amount) {
+  if (player.invincible > 0 || player.dead) return;
+  player.hp -= amount;
+  player.invincible = 60;
+  shakeTimer = 10;
+  shakeIntensity = 5;
+  spawnParticles(player.x + player.w/2, player.y + player.h/2, 8, '#f44', 3);
+  if (player.hp <= 0) {
+    player.dead = true;
+    gameState = STATE.DEAD;
+    spawnParticles(player.x + player.w/2, player.y + player.h/2, 20, '#f84', 5);
+  }
+}
+
+function updateEntities() {
+  const p = player;
+  for (const ent of entities) {
+    if (ent.collected || ent.opened) continue;
+
+    if (ent.type === 'snake') {
+      ent.frame++;
+      ent.x += ent.vx * ent.dir;
+      // 碰墙转向
+      const aheadX = ent.dir > 0 ? ent.x + ent.w + 2 : ent.x - 2;
+      const gx = Math.floor(aheadX / TILE);
+      const gy = Math.floor((ent.y + ent.h/2) / TILE);
+      if (isSolid(gx, gy) || !isSolid(Math.floor((ent.x + ent.w/2)/TILE), gy + 1)) {
+        ent.dir *= -1;
+      }
+      // 伤害玩家
+      if (p.invincible === 0 && !p.dead && rectCollide(p, ent)) {
+        damagePlayer(1);
+        p.vx = (p.x < ent.x ? -1 : 1) * 5;
+        p.vy = -5;
+      }
+    }
+
+    else if (ent.type === 'bat') {
+      ent.frame++;
+      // 玩家靠近时激活
+      const dist = Math.hypot(p.x - ent.x, p.y - ent.y);
+      if (dist < 200) ent.activated = true;
+      if (ent.activated) {
+        // 朝玩家飞
+        const dx = p.x - ent.x, dy = p.y - ent.y;
+        const d = Math.hypot(dx, dy) || 1;
+        ent.x += (dx / d) * 1.8;
+        ent.y += (dy / d) * 1.2 + Math.sin(ent.phase + frame * 0.1) * 0.8;
+      } else {
+        ent.y = ent.baseY + Math.sin(ent.phase + frame * 0.03) * 10;
+      }
+      if (p.invincible === 0 && !p.dead && rectCollide(p, ent)) {
+        damagePlayer(1);
+        p.vy = -5;
+      }
+    }
+
+    else if (ent.type === 'falling_rock') {
+      ent.vy += 0.5;
+      ent.y += ent.vy;
+      const gy = Math.floor((ent.y + ent.h) / TILE);
+      const gx = Math.floor((ent.x + ent.w/2) / TILE);
+      if (isSolid(gx, gy)) {
+        ent.hp = 0;
+        spawnParticles(ent.x + ent.w/2, ent.y + ent.h/2, 10, '#888', 4);
+        shakeTimer = 6;
+        shakeIntensity = 3;
+      }
+      if (p.invincible === 0 && !p.dead && rectCollide(p, ent)) {
+        damagePlayer(2);
+      }
+    }
+
+    else if (ent.type === 'bomb') {
+      ent.vy = (ent.vy || 0) + 0.4;
+      ent.x += ent.vx || 0;
+      ent.y += ent.vy;
+      ent.vx *= 0.95;
+      const gy = Math.floor((ent.y + ent.h) / TILE);
+      const gx = Math.floor((ent.x + ent.w/2) / TILE);
+      if (isSolid(gx, gy)) { ent.y = gy * TILE - ent.h; ent.vy = 0; }
+      ent.timer--;
+      if (ent.timer <= 0) {
+        explode(ent.x + ent.w/2, ent.y + ent.h/2);
+        ent.hp = 0;
+        ent.collected = true;
+      }
+    }
+
+    else if (ent.type === 'gold' || ent.type === 'gem' || ent.type === 'key') {
+      ent.frame++;
+      // 自动拾取 (碰到即可)
+      if (!ent.collected && rectCollide(p, ent)) {
+        collectItem(ent);
+      }
+    }
+  }
+
+  // 清除死亡实体
+  entities = entities.filter(e => e.hp === undefined || e.hp > 0);
+}
+
+function explode(x, y) {
+  const radius = TILE * 1.8;
+  shakeTimer = 15;
+  shakeIntensity = 8;
+  spawnParticles(x, y, 25, '#f80', 6);
+  spawnParticles(x, y, 15, '#ff0', 4);
+
+  // 破坏墙壁
+  const gx0 = Math.floor((x - radius) / TILE);
+  const gx1 = Math.floor((x + radius) / TILE);
+  const gy0 = Math.floor((y - radius) / TILE);
+  const gy1 = Math.floor((y + radius) / TILE);
+  for (let gy = gy0; gy <= gy1; gy++) {
+    for (let gx = gx0; gx <= gx1; gx++) {
+      if (gx < 1 || gx >= COLS-1 || gy < 1 || gy >= ROWS-1) continue;
+      const dist = Math.hypot((gx*TILE+16) - x, (gy*TILE+16) - y);
+      if (dist < radius && grid[gy][gx] === T.WALL) {
+        grid[gy][gx] = T.EMPTY;
+        spawnParticles(gx*TILE+16, gy*TILE+16, 3, '#a86', 2);
+      }
+    }
+  }
+
+  // 伤害敌人和玩家
+  for (const ent of entities) {
+    if (ent.hp !== undefined && ent.hp > 0) {
+      const dist = Math.hypot(ent.x - x, ent.y - y);
+      if (dist < radius) { ent.hp = 0; score += 100; }
+    }
+  }
+  const pdist = Math.hypot(player.x - x, player.y - y);
+  if (pdist < radius) damagePlayer(1);
+}
+
+function updateParticles() {
+  for (const pt of particles) {
+    pt.x += pt.vx;
+    pt.y += pt.vy;
+    pt.vy += 0.15;
+    pt.life--;
+  }
+  particles = particles.filter(pt => pt.life > 0);
+}
+
+function spawnParticles(x, y, count, color, speed) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = Math.random() * speed + 1;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd - 1,
+      life: 20 + Math.random() * 20,
+      color,
+      size: 2 + Math.random() * 3
+    });
+  }
+}
+
+function checkRoomTransition() {
+  const p = player;
+  // 右
+  if (p.x + p.w > (COLS - 1) * TILE && currentRoom.c < 3) {
+    const gy = Math.floor((p.y + p.h/2) / TILE);
+    if (gy === 7 || gy === 8) {
+      loadRoom(currentRoom.r, currentRoom.c + 1);
+      p.x = TILE + 2;
+    }
+  }
+  // 左
+  if (p.x < TILE && currentRoom.c > 0) {
+    const gy = Math.floor((p.y + p.h/2) / TILE);
+    if (gy === 7 || gy === 8) {
+      loadRoom(currentRoom.r, currentRoom.c - 1);
+      p.x = (COLS - 2) * TILE - p.w;
+    }
+  }
+  // 下
+  if (p.y + p.h > (ROWS - 1) * TILE && currentRoom.r < 3) {
+    const gx = Math.floor((p.x + p.w/2) / TILE);
+    if (gx === 12 || gx === 13) {
+      loadRoom(currentRoom.r + 1, currentRoom.c);
+      p.y = TILE + 2;
+    }
+  }
+  // 上
+  if (p.y < TILE && currentRoom.r > 0) {
+    const gx = Math.floor((p.x + p.w/2) / TILE);
+    if (gx === 12 || gx === 13) {
+      loadRoom(currentRoom.r - 1, currentRoom.c);
+      p.y = (ROWS - 2) * TILE - p.h;
+    }
+  }
+}
+
+function levelClear() {
+  gameState = STATE.LEVELCLEAR;
+  score += 1000 + player.hp * 500;
+  spawnParticles(player.x + player.w/2, player.y + player.h/2, 20, '#4f4', 5);
+}
+
+function showMessage(text) {
+  message = text;
+  messageTimer = 120;
+}
+
+function startGame() {
+  levelNum = 1;
+  depth = 0;
+  score = 0;
+  bombs = 2;
+  ropes = 2;
+  player = createPlayer();
+  generateLevel();
+  gameState = STATE.PLAYING;
+  showMessage('第 1 层 — 找到钥匙!');
+}
+
+// ===================== 渲染 =====================
+function render() {
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, W, H);
+
+  if (gameState === STATE.TITLE) {
+    renderTitle();
+    return;
+  }
+
+  ctx.save();
+  // 屏幕震动
+  if (shakeTimer > 0) {
+    ctx.translate(
+      (Math.random() - 0.5) * shakeIntensity,
+      (Math.random() - 0.5) * shakeIntensity
+    );
+  }
+
+  renderRoom();
+  renderEntities();
+  if (!player.dead) renderPlayer();
+  renderParticles();
+
+  ctx.restore();
+
+  // 洞穴黑暗效果 (玩家周围光照)
+  renderLighting();
+
+  // HUD
+  renderHUD();
+
+  // 消息
+  if (messageTimer > 0) {
+    ctx.globalAlpha = Math.min(1, messageTimer / 30);
+    ctx.fillStyle = '#ff0';
+    ctx.font = 'bold 20px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, W/2, 80);
+    ctx.globalAlpha = 1;
+  }
+
+  // 小地图
+  renderMinimap();
+
+  // 覆盖层
+  if (gameState === STATE.DEAD) renderDeathScreen();
+  if (gameState === STATE.LEVELCLEAR) renderClearScreen();
+  if (gameState === STATE.WIN) renderWinScreen();
+}
+
+function renderTitle() {
+  // 背景洞穴
+  ctx.fillStyle = '#1a1410';
+  ctx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 50; i++) {
+    ctx.fillStyle = `rgba(60,40,20,${Math.random()*0.3})`;
+    ctx.fillRect(Math.random()*W, Math.random()*H, 20+Math.random()*40, 10+Math.random()*20);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f0c040';
+  ctx.font = 'bold 48px "Microsoft YaHei"';
+  ctx.fillText('洞穴探险', W/2, 150);
+  ctx.font = '20px "Microsoft YaHei"';
+  ctx.fillStyle = '#ccc';
+  ctx.fillText('Spelunky Lite', W/2, 190);
+
+  ctx.font = '16px "Microsoft YaHei"';
+  ctx.fillStyle = '#aaa';
+  const instructions = [
+    '← → / A D  移动',
+    '空格 / ↑ / W  跳跃',
+    'X  鞭子攻击',
+    '↓ / S  拾取物品',
+    'B  放炸弹    R  放绳索',
+    '',
+    '找到钥匙开启出口, 收集宝藏!',
+  ];
+  instructions.forEach((line, i) => {
+    ctx.fillText(line, W/2, 250 + i * 28);
+  });
+
+  ctx.fillStyle = '#ff0';
+  ctx.font = 'bold 22px "Microsoft YaHei"';
+  ctx.globalAlpha = 0.6 + Math.sin(frame * 0.05) * 0.4;
+  ctx.fillText('按 空格键 开始', W/2, 440);
+  ctx.globalAlpha = 1;
+}
+
+function renderRoom() {
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const t = grid[y][x];
+      const px = x * TILE, py = y * TILE;
+      if (t === T.EMPTY) continue;
+
+      if (t === T.WALL) {
+        // 石墙
+        ctx.fillStyle = '#4a3828';
+        ctx.fillRect(px, py, TILE, TILE);
+        ctx.fillStyle = '#3a2818';
+        ctx.fillRect(px + 2, py + 2, TILE - 4, TILE - 4);
+        // 砖块纹理
+        ctx.strokeStyle = '#2a1808';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px + 1, py + 1, TILE/2 - 1, TILE/2 - 1);
+        ctx.strokeRect(px + TILE/2, py + TILE/2, TILE/2 - 1, TILE/2 - 1);
+      }
+      else if (t === T.PLATFORM) {
+        ctx.fillStyle = '#6a5030';
+        ctx.fillRect(px, py, TILE, 8);
+        ctx.fillStyle = '#5a4020';
+        ctx.fillRect(px, py + 8, TILE, 4);
+      }
+      else if (t === T.SPIKE) {
+        ctx.fillStyle = '#aaa';
+        for (let i = 0; i < 4; i++) {
+          ctx.beginPath();
+          ctx.moveTo(px + i * 8, py + TILE);
+          ctx.lineTo(px + i * 8 + 4, py + 8);
+          ctx.lineTo(px + i * 8 + 8, py + TILE);
+          ctx.fill();
+        }
+      }
+      else if (t === T.LADDER) {
+        ctx.strokeStyle = '#a08040';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(px + 8, py); ctx.lineTo(px + 8, py + TILE);
+        ctx.moveTo(px + 24, py); ctx.lineTo(px + 24, py + TILE);
+        ctx.stroke();
+        ctx.lineWidth = 2;
+        for (let ry = 4; ry < TILE; ry += 10) {
+          ctx.beginPath();
+          ctx.moveTo(px + 8, py + ry);
+          ctx.lineTo(px + 24, py + ry);
+          ctx.stroke();
+        }
+      }
+      else if (t === T.DOOR_EXIT) {
+        if (exitUnlocked) {
+          ctx.fillStyle = '#2a6a2a';
+          ctx.fillRect(px + 4, py, TILE - 8, TILE);
+          ctx.fillStyle = '#4a4';
+          ctx.fillRect(px + 8, py + 4, TILE - 16, TILE - 4);
+          // 光效
+          ctx.fillStyle = `rgba(100,255,100,${0.2 + Math.sin(frame*0.08)*0.1})`;
+          ctx.fillRect(px, py - 4, TILE, TILE + 8);
+        } else {
+          ctx.fillStyle = '#4a2a2a';
+          ctx.fillRect(px + 4, py, TILE - 8, TILE);
+          ctx.fillStyle = '#644';
+          ctx.fillRect(px + 8, py + 4, TILE - 16, TILE - 4);
+          // 锁
+          ctx.fillStyle = '#888';
+          ctx.fillRect(px + 12, py + 12, 8, 8);
+        }
+      }
+      else if (t === T.TORCH) {
+        ctx.fillStyle = '#654';
+        ctx.fillRect(px + 14, py + 10, 4, 16);
+        // 火焰
+        const flicker = Math.sin(frame * 0.2 + x) * 2;
+        ctx.fillStyle = '#f80';
+        ctx.beginPath();
+        ctx.arc(px + 16, py + 8 + flicker, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ff0';
+        ctx.beginPath();
+        ctx.arc(px + 16, py + 7 + flicker, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      else if (t === T.ROCK) {
+        ctx.fillStyle = '#666';
+        ctx.beginPath();
+        ctx.arc(px + 16, py + 16, 13, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#555';
+        ctx.beginPath();
+        ctx.arc(px + 14, py + 14, 10, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+}
+
+function renderEntities() {
+  for (const ent of entities) {
+    if (ent.collected || ent.opened) continue;
+    if (ent.hp !== undefined && ent.hp <= 0) continue;
+
+    if (ent.type === 'snake') {
+      // 蛇身
+      ctx.fillStyle = '#4a4';
+      const wob = Math.sin(ent.frame * 0.15) * 2;
+      ctx.beginPath();
+      ctx.ellipse(ent.x + 14, ent.y + 14 + wob, 14, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 头
+      ctx.fillStyle = '#5b5';
+      const hx = ent.dir > 0 ? ent.x + 24 : ent.x + 4;
+      ctx.beginPath();
+      ctx.arc(hx, ent.y + 12 + wob, 6, 0, Math.PI * 2);
+      ctx.fill();
+      // 眼
+      ctx.fillStyle = '#f00';
+      ctx.beginPath();
+      ctx.arc(hx + ent.dir * 2, ent.y + 10 + wob, 2, 0, Math.PI * 2);
+      ctx.fill();
+      // 信子
+      ctx.strokeStyle = '#f44';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(hx + ent.dir * 6, ent.y + 12 + wob);
+      ctx.lineTo(hx + ent.dir * 11, ent.y + 11 + wob);
+      ctx.lineTo(hx + ent.dir * 11, ent.y + 14 + wob);
+      ctx.stroke();
+    }
+
+    else if (ent.type === 'bat') {
+      const flap = Math.sin(ent.frame * 0.3) * 6;
+      ctx.fillStyle = '#636';
+      // 身体
+      ctx.beginPath();
+      ctx.ellipse(ent.x + 12, ent.y + 10, 7, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 翅膀
+      ctx.beginPath();
+      ctx.moveTo(ent.x + 5, ent.y + 8);
+      ctx.lineTo(ent.x - 4, ent.y + 4 - flap);
+      ctx.lineTo(ent.x + 2, ent.y + 12);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(ent.x + 19, ent.y + 8);
+      ctx.lineTo(ent.x + 28, ent.y + 4 - flap);
+      ctx.lineTo(ent.x + 22, ent.y + 12);
+      ctx.fill();
+      // 眼
+      ctx.fillStyle = '#f44';
+      ctx.beginPath();
+      ctx.arc(ent.x + 9, ent.y + 8, 2, 0, Math.PI * 2);
+      ctx.arc(ent.x + 15, ent.y + 8, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    else if (ent.type === 'gold') {
+      const bob = Math.sin(ent.frame * 0.08) * 2;
+      ctx.fillStyle = '#fc0';
+      ctx.beginPath();
+      ctx.arc(ent.x + 8, ent.y + 8 + bob, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fe8';
+      ctx.beginPath();
+      ctx.arc(ent.x + 6, ent.y + 6 + bob, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    else if (ent.type === 'gem') {
+      const bob = Math.sin(ent.frame * 0.06) * 3;
+      ctx.fillStyle = ent.color;
+      ctx.save();
+      ctx.translate(ent.x + 10, ent.y + 10 + bob);
+      ctx.rotate(frame * 0.02);
+      ctx.beginPath();
+      ctx.moveTo(0, -9); ctx.lineTo(8, 0); ctx.lineTo(0, 9); ctx.lineTo(-8, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.beginPath();
+      ctx.moveTo(0, -5); ctx.lineTo(4, 0); ctx.lineTo(0, 5); ctx.lineTo(-4, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    else if (ent.type === 'key') {
+      const bob = Math.sin(ent.frame * 0.1) * 3;
+      ctx.fillStyle = '#ff0';
+      ctx.beginPath();
+      ctx.arc(ent.x + 10, ent.y + 6 + bob, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(ent.x + 8, ent.y + 10 + bob, 4, 12);
+      ctx.fillRect(ent.x + 8, ent.y + 18 + bob, 8, 3);
+      // 光环
+      ctx.strokeStyle = `rgba(255,255,0,${0.3 + Math.sin(frame*0.1)*0.2})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(ent.x + 10, ent.y + 10 + bob, 14, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    else if (ent.type === 'chest') {
+      ctx.fillStyle = '#854';
+      ctx.fillRect(ent.x, ent.y + 8, ent.w, ent.h - 8);
+      ctx.fillStyle = '#a66';
+      ctx.fillRect(ent.x, ent.y, ent.w, 12);
+      ctx.fillStyle = '#fc0';
+      ctx.fillRect(ent.x + 12, ent.y + 8, 4, 8);
+    }
+
+    else if (ent.type === 'falling_rock') {
+      ctx.fillStyle = '#777';
+      ctx.beginPath();
+      ctx.arc(ent.x + 14, ent.y + 14, 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#555';
+      ctx.beginPath();
+      ctx.arc(ent.x + 11, ent.y + 11, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    else if (ent.type === 'bomb') {
+      ctx.fillStyle = ent.timer % 10 < 5 ? '#f44' : '#333';
+      ctx.beginPath();
+      ctx.arc(ent.x + 7, ent.y + 7, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#a80';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ent.x + 7, ent.y);
+      ctx.lineTo(ent.x + 10, ent.y - 5);
+      ctx.stroke();
+    }
+
+    else if (ent.type === 'rope_item') {
+      ctx.strokeStyle = '#a86';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(ent.x + 8, ent.y);
+      ctx.quadraticCurveTo(ent.x + 12, ent.y + 12, ent.x + 8, ent.y + 24);
+      ctx.stroke();
+    }
+
+    else if (ent.type === 'bomb_item') {
+      ctx.fillStyle = '#333';
+      ctx.beginPath();
+      ctx.arc(ent.x + 8, ent.y + 8, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f80';
+      ctx.beginPath();
+      ctx.arc(ent.x + 8, ent.y + 2, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function renderPlayer() {
+  const p = player;
+  if (p.invincible > 0 && frame % 4 < 2) return; // 闪烁
+
+  ctx.save();
+  ctx.translate(p.x + p.w/2, p.y + p.h/2);
+  if (p.facing < 0) ctx.scale(-1, 1);
+
+  // 身体
+  ctx.fillStyle = '#e8a040';
+  ctx.fillRect(-8, -6, 16, 18);
+  // 头
+  ctx.fillStyle = '#f0c080';
+  ctx.beginPath();
+  ctx.arc(0, -10, 8, 0, Math.PI * 2);
+  ctx.fill();
+  // 帽子
+  ctx.fillStyle = '#854';
+  ctx.fillRect(-9, -18, 18, 5);
+  ctx.fillRect(-6, -22, 12, 5);
+  // 眼
+  ctx.fillStyle = '#222';
+  ctx.fillRect(2, -12, 3, 3);
+  // 腿 (动画)
+  ctx.fillStyle = '#648';
+  const legOff = p.onGround ? Math.sin(p.animFrame * Math.PI / 2) * 4 : 3;
+  ctx.fillRect(-6, 12, 5, 8 + legOff);
+  ctx.fillRect(2, 12, 5, 8 - legOff);
+
+  // 鞭子
+  if (p.whipTimer > 0) {
+    ctx.strokeStyle = '#a62';
+    ctx.lineWidth = 3;
+    const ext = (12 - p.whipTimer) / 12 * 36;
+    ctx.beginPath();
+    ctx.moveTo(8, 0);
+    ctx.quadraticCurveTo(8 + ext * 0.6, -6, 8 + ext, 2);
+    ctx.stroke();
+    // 鞭梢
+    ctx.fillStyle = '#fc0';
+    ctx.beginPath();
+    ctx.arc(8 + ext, 2, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function renderParticles() {
+  for (const pt of particles) {
+    ctx.globalAlpha = pt.life / 40;
+    ctx.fillStyle = pt.color;
+    ctx.fillRect(pt.x - pt.size/2, pt.y - pt.size/2, pt.size, pt.size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function renderLighting() {
+  if (player.dead) return;
+  const px = player.x + player.w/2;
+  const py = player.y + player.h/2;
+
+  // 创建黑暗覆盖层, 玩家周围有光
+  const grad = ctx.createRadialGradient(px, py, 60, px, py, 280);
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(0.6, 'rgba(0,0,10,0.3)');
+  grad.addColorStop(1, 'rgba(0,0,10,0.85)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // 火把光源
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (grid[y][x] === T.TORCH) {
+        const tx = x * TILE + 16, ty = y * TILE + 10;
+        const tg = ctx.createRadialGradient(tx, ty, 5, tx, ty, 70);
+        tg.addColorStop(0, 'rgba(255,150,30,0.15)');
+        tg.addColorStop(1, 'rgba(255,150,30,0)');
+        ctx.fillStyle = tg;
+        ctx.fillRect(tx - 70, ty - 70, 140, 140);
+      }
+    }
+  }
+}
+
+function renderHUD() {
+  // 生命
+  for (let i = 0; i < player.maxHp; i++) {
+    const hx = 16 + i * 28;
+    if (i < player.hp) {
+      ctx.fillStyle = '#f44';
+      drawHeart(hx, 16, 10);
+    } else {
+      ctx.fillStyle = '#444';
+      drawHeart(hx, 16, 10);
+    }
+  }
+
+  // 分数
+  ctx.fillStyle = '#ff0';
+  ctx.font = 'bold 16px "Microsoft YaHei"';
+  ctx.textAlign = 'left';
+  ctx.fillText('金币: $' + score, 16, 50);
+
+  // 层数
+  ctx.fillStyle = '#aaa';
+  ctx.font = '14px "Microsoft YaHei"';
+  ctx.fillText('第 ' + levelNum + ' 层  深度: ' + depth + 'm', 16, 72);
+
+  // 物品
+  ctx.fillStyle = '#fff';
+  ctx.fillText('炸弹: ' + bombs + '  绳索: ' + ropes, 16, 92);
+
+  // 钥匙状态
+  if (keyCollected) {
+    ctx.fillStyle = '#4f4';
+    ctx.fillText('✓ 钥匙已获得 — 前往出口!', W - 220, 30);
+  } else {
+    ctx.fillStyle = '#f88';
+    ctx.fillText('✗ 寻找钥匙中…', W - 160, 30);
+  }
+}
+
+function drawHeart(x, y, size) {
+  ctx.beginPath();
+  ctx.moveTo(x, y + size * 0.3);
+  ctx.bezierCurveTo(x, y, x - size, y, x - size, y + size * 0.3);
+  ctx.bezierCurveTo(x - size, y + size * 0.7, x, y + size, x, y + size * 1.2);
+  ctx.bezierCurveTo(x, y + size, x + size, y + size * 0.7, x + size, y + size * 0.3);
+  ctx.bezierCurveTo(x + size, y, x, y, x, y + size * 0.3);
+  ctx.fill();
+}
+
+function renderMinimap() {
+  const mx = W - 90, my = H - 90;
+  const cellSize = 18;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(mx - 4, my - 4, cellSize * 4 + 8, cellSize * 4 + 8);
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+      const x = mx + c * cellSize;
+      const y = my + r * cellSize;
+      if (roomVisited[r][c]) {
+        ctx.fillStyle = (r === currentRoom.r && c === currentRoom.c) ? '#8f8' : '#555';
+      } else {
+        ctx.fillStyle = '#222';
+      }
+      ctx.fillRect(x + 1, y + 1, cellSize - 2, cellSize - 2);
+    }
+  }
+  // 出口标记
+  if (roomVisited[3][3]) {
+    ctx.fillStyle = exitUnlocked ? '#4f4' : '#f44';
+    ctx.fillRect(mx + 3 * cellSize + 6, my + 3 * cellSize + 6, 6, 6);
+  }
+}
+
+function renderDeathScreen() {
+  ctx.fillStyle = 'rgba(80,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f44';
+  ctx.font = 'bold 42px "Microsoft YaHei"';
+  ctx.fillText('你死了', W/2, H/2 - 30);
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px "Microsoft YaHei"';
+  ctx.fillText('最终得分: $' + score, W/2, H/2 + 20);
+  ctx.fillText('到达深度: ' + depth + 'm  第 ' + levelNum + ' 层', W/2, H/2 + 55);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '18px "Microsoft YaHei"';
+  ctx.globalAlpha = 0.6 + Math.sin(frame * 0.06) * 0.4;
+  ctx.fillText('按 R 重新开始', W/2, H/2 + 100);
+  ctx.globalAlpha = 1;
+}
+
+function renderClearScreen() {
+  ctx.fillStyle = 'rgba(0,40,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#4f4';
+  ctx.font = 'bold 38px "Microsoft YaHei"';
+  ctx.fillText('关卡通过!', W/2, H/2 - 30);
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px "Microsoft YaHei"';
+  ctx.fillText('得分: $' + score, W/2, H/2 + 20);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '18px "Microsoft YaHei"';
+  ctx.globalAlpha = 0.6 + Math.sin(frame * 0.06) * 0.4;
+  ctx.fillText('按 空格 进入下一层', W/2, H/2 + 70);
+  ctx.globalAlpha = 1;
+}
+
+function renderWinScreen() {
+  ctx.fillStyle = 'rgba(20,20,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fc0';
+  ctx.font = 'bold 44px "Microsoft YaHei"';
+  ctx.fillText('恭喜通关!', W/2, H/2 - 50);
+  ctx.fillStyle = '#fff';
+  ctx.font = '22px "Microsoft YaHei"';
+  ctx.fillText('你逃出了洞穴!', W/2, H/2);
+  ctx.fillText('最终得分: $' + score, W/2, H/2 + 40);
+  ctx.fillStyle = '#ff0';
+  ctx.font = '18px "Microsoft YaHei"';
+  ctx.globalAlpha = 0.6 + Math.sin(frame * 0.06) * 0.4;
+  ctx.fillText('按 R 再来一次', W/2, H/2 + 90);
+  ctx.globalAlpha = 1;
+}
+
+// ===================== 输入 =====================
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
+    e.preventDefault();
+  }
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+document.addEventListener('keyup', e => {
+  keys[e.code] = false;
+});
+
+// ===================== 主循环 =====================
+function gameLoop() {
+  update();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+player = createPlayer();
+gameLoop();
+</script>
+</body>
+</html>

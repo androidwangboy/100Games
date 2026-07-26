@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>填字游戏 Crossword</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let state = 'title';
+let btnHover = '';
+let message = '';
+let timer = 0;
+let timerInterval = null;
+let grid = [];
+let solution = [];
+let cellNums = [];
+let selected = null; // {r, c}
+let direction = 'across'; // across or down
+let currentWord = null;
+let errors = [];
+let solved = false;
+
+const GRID_SIZE = 10;
+const CELL = 36;
+const GX = 30, GY = 50;
+
+// Puzzle definition: words with position and direction
+const WORDS = [
+  { word: 'APPLE', r: 0, c: 0, dir: 'across', clue: '苹果(水果)' },
+  { word: 'PYTHON', r: 0, c: 0, dir: 'down', clue: '蟒蛇/编程语言' },
+  { word: 'GRAPE', r: 2, c: 2, dir: 'across', clue: '葡萄(水果)' },
+  { word: 'TIGER', r: 0, c: 4, dir: 'down', clue: '老虎(动物)' },
+  { word: 'EARTH', r: 4, c: 0, dir: 'across', clue: '地球(行星)' },
+  { word: 'OCEAN', r: 4, c: 4, dir: 'down', clue: '海洋(地理)' },
+  { word: 'MUSIC', r: 6, c: 1, dir: 'across', clue: '音乐(艺术)' },
+  { word: 'LIGHT', r: 2, c: 6, dir: 'down', clue: '光(物理)' },
+  { word: 'STORM', r: 8, c: 3, dir: 'across', clue: '暴风雨(天气)' },
+  { word: 'DANCE', r: 6, c: 5, dir: 'down', clue: '舞蹈(活动)' },
+  { word: 'BRAIN', r: 3, c: 8, dir: 'down', clue: '大脑(器官)' },
+  { word: 'SMILE', r: 9, c: 5, dir: 'across', clue: '微笑(表情)' }
+];
+
+function initPuzzle() {
+  grid = Array.from({length: GRID_SIZE}, () => Array(GRID_SIZE).fill(null));
+  solution = Array.from({length: GRID_SIZE}, () => Array(GRID_SIZE).fill(''));
+  cellNums = Array.from({length: GRID_SIZE}, () => Array(GRID_SIZE).fill(0));
+  errors = [];
+  solved = false;
+  selected = null;
+  direction = 'across';
+  currentWord = null;
+  timer = 0;
+  message = '';
+
+  // Place words in solution
+  WORDS.forEach(w => {
+    for (let i = 0; i < w.word.length; i++) {
+      const r = w.dir === 'across' ? w.r : w.r + i;
+      const c = w.dir === 'across' ? w.c + i : w.c;
+      if (r < GRID_SIZE && c < GRID_SIZE) {
+        solution[r][c] = w.word[i];
+        grid[r][c] = ''; // active cell
+      }
+    }
+  });
+
+  // Number cells
+  let num = 1;
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (solution[r][c] === '') continue;
+      const startsAcross = (c === 0 || solution[r][c-1] === '') && c + 1 < GRID_SIZE && solution[r][c+1] !== '';
+      const startsDown = (r === 0 || solution[r-1][c] === '') && r + 1 < GRID_SIZE && solution[r+1][c] !== '';
+      if (startsAcross || startsDown) cellNums[r][c] = num++;
+    }
+  }
+}
+
+function getWordAt(r, c, dir) {
+  return WORDS.find(w => {
+    if (w.dir !== dir) return false;
+    for (let i = 0; i < w.word.length; i++) {
+      const wr = w.dir === 'across' ? w.r : w.r + i;
+      const wc = w.dir === 'across' ? w.c + i : w.c;
+      if (wr === r && wc === c) return true;
+    }
+    return false;
+  });
+}
+
+function getWordCells(word) {
+  const cells = [];
+  for (let i = 0; i < word.word.length; i++) {
+    cells.push({
+      r: word.dir === 'across' ? word.r : word.r + i,
+      c: word.dir === 'across' ? word.c + i : word.c
+    });
+  }
+  return cells;
+}
+
+function selectCell(r, c) {
+  if (r < 0 || r >= GRID_SIZE || c < 0 || c >= GRID_SIZE) return;
+  if (solution[r][c] === '') return;
+  if (selected && selected.r === r && selected.c === c) {
+    direction = direction === 'across' ? 'down' : 'across';
+  }
+  selected = { r, c };
+  currentWord = getWordAt(r, c, direction) || getWordAt(r, c, direction === 'across' ? 'down' : 'across');
+  if (currentWord) direction = currentWord.dir;
+}
+
+function typeLetter(ch) {
+  if (!selected || solved) return;
+  const { r, c } = selected;
+  grid[r][c] = ch.toUpperCase();
+  errors = errors.filter(e => !(e.r === r && e.c === c));
+  // Auto advance
+  if (currentWord) {
+    const cells = getWordCells(currentWord);
+    const idx = cells.findIndex(cell => cell.r === r && cell.c === c);
+    if (idx < cells.length - 1) {
+      selected = cells[idx + 1];
+    }
+  }
+}
+
+function checkErrors() {
+  errors = [];
+  let allFilled = true;
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (solution[r][c] === '') continue;
+      if (grid[r][c] === '') { allFilled = false; continue; }
+      if (grid[r][c] !== solution[r][c]) errors.push({ r, c });
+    }
+  }
+  if (errors.length === 0 && allFilled) {
+    solved = true;
+    score = Math.max(10, 200 - timer);
+    message = '恭喜! 全部正确! 用时' + timer + '秒';
+    if (timerInterval) clearInterval(timerInterval);
+    state = 'result';
+  } else {
+    message = errors.length > 0 ? '发现 ' + errors.length + ' 个错误(红色标记)' : '还有空格未填';
+  }
+}
+
+function revealAll() {
+  for (let r = 0; r < GRID_SIZE; r++)
+    for (let c = 0; c < GRID_SIZE; c++)
+      if (solution[r][c] !== '') grid[r][c] = solution[r][c];
+  solved = true;
+  score = 0;
+  message = '已揭示答案';
+  if (timerInterval) clearInterval(timerInterval);
+  state = 'result';
+}
+
+function drawGrid() {
+  const wordCells = currentWord ? getWordCells(currentWord) : [];
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      const x = GX + c * CELL, y = GY + r * CELL;
+      if (solution[r][c] === '') {
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(x, y, CELL, CELL);
+        continue;
+      }
+      // Cell background
+      const isSel = selected && selected.r === r && selected.c === c;
+      const inWord = wordCells.some(cell => cell.r === r && cell.c === c);
+      const isErr = errors.some(e => e.r === r && e.c === c);
+      if (isSel) ctx.fillStyle = '#f1c40f';
+      else if (isErr) ctx.fillStyle = '#e74c3c';
+      else if (inWord) ctx.fillStyle = '#3a5a8a';
+      else ctx.fillStyle = '#ecf0f1';
+      ctx.fillRect(x, y, CELL, CELL);
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, y, CELL, CELL);
+      // Number
+      if (cellNums[r][c] > 0) {
+        ctx.fillStyle = isSel ? '#111' : '#666';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(cellNums[r][c], x + 2, y + 10);
+      }
+      // Letter
+      if (grid[r][c]) {
+        ctx.fillStyle = isSel ? '#111' : isErr ? '#fff' : '#222';
+        ctx.font = 'bold 18px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(grid[r][c], x + CELL/2, y + CELL/2 + 1);
+        ctx.textBaseline = 'alphabetic';
+      }
+    }
+  }
+}
+
+function drawClues() {
+  const cx = 410, cy = 50;
+  ctx.fillStyle = '#222';
+  ctx.fillRect(cx - 10, cy - 10, 390, 420);
+  ctx.strokeStyle = '#444';
+  ctx.strokeRect(cx - 10, cy - 10, 390, 420);
+  ctx.fillStyle = '#c9a227';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('横向 (Across)', cx, cy + 10);
+  let y = cy + 32;
+  ctx.font = '12px sans-serif';
+  WORDS.filter(w => w.dir === 'across').forEach(w => {
+    const num = cellNums[w.r][w.c];
+    const active = currentWord === w;
+    ctx.fillStyle = active ? '#f1c40f' : '#ccc';
+    ctx.fillText(num + '. ' + w.clue + ' (' + w.word.length + '字母)', cx, y);
+    y += 22;
+  });
+  y += 15;
+  ctx.fillStyle = '#c9a227';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText('纵向 (Down)', cx, y);
+  y += 22;
+  ctx.font = '12px sans-serif';
+  WORDS.filter(w => w.dir === 'down').forEach(w => {
+    const num = cellNums[w.r][w.c];
+    const active = currentWord === w;
+    ctx.fillStyle = active ? '#f1c40f' : '#ccc';
+    ctx.fillText(num + '. ' + w.clue + ' (' + w.word.length + '字母)', cx, y);
+    y += 22;
+  });
+}
+
+function drawBtn(x, y, w, h, text, id, color) {
+  const hover = btnHover === id;
+  ctx.fillStyle = hover ? (color||'#4a9') : '#333';
+  ctx.strokeStyle = color || '#4a9';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 5);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = hover ? '#111' : '#eee';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x+w/2, y+h/2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#e94560';
+  ctx.font = 'bold 46px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('填字游戏', W/2, 130);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('Crossword Puzzle', W/2, 170);
+  // Sample grid
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 5; c++) {
+    ctx.fillStyle = (r + c) % 3 === 0 ? '#1a1a2e' : '#ecf0f1';
+    ctx.fillRect(W/2 - 90 + c * 36, 210 + r * 36, 34, 34);
+    ctx.strokeStyle = '#555';
+    ctx.strokeRect(W/2 - 90 + c * 36, 210 + r * 36, 34, 34);
+  }
+  ctx.fillStyle = '#888';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('10x10网格，12个英文单词，中文提示', W/2, 350);
+  ctx.fillText('点击格子选字，键盘输入字母', W/2, 375);
+  ctx.fillText('点击同一格切换横向/纵向', W/2, 400);
+  drawBtn(W/2-80, 420, 160, 42, '开始游戏', 'start', '#e94560');
+}
+
+function drawGame() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, W, H);
+  // Header
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('填字游戏', GX, 25);
+  ctx.textAlign = 'right';
+  ctx.fillText('时间: ' + timer + 's', GX + GRID_SIZE * CELL, 25);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#888';
+  ctx.font = '12px sans-serif';
+  ctx.fillText('方向: ' + (direction === 'across' ? '横向→' : '纵向↓'), GX, 42);
+  drawGrid();
+  drawClues();
+  // Buttons
+  drawBtn(30, 430, 80, 30, '检查', 'check', '#4a9');
+  drawBtn(120, 430, 80, 30, '揭示', 'reveal', '#a44');
+  drawBtn(210, 430, 80, 30, '清除', 'clearall', '#666');
+  if (message) {
+    ctx.fillStyle = '#ff0';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(message, 300, 450);
+  }
+}
+
+function drawResult() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = solved && score > 0 ? '#4f4' : '#f88';
+  ctx.font = 'bold 36px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(solved && score > 0 ? '恭喜完成!' : '游戏结束', W/2, 150);
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('用时: ' + timer + ' 秒', W/2, 220);
+  ctx.fillText('得分: ' + score, W/2, 260);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(score >= 150 ? '太厉害了!' : score >= 80 ? '不错!' : '继续加油!', W/2, 310);
+  drawBtn(W/2-80, 380, 160, 40, '再来一局', 'restart', '#4a9');
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (state === 'title') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 420 && my < 462) {
+      initPuzzle();
+      state = 'game';
+      timerInterval = setInterval(() => { if (state === 'game') timer++; }, 1000);
+    }
+    return;
+  }
+  if (state === 'result') {
+    if (mx > W/2-80 && mx < W/2+80 && my > 380 && my < 420) state = 'title';
+    return;
+  }
+  if (state !== 'game') return;
+  // Buttons
+  if (my > 430 && my < 460) {
+    if (mx > 30 && mx < 110) { checkErrors(); return; }
+    if (mx > 120 && mx < 200) { revealAll(); return; }
+    if (mx > 210 && mx < 290) {
+      for (let r = 0; r < GRID_SIZE; r++) for (let c = 0; c < GRID_SIZE; c++) if (grid[r][c] !== null) grid[r][c] = '';
+      errors = []; message = ''; return;
+    }
+  }
+  // Grid click
+  const c = Math.floor((mx - GX) / CELL);
+  const r = Math.floor((my - GY) / CELL);
+  if (r >= 0 && r < GRID_SIZE && c >= 0 && c < GRID_SIZE) selectCell(r, c);
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  btnHover = '';
+  if (state === 'title' && mx > W/2-80 && mx < W/2+80 && my > 420 && my < 462) btnHover = 'start';
+  if (state === 'result' && mx > W/2-80 && mx < W/2+80 && my > 380 && my < 420) btnHover = 'restart';
+  if (state === 'game' && my > 430 && my < 460) {
+    if (mx > 30 && mx < 110) btnHover = 'check';
+    if (mx > 120 && mx < 200) btnHover = 'reveal';
+    if (mx > 210 && mx < 290) btnHover = 'clearall';
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); return; }
+  if (state !== 'game') return;
+  if (e.key === 'Backspace') {
+    if (selected) { grid[selected.r][selected.c] = ''; errors = errors.filter(er => !(er.r === selected.r && er.c === selected.c)); }
+    e.preventDefault();
+    return;
+  }
+  if (e.key === 'Tab') {
+    // Jump to next word
+    const idx = WORDS.indexOf(currentWord);
+    const next = WORDS[(idx + 1) % WORDS.length];
+    direction = next.dir;
+    selected = { r: next.r, c: next.c };
+    currentWord = next;
+    e.preventDefault();
+    return;
+  }
+  if (e.key === 'ArrowRight' && selected) { selectCell(selected.r, selected.c + 1); e.preventDefault(); return; }
+  if (e.key === 'ArrowLeft' && selected) { selectCell(selected.r, selected.c - 1); e.preventDefault(); return; }
+  if (e.key === 'ArrowDown' && selected) { direction = 'down'; selectCell(selected.r + 1, selected.c); e.preventDefault(); return; }
+  if (e.key === 'ArrowUp' && selected) { direction = 'down'; selectCell(selected.r - 1, selected.c); e.preventDefault(); return; }
+  if (/^[a-zA-Z]$/.test(e.key)) { typeLetter(e.key); e.preventDefault(); }
+});
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (state === 'title') drawTitle();
+  else if (state === 'game') drawGame();
+  else if (state === 'result') drawResult();
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

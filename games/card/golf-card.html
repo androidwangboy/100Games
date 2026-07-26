@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>高尔夫纸牌 (Golf Card)</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 480;
+let score = 0;
+let gameState = 'title';
+let deck = [], stock = [], waste = [];
+let playerGrid = []; // 4 cols x 3 rows
+let aiGrid = [];
+let playerRevealed = [];
+let aiRevealed = [];
+let currentHole = 1;
+let totalHoles = 9;
+let playerScores = [];
+let aiScores = [];
+let turn = 'player'; // player or ai
+let phase = 'draw'; // draw, place
+let message = '';
+let selectedCard = null; // from waste
+let titlePulse = 0;
+let gameOver = false;
+let holeComplete = false;
+let drawnCard = null;
+let aiTimer = 0;
+let playerTurnCount = 0;
+let aiTurnCount = 0;
+const MAX_TURNS = 10;
+
+const SUITS = ['♠', '♥', '♦', '♣'];
+const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+const CARD_W = 50, CARD_H = 70;
+const GRID_COLS = 4, GRID_ROWS = 3;
+
+function cardValue(rank) {
+  if (rank === 'A') return 1;
+  if (rank === 'K') return 0;
+  if (rank === 'J' || rank === 'Q') return 10;
+  return parseInt(rank);
+}
+
+function isRed(s) { return s === '♥' || s === '♦'; }
+
+function createDeck() {
+  deck = [];
+  for (let d = 0; d < 2; d++) { // 2 decks for golf
+    for (let s of SUITS) for (let r of RANKS) deck.push({ suit: s, rank: r });
+  }
+  for (let i = deck.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+}
+
+function setupHole() {
+  createDeck();
+  playerGrid = [];
+  aiGrid = [];
+  playerRevealed = [];
+  aiRevealed = [];
+  waste = [];
+  drawnCard = null;
+  selectedCard = null;
+  phase = 'draw';
+  turn = 'player';
+  holeComplete = false;
+  playerTurnCount = 0;
+  aiTurnCount = 0;
+  message = '第 ' + currentHole + ' 洞 - 从牌堆或废牌堆抽牌';
+
+  for (let r = 0; r < GRID_ROWS; r++) {
+    playerGrid[r] = [];
+    aiGrid[r] = [];
+    playerRevealed[r] = [];
+    aiRevealed[r] = [];
+    for (let c = 0; c < GRID_COLS; c++) {
+      playerGrid[r][c] = deck.pop();
+      aiGrid[r][c] = deck.pop();
+      // Top row (row 0) is revealed at start
+      playerRevealed[r][c] = (r === 0);
+      aiRevealed[r][c] = (r === 0);
+    }
+  }
+  stock = deck;
+  waste.push(stock.pop());
+}
+
+function gridScore(grid, revealed) {
+  let total = 0;
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      if (revealed[r][c]) total += cardValue(grid[r][c].rank);
+    }
+  }
+  return total;
+}
+
+function finalScore(grid) {
+  let total = 0;
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      total += cardValue(grid[r][c].rank);
+    }
+  }
+  return total;
+}
+
+function allRevealed(revealed) {
+  for (let r = 0; r < GRID_ROWS; r++)
+    for (let c = 0; c < GRID_COLS; c++)
+      if (!revealed[r][c]) return false;
+  return true;
+}
+
+function drawFromStock() {
+  if (stock.length === 0) {
+    if (waste.length <= 1) return null;
+    let top = waste.pop();
+    stock = waste;
+    waste = [top];
+    for (let i = stock.length - 1; i > 0; i--) {
+      let j = Math.floor(Math.random() * (i + 1));
+      [stock[i], stock[j]] = [stock[j], stock[i]];
+    }
+  }
+  return stock.pop();
+}
+
+function endHole() {
+  holeComplete = true;
+  // Reveal all
+  for (let r = 0; r < GRID_ROWS; r++)
+    for (let c = 0; c < GRID_COLS; c++) {
+      playerRevealed[r][c] = true;
+      aiRevealed[r][c] = true;
+    }
+  let ps = finalScore(playerGrid);
+  let as = finalScore(aiGrid);
+  playerScores.push(ps);
+  aiScores.push(as);
+  if (ps < as) message = '第' + currentHole + '洞: 你 ' + ps + ' vs 电脑 ' + as + ' - 你赢了!';
+  else if (ps > as) message = '第' + currentHole + '洞: 你 ' + ps + ' vs 电脑 ' + as + ' - 电脑赢了';
+  else message = '第' + currentHole + '洞: 你 ' + ps + ' vs 电脑 ' + as + ' - 平局';
+}
+
+function aiPlay() {
+  let card = drawFromStock();
+  if (!card) { card = waste.pop(); }
+  else {
+    // AI decides: keep from stock or take waste top
+    if (waste.length > 0) {
+      let wasteVal = cardValue(waste[waste.length - 1].rank);
+      let stockVal = cardValue(card.rank);
+      if (wasteVal < stockVal) {
+        stock.push(card);
+        card = waste.pop();
+      }
+    }
+  }
+  // Find best position to place (highest unrevealed or highest value)
+  let bestR = -1, bestC = -1, bestVal = -999;
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      let curVal = cardValue(aiGrid[r][c].rank);
+      let priority = curVal - cardValue(card.rank);
+      if (!aiRevealed[r][c]) priority += 5; // prefer replacing unrevealed
+      if (priority > bestVal) { bestVal = priority; bestR = r; bestC = c; }
+    }
+  }
+  if (bestR >= 0 && cardValue(card.rank) < cardValue(aiGrid[bestR][bestC].rank) + 3) {
+    let old = aiGrid[bestR][bestC];
+    aiGrid[bestR][bestC] = card;
+    aiRevealed[bestR][bestC] = true;
+    waste.push(old);
+  } else {
+    waste.push(card);
+  }
+  aiTurnCount++;
+  if (allRevealed(aiRevealed) || aiTurnCount >= MAX_TURNS) {
+    endHole();
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawCardShape(x, y, card, faceUp, highlight, small) {
+  let w = small ? 36 : CARD_W, h = small ? 50 : CARD_H;
+  ctx.save();
+  ctx.shadowColor = highlight ? 'rgba(255,215,0,0.5)' : 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur = highlight ? 8 : 3;
+  ctx.fillStyle = faceUp ? '#fff' : '#2c1a5e';
+  ctx.strokeStyle = highlight ? '#ffd700' : '#555';
+  ctx.lineWidth = highlight ? 2.5 : 1;
+  roundRect(x, y, w, h, 4);
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+  if (!faceUp) {
+    ctx.fillStyle = '#4a2a8e';
+    roundRect(x + 3, y + 3, w - 6, h - 6, 3);
+    ctx.fill();
+    return;
+  }
+  let color = isRed(card.suit) ? '#d32f2f' : '#222';
+  ctx.fillStyle = color;
+  ctx.font = (small ? 'bold 10px' : 'bold 12px') + ' Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(card.rank, x + 3, y + (small ? 12 : 15));
+  ctx.font = (small ? '9px' : '10px') + ' Arial';
+  ctx.fillText(card.suit, x + 3, y + (small ? 22 : 27));
+  ctx.font = (small ? '16px' : '20px') + ' Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(card.suit, x + w / 2, y + h / 2 + (small ? 5 : 7));
+  // Value indicator
+  ctx.fillStyle = '#666';
+  ctx.font = (small ? '8px' : '9px') + ' Arial';
+  ctx.fillText('=' + cardValue(card.rank), x + w / 2, y + h - 4);
+}
+
+function drawBackground() {
+  let grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#1a0a3e');
+  grad.addColorStop(1, '#0d1a0d');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(0,80,0,0.15)';
+  ctx.fillRect(0, H * 0.6, W, H * 0.4);
+}
+
+function drawTitle() {
+  drawBackground();
+  titlePulse += 0.03;
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 44px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('高尔夫纸牌', W / 2, 100);
+  ctx.fillStyle = '#bb86fc';
+  ctx.font = '20px Arial';
+  ctx.fillText('GOLF CARD GAME', W / 2, 135);
+  // Demo grid
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 4; c++) {
+      let x = W / 2 - 90 + c * 46;
+      let y = 170 + r * 36;
+      ctx.fillStyle = r === 0 ? '#fff' : '#2c1a5e';
+      ctx.strokeStyle = '#555';
+      ctx.lineWidth = 1;
+      roundRect(x, y, 40, 30, 3);
+      ctx.fill(); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 0.6 + 0.4 * Math.sin(titlePulse);
+  ctx.fillStyle = '#fff';
+  ctx.font = '20px Arial';
+  ctx.fillText('点击开始游戏', W / 2, 330);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#ccc';
+  ctx.font = '14px Arial';
+  ctx.fillText('规则：4x3牌组，抽牌交换使总分最低', W / 2, 380);
+  ctx.fillText('A=1, J/Q=10, K=0 | 9洞制 | 按 ESC 退出', W / 2, 405);
+}
+
+function drawGame() {
+  drawBackground();
+  // Hole info
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 18px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('第 ' + currentHole + ' / ' + totalHoles + ' 洞', W / 2, 25);
+
+  // AI grid (top area)
+  ctx.fillStyle = '#ff8a80';
+  ctx.font = '13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('电脑', 20, 50);
+  let aiStartX = W / 2 - (GRID_COLS * (CARD_W + 4)) / 2;
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      let x = aiStartX + c * (CARD_W + 4);
+      let y = 55 + r * (CARD_H * 0.55);
+      drawCardShape(x, y, aiGrid[r][c], aiRevealed[r][c], false, true);
+    }
+  }
+
+  // Player grid (bottom area)
+  ctx.fillStyle = '#80d8ff';
+  ctx.font = '13px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('你', 20, 260);
+  let pStartX = W / 2 - (GRID_COLS * (CARD_W + 4)) / 2;
+  let pStartY = 265;
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      let x = pStartX + c * (CARD_W + 4);
+      let y = pStartY + r * (CARD_H * 0.72);
+      let hl = (phase === 'place' && playerRevealed[r][c]) || (phase === 'place' && !playerRevealed[r][c]);
+      drawCardShape(x, y, playerGrid[r][c], playerRevealed[r][c], phase === 'place', false);
+    }
+  }
+
+  // Stock and waste (right side)
+  let stockX = W - 130, stockY = 180;
+  ctx.fillStyle = '#aaa';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('牌堆(' + stock.length + ')', stockX + CARD_W / 2, stockY - 8);
+  if (stock.length > 0) drawCardShape(stockX, stockY, stock[stock.length - 1], false, phase === 'draw', false);
+
+  let wasteX = W - 130, wasteY = 270;
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('废牌堆', wasteX + CARD_W / 2, wasteY - 8);
+  if (waste.length > 0) {
+    drawCardShape(wasteX, wasteY, waste[waste.length - 1], true, phase === 'draw', false);
+  }
+
+  // Drawn card display
+  if (drawnCard && phase === 'place') {
+    ctx.fillStyle = '#ffd700';
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('抽到的牌 (点击你的牌交换)', W - 65, 365);
+    drawCardShape(W - 90, 375, drawnCard, true, true, false);
+  }
+
+  // Scoreboard
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  roundRect(10, 55, 120, 180, 6);
+  ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('记分卡', 20, 72);
+  ctx.font = '10px Arial';
+  ctx.fillStyle = '#80d8ff';
+  ctx.fillText('你', 20, 88);
+  ctx.fillStyle = '#ff8a80';
+  ctx.fillText('电脑', 70, 88);
+  for (let i = 0; i < playerScores.length; i++) {
+    ctx.fillStyle = '#ccc';
+    ctx.fillText('H' + (i + 1) + ':', 20, 103 + i * 14);
+    ctx.fillStyle = '#80d8ff';
+    ctx.fillText(playerScores[i], 48, 103 + i * 14);
+    ctx.fillStyle = '#ff8a80';
+    ctx.fillText(aiScores[i], 90, 103 + i * 14);
+  }
+  let pTotal = playerScores.reduce((a, b) => a + b, 0);
+  let aTotal = aiScores.reduce((a, b) => a + b, 0);
+  if (playerScores.length > 0) {
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText('总:', 20, 103 + playerScores.length * 14);
+    ctx.fillStyle = '#80d8ff';
+    ctx.fillText(pTotal, 48, 103 + playerScores.length * 14);
+    ctx.fillStyle = '#ff8a80';
+    ctx.fillText(aTotal, 90, 103 + playerScores.length * 14);
+  }
+
+  // Message
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  roundRect(W / 2 - 220, H - 32, 440, 26, 5);
+  ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '13px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(message, W / 2, H - 14);
+
+  // Hole complete overlay
+  if (holeComplete && !gameOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, W / 2, H / 2 - 20);
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px Arial';
+    if (currentHole < totalHoles) {
+      ctx.fillText('点击进入第 ' + (currentHole + 1) + ' 洞', W / 2, H / 2 + 30);
+    } else {
+      ctx.fillText('点击查看最终结果', W / 2, H / 2 + 30);
+    }
+  }
+
+  // Game over
+  if (gameOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, W, H);
+    let pTotal = playerScores.reduce((a, b) => a + b, 0);
+    let aTotal = aiScores.reduce((a, b) => a + b, 0);
+    ctx.fillStyle = '#ffd700';
+    ctx.font = 'bold 32px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('比赛结束!', W / 2, 100);
+    ctx.font = '20px Arial';
+    ctx.fillStyle = '#fff';
+    ctx.fillText('你的总分: ' + pTotal, W / 2, 160);
+    ctx.fillText('电脑总分: ' + aTotal, W / 2, 195);
+    let result = pTotal < aTotal ? '你赢了!' : (pTotal > aTotal ? '电脑赢了!' : '平局!');
+    ctx.fillStyle = pTotal < aTotal ? '#4caf50' : (pTotal > aTotal ? '#f44336' : '#fff');
+    ctx.font = 'bold 28px Arial';
+    ctx.fillText(result, W / 2, 250);
+    // Scorecard
+    ctx.font = '13px Arial';
+    ctx.fillStyle = '#ccc';
+    for (let i = 0; i < totalHoles; i++) {
+      let x = W / 2 - 180 + (i % 5) * 90;
+      let y = 290 + Math.floor(i / 5) * 50;
+      ctx.fillText('H' + (i + 1) + ': ' + (playerScores[i] || '-') + ' vs ' + (aiScores[i] || '-'), x, y);
+    }
+    ctx.fillStyle = '#aaffaa';
+    ctx.font = '16px Arial';
+    ctx.fillText('点击重新开始', W / 2, 420);
+  }
+}
+
+canvas.addEventListener('click', e => {
+  let rect = canvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) * (W / rect.width);
+  let my = (e.clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'title') { gameState = 'playing'; currentHole = 1; playerScores = []; aiScores = []; score = 0; setupHole(); return; }
+  if (gameOver) { gameState = 'playing'; currentHole = 1; playerScores = []; aiScores = []; score = 0; setupHole(); return; }
+  if (holeComplete) {
+    if (currentHole < totalHoles) { currentHole++; setupHole(); }
+    else { gameOver = true; let pTotal = playerScores.reduce((a, b) => a + b, 0); score = Math.max(0, 200 - pTotal); }
+    return;
+  }
+  if (turn !== 'player') return;
+
+  let stockX = W - 130, stockY = 180;
+  let wasteX = W - 130, wasteY = 270;
+
+  if (phase === 'draw') {
+    // Click stock
+    if (mx >= stockX && mx <= stockX + CARD_W && my >= stockY && my <= stockY + CARD_H) {
+      drawnCard = drawFromStock();
+      if (drawnCard) { phase = 'place'; message = '抽到 ' + drawnCard.rank + drawnCard.suit + '(=' + cardValue(drawnCard.rank) + ')，点击你的牌交换'; }
+      return;
+    }
+    // Click waste
+    if (waste.length > 0 && mx >= wasteX && mx <= wasteX + CARD_W && my >= wasteY && my <= wasteY + CARD_H) {
+      drawnCard = waste.pop();
+      phase = 'place';
+      message = '取废牌 ' + drawnCard.rank + drawnCard.suit + '(=' + cardValue(drawnCard.rank) + ')，点击你的牌交换';
+      return;
+    }
+  }
+
+  if (phase === 'place') {
+    let pStartX = W / 2 - (GRID_COLS * (CARD_W + 4)) / 2;
+    let pStartY = 265;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        let x = pStartX + c * (CARD_W + 4);
+        let y = pStartY + r * (CARD_H * 0.72);
+        if (mx >= x && mx <= x + CARD_W && my >= y && my <= y + CARD_H) {
+          let old = playerGrid[r][c];
+          playerGrid[r][c] = drawnCard;
+          playerRevealed[r][c] = true;
+          waste.push(old);
+          drawnCard = null;
+          playerTurnCount++;
+          message = '交换了 ' + old.rank + old.suit + '，翻开新牌';
+          phase = 'draw';
+          // Check if all revealed
+          if (allRevealed(playerRevealed) || playerTurnCount >= MAX_TURNS) {
+            endHole();
+            return;
+          }
+          // AI turn
+          turn = 'ai';
+          aiTimer = Date.now() + 600;
+          return;
+        }
+      }
+    }
+    // Click drawn card to discard (skip placement)
+    if (drawnCard && mx >= W - 90 && mx <= W - 90 + CARD_W && my >= 375 && my <= 375 + CARD_H) {
+      waste.push(drawnCard);
+      drawnCard = null;
+      phase = 'draw';
+      playerTurnCount++;
+      message = '弃掉了抽到的牌';
+      if (playerTurnCount >= MAX_TURNS) { endHole(); return; }
+      turn = 'ai';
+      aiTimer = Date.now() + 600;
+    }
+  }
+});
+
+function gameLoop() {
+  if (gameState === 'playing' && turn === 'ai' && !holeComplete && !gameOver) {
+    if (Date.now() > aiTimer) {
+      aiPlay();
+      if (!holeComplete) {
+        turn = 'player';
+        phase = 'draw';
+        message = '你的回合 - 抽牌';
+      }
+    }
+  }
+  ctx.clearRect(0, 0, W, H);
+  if (gameState === 'title') drawTitle();
+  else drawGame();
+  requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({ type: 'EXIT_GAME', score: score }, '*'); }
+  if (gameState === 'title' && e.code === 'Enter') {
+    gameState = 'playing'; currentHole = 1; playerScores = []; aiScores = []; score = 0; setupHole();
+  }
+});
+
+gameLoop();
+</script>
+</body>
+</html>

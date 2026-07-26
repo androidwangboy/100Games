@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>三消</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ---- 常量 ----
+const N = 8;
+const CELL = 50;
+const BX = 40, BY = 60;
+const TYPES = 6;
+const GEM_COLORS = ['#ef5350', '#ffa726', '#ffee58', '#66bb6a', '#42a5f5', '#ab47bc'];
+const GEM_NAMES = ['红', '橙', '黄', '绿', '蓝', '紫'];
+const TARGET = 3000;
+
+let score = 0;
+let state = 'title'; // title | playing | win | lose
+let mode = 'time'; // time | moves
+let timeLeft = 60, movesLeft = 30;
+let lastTick = 0;
+
+// board[r][c] = 类型 (0..5) 或 -1
+let board = [];
+let fall = []; // fall[r][c] = 下落像素偏移 (<=0)
+let phase = 'idle'; // idle | swap | swapback | clear | fall
+let sel = null; // 选中格 {r,c}
+let swapA = null, swapB = null, swapT = 0;
+let clearing = []; // [{r,c}]
+let clearT = 0;
+let combo = 0;
+let popups = []; // {x,y,text,t,color}
+let hint = null; // {a:{r,c}, b:{r,c}}
+let hintTimer = 0;
+let noMovesShuffle = 0;
+
+function rnd(n) { return Math.floor(Math.random() * n); }
+
+function initBoard() {
+  board = [];
+  fall = [];
+  for (let r = 0; r < N; r++) {
+    board.push(new Array(N).fill(0));
+    fall.push(new Array(N).fill(0));
+  }
+  // 生成无初始匹配的棋盘
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      let t;
+      do { t = rnd(TYPES); }
+      while ((c >= 2 && board[r][c - 1] === t && board[r][c - 2] === t) ||
+             (r >= 2 && board[r - 1][c] === t && board[r - 2][c] === t));
+      board[r][c] = t;
+    }
+  }
+}
+
+function initGame() {
+  score = 0;
+  timeLeft = 60; movesLeft = 30;
+  phase = 'idle'; sel = null; combo = 0;
+  popups = []; hint = null; hintTimer = 0;
+  initBoard();
+  if (!findHint()) shuffleBoard();
+  state = 'playing';
+  lastTick = performance.now();
+}
+
+// ---- 匹配检测 ----
+function findMatches() {
+  const matched = new Set();
+  // 横向
+  for (let r = 0; r < N; r++) {
+    let run = 1;
+    for (let c = 1; c <= N; c++) {
+      if (c < N && board[r][c] !== -1 && board[r][c] === board[r][c - 1]) run++;
+      else {
+        if (run >= 3) for (let k = c - run; k < c; k++) matched.add(r * N + k);
+        run = 1;
+      }
+    }
+  }
+  // 纵向
+  for (let c = 0; c < N; c++) {
+    let run = 1;
+    for (let r = 1; r <= N; r++) {
+      if (r < N && board[r][c] !== -1 && board[r][c] === board[r - 1][c]) run++;
+      else {
+        if (run >= 3) for (let k = r - run; k < r; k++) matched.add(k * N + c);
+        run = 1;
+      }
+    }
+  }
+  return [...matched].map(i => ({ r: Math.floor(i / N), c: i % N }));
+}
+
+function swapInBoard(a, b) {
+  const t = board[a.r][a.c];
+  board[a.r][a.c] = board[b.r][b.c];
+  board[b.r][b.c] = t;
+}
+
+function wouldMatch(a, b) {
+  swapInBoard(a, b);
+  const m = findMatches().length > 0;
+  swapInBoard(a, b);
+  return m;
+}
+
+function findHint() {
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (c + 1 < N && wouldMatch({ r, c }, { r, c: c + 1 })) return { a: { r, c }, b: { r, c: c + 1 } };
+      if (r + 1 < N && wouldMatch({ r, c }, { r: r + 1, c })) return { a: { r, c }, b: { r: r + 1, c } };
+    }
+  }
+  return null;
+}
+
+function shuffleBoard() {
+  let tries = 0;
+  do {
+    const flat = [];
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) flat.push(board[r][c]);
+    for (let i = flat.length - 1; i > 0; i--) { const j = rnd(i + 1); [flat[i], flat[j]] = [flat[j], flat[i]]; }
+    let k = 0;
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) board[r][c] = flat[k++];
+    tries++;
+  } while ((findMatches().length > 0 || !findHint()) && tries < 200);
+  if (findMatches().length > 0) initBoard();
+}
+
+// ---- 流程 ----
+function trySwap(a, b) {
+  if (phase !== 'idle') return;
+  swapA = a; swapB = b; swapT = 0;
+  if (wouldMatch(a, b)) { phase = 'swap'; }
+  else { phase = 'swapback'; }
+  hint = null; hintTimer = 0;
+}
+
+function startClear(matches) {
+  clearing = matches;
+  clearT = 0;
+  phase = 'clear';
+  combo++;
+  // 计分与弹出
+  const pts = matches.length * 20 * combo;
+  score += pts;
+  let sr = 0, sc = 0;
+  for (const m of matches) { sr += m.r; sc += m.c; }
+  sr /= matches.length; sc /= matches.length;
+  popups.push({
+    x: BX + sc * CELL + CELL / 2,
+    y: BY + sr * CELL + CELL / 2,
+    text: '+' + pts + (combo > 1 ? ' 连击x' + combo : ''),
+    t: 0, color: combo > 1 ? '#ffd54f' : '#fff'
+  });
+}
+
+function applyGravity() {
+  for (let c = 0; c < N; c++) {
+    let write = N - 1;
+    for (let r = N - 1; r >= 0; r--) {
+      if (board[r][c] !== -1) {
+        if (write !== r) {
+          board[write][c] = board[r][c];
+          fall[write][c] = (r - write) * CELL;
+          board[r][c] = -1;
+        }
+        write--;
+      }
+    }
+    // 顶部补充
+    for (let r = write; r >= 0; r--) {
+      board[r][c] = rnd(TYPES);
+      fall[r][c] = (r - write - 1) * CELL; // 从上方落下
+    }
+  }
+  phase = 'fall';
+}
+
+function consumeMove() {
+  if (mode === 'moves') {
+    movesLeft--;
+    if (movesLeft <= 0) { endGame(); return; }
+  }
+  if (!findHint()) { shuffleBoard(); noMovesShuffle++; }
+}
+
+function endGame() {
+  state = score >= TARGET ? 'win' : 'lose';
+}
+
+// ---- 更新 ----
+function update(now) {
+  if (state !== 'playing') return;
+  const dt = now - lastTick;
+  lastTick = now;
+
+  if (mode === 'time' && phase === 'idle') {
+    timeLeft -= dt / 1000;
+    if (timeLeft <= 0) { timeLeft = 0; endGame(); return; }
+  }
+
+  // 提示计时
+  hintTimer += dt;
+  if (phase === 'idle' && !hint && hintTimer > 5000) { hint = findHint(); }
+
+  if (phase === 'swap' || phase === 'swapback') {
+    swapT += dt / (phase === 'swapback' ? 340 : 180);
+    if (swapT >= 1) {
+      swapT = 1;
+      if (phase === 'swap') {
+        swapInBoard(swapA, swapB);
+        const m = findMatches();
+        combo = 0;
+        startClear(m);
+      } else {
+        phase = 'idle';
+      }
+      swapA = swapB = null;
+    }
+  } else if (phase === 'clear') {
+    clearT += dt / 220;
+    if (clearT >= 1) {
+      for (const m of clearing) board[m.r][m.c] = -1;
+      clearing = [];
+      applyGravity();
+    }
+  } else if (phase === 'fall') {
+    let done = true;
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (fall[r][c] < 0) {
+          fall[r][c] = Math.min(0, fall[r][c] + dt * 0.9);
+          if (fall[r][c] < 0) done = false;
+        }
+      }
+    }
+    if (done) {
+      const m = findMatches();
+      if (m.length > 0) startClear(m);
+      else { phase = 'idle'; combo = 0; consumeMove(); }
+    }
+  }
+
+  // 弹出动画
+  for (const p of popups) p.t += dt;
+  popups = popups.filter(p => p.t < 900);
+}
+
+// ---- 输入 ----
+function cellFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  const c = Math.floor((mx - BX) / CELL);
+  const r = Math.floor((my - BY) / CELL);
+  if (r >= 0 && r < N && c >= 0 && c < N) return { r, c, mx, my };
+  return { r: -1, c: -1, mx, my };
+}
+
+canvas.addEventListener('click', e => {
+  const { r, c, mx, my } = cellFromEvent(e);
+  if (state === 'title') {
+    // 模式选择
+    if (my > 250 && my < 300) {
+      if (mx > 230 && mx < 390) mode = 'time';
+      else if (mx > 410 && mx < 570) mode = 'moves';
+    }
+    if (mx > 300 && mx < 500 && my > 330 && my < 390) initGame();
+    return;
+  }
+  if (state === 'win' || state === 'lose') {
+    if (mx > 300 && mx < 500 && my > 340 && my < 400) state = 'title';
+    return;
+  }
+  if (state !== 'playing' || phase !== 'idle') return;
+  // 提示按钮
+  if (mx > 620 && mx < 770 && my > 380 && my < 420) { hint = findHint(); hintTimer = 0; return; }
+  if (r < 0) return;
+  if (!sel) { sel = { r, c }; return; }
+  if (sel.r === r && sel.c === c) { sel = null; return; }
+  const adj = Math.abs(sel.r - r) + Math.abs(sel.c - c) === 1;
+  if (adj) { trySwap(sel, { r, c }); sel = null; }
+  else sel = { r, c };
+});
+
+// 拖动交换
+let dragStart = null;
+canvas.addEventListener('mousedown', e => {
+  if (state !== 'playing' || phase !== 'idle') return;
+  const { r, c } = cellFromEvent(e);
+  if (r >= 0) dragStart = { r, c };
+});
+canvas.addEventListener('mouseup', e => {
+  if (!dragStart || state !== 'playing' || phase !== 'idle') { dragStart = null; return; }
+  const { r, c } = cellFromEvent(e);
+  if (r >= 0 && (Math.abs(dragStart.r - r) + Math.abs(dragStart.c - c) === 1)) {
+    trySwap(dragStart, { r, c });
+    sel = null;
+  }
+  dragStart = null;
+});
+
+document.addEventListener('keydown', e => {
+  if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) initGame();
+  else if ((state === 'win' || state === 'lose') && (e.code === 'Enter' || e.code === 'Space')) state = 'title';
+  else if (state === 'playing' && e.code === 'KeyH') { hint = findHint(); hintTimer = 0; }
+});
+
+// ---- 绘制 ----
+function drawGem(x, y, type, scale) {
+  const col = GEM_COLORS[type];
+  const s = CELL * 0.42 * scale;
+  const cx = x + CELL / 2, cy = y + CELL / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  // 菱形宝石
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(0, -s);
+  ctx.lineTo(s, 0);
+  ctx.lineTo(0, s);
+  ctx.lineTo(-s, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // 高光
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.beginPath();
+  ctx.moveTo(0, -s);
+  ctx.lineTo(s * 0.4, -s * 0.2);
+  ctx.lineTo(0, 0);
+  ctx.lineTo(-s * 0.4, -s * 0.2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBoard() {
+  // 背景
+  ctx.fillStyle = '#1a1a26';
+  ctx.beginPath();
+  ctx.roundRect(BX - 6, BY - 6, N * CELL + 12, N * CELL + 12, 8);
+  ctx.fill();
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const x = BX + c * CELL, y = BY + r * CELL;
+      ctx.fillStyle = (r + c) % 2 === 0 ? '#23232f' : '#282836';
+      ctx.fillRect(x, y, CELL, CELL);
+    }
+  }
+
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] === -1) continue;
+      // 交换动画中的格子跳过单独绘制
+      if ((swapA && swapB) &&
+          ((swapA.r === r && swapA.c === c) || (swapB.r === r && swapB.c === c))) continue;
+      const isClearing = clearing.some(m => m.r === r && m.c === c);
+      let scale = 1;
+      if (isClearing) scale = Math.max(0, 1 - clearT);
+      const y = BY + r * CELL + fall[r][c];
+      drawGem(BX + c * CELL, y, board[r][c], scale);
+    }
+  }
+
+  // 交换动画
+  if (swapA && swapB) {
+    let t;
+    if (phase === 'swap') t = swapT;
+    else t = swapT < 0.5 ? swapT * 2 : (1 - swapT) * 2; // 无效交换：移出再退回
+    const ax = BX + (swapA.c + (swapB.c - swapA.c) * t) * CELL;
+    const ay = BY + (swapA.r + (swapB.r - swapA.r) * t) * CELL;
+    const bx = BX + (swapB.c + (swapA.c - swapB.c) * t) * CELL;
+    const by = BY + (swapB.r + (swapA.r - swapB.r) * t) * CELL;
+    drawGem(ax, ay, board[swapA.r][swapA.c], 1);
+    drawGem(bx, by, board[swapB.r][swapB.c], 1);
+  }
+
+  // 选中高亮
+  if (sel && phase === 'idle') {
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(BX + sel.c * CELL + 2, BY + sel.r * CELL + 2, CELL - 4, CELL - 4);
+  }
+
+  // 提示高亮
+  if (hint && phase === 'idle') {
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 200);
+    ctx.strokeStyle = `rgba(255,213,79,${0.4 + pulse * 0.6})`;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(BX + hint.a.c * CELL + 3, BY + hint.a.r * CELL + 3, CELL - 6, CELL - 6);
+    ctx.strokeRect(BX + hint.b.c * CELL + 3, BY + hint.b.r * CELL + 3, CELL - 6, CELL - 6);
+  }
+}
+
+function drawPopups() {
+  for (const p of popups) {
+    const life = p.t / 900;
+    ctx.globalAlpha = 1 - life;
+    ctx.fillStyle = p.color;
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.text, p.x, p.y - life * 40);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawHUD() {
+  const px = 480;
+  ctx.fillStyle = '#ff8a65';
+  ctx.font = 'bold 30px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('宝石三消', px, 80);
+
+  // 分数与目标
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('分数', px, 120);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 34px sans-serif';
+  ctx.fillText(score.toString(), px, 155);
+
+  // 进度条
+  const prog = Math.min(1, score / TARGET);
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.roundRect(px, 170, 280, 18, 9); ctx.fill();
+  ctx.fillStyle = '#66bb6a';
+  ctx.beginPath(); ctx.roundRect(px, 170, 280 * prog, 18, 9); ctx.fill();
+  ctx.fillStyle = '#aaa';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('目标 ' + TARGET, px, 205);
+
+  // 时间 / 步数
+  ctx.fillStyle = '#aaa';
+  ctx.font = '16px sans-serif';
+  if (mode === 'time') {
+    ctx.fillText('剩余时间', px, 245);
+    ctx.fillStyle = timeLeft < 10 ? '#ff5252' : '#4fc3f7';
+    ctx.font = 'bold 40px sans-serif';
+    ctx.fillText(Math.ceil(timeLeft) + 's', px, 288);
+  } else {
+    ctx.fillText('剩余步数', px, 245);
+    ctx.fillStyle = movesLeft < 5 ? '#ff5252' : '#4fc3f7';
+    ctx.font = 'bold 40px sans-serif';
+    ctx.fillText(movesLeft.toString(), px, 288);
+  }
+
+  if (combo > 1 && phase !== 'idle') {
+    ctx.fillStyle = '#ffd54f';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('连击 x' + combo, px, 330);
+  }
+
+  // 提示按钮
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.roundRect(620, 380, 150, 40, 6); ctx.fill();
+  ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('提示 (H)', 695, 406);
+  ctx.textAlign = 'left';
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  // 装饰宝石
+  for (let i = 0; i < TYPES; i++) drawGem(180 + i * 80, 40, i, 1);
+  ctx.fillStyle = '#ab47bc';
+  ctx.font = 'bold 54px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('宝石三消', 400, 170);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('交换相邻宝石，三连消除，达成目标分数！', 400, 215);
+
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('选择模式：', 400, 245);
+  ctx.fillStyle = mode === 'time' ? '#2e7d32' : '#333';
+  ctx.beginPath(); ctx.roundRect(230, 255, 160, 44, 8); ctx.fill();
+  ctx.fillStyle = mode === 'moves' ? '#2e7d32' : '#333';
+  ctx.beginPath(); ctx.roundRect(410, 255, 160, 44, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillText('限时 60 秒', 310, 283);
+  ctx.fillText('限步 30 步', 490, 283);
+
+  ctx.fillStyle = '#1565c0';
+  ctx.beginPath(); ctx.roundRect(300, 330, 200, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('开始游戏', 400, 368);
+}
+
+function drawEnd() {
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(0, 0, 800, 480);
+  const win = state === 'win';
+  ctx.fillStyle = win ? '#76ff03' : '#ff5252';
+  ctx.font = 'bold 52px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(win ? '挑战成功！' : '挑战失败', 400, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '26px sans-serif';
+  ctx.fillText('得分 ' + score + '  /  目标 ' + TARGET, 400, 230);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '18px sans-serif';
+  ctx.fillText(win ? '太棒了，连消高手！' : '差一点，再接再厉！', 400, 275);
+  ctx.fillStyle = '#1565c0';
+  ctx.beginPath(); ctx.roundRect(300, 340, 200, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 378);
+}
+
+// ---- 主循环 ----
+function render(now) {
+  update(now);
+  if (state === 'title') drawTitle();
+  else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, 800, 480);
+    drawBoard();
+    drawPopups();
+    drawHUD();
+    if (state === 'win' || state === 'lose') drawEnd();
+  }
+  requestAnimationFrame(render);
+}
+lastTick = performance.now();
+requestAnimationFrame(render);
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

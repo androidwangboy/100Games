@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>100 Games Collection</title>
+<link rel="stylesheet" href="css/theme.css">
+<link rel="stylesheet" href="css/launcher.css">
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-title">🕹️ <span>100</span> Games</div>
+    <div class="search-box">
+      <input type="text" id="search-input" placeholder="搜索游戏... ( / )" autocomplete="off">
+    </div>
+    <div class="header-stats" id="header-stats"></div>
+  </header>
+
+  <!-- Category tabs -->
+  <nav class="category-bar" id="category-bar"></nav>
+
+  <!-- Game grid -->
+  <div class="game-grid-wrapper">
+    <div class="game-grid" id="game-grid"></div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer-hint">
+    <kbd>↑↓←→</kbd> 选择 &nbsp; <kbd>Enter</kbd> 确认 &nbsp; <kbd>Tab</kbd> 切换分类 &nbsp; <kbd>/</kbd> 搜索 &nbsp; <kbd>Esc</kbd> 返回
+  </footer>
+</div>
+
+<!-- Game detail overlay -->
+<div class="detail-overlay" id="detail-overlay">
+  <div class="detail-panel">
+    <div class="emoji" id="detail-emoji"></div>
+    <h2 id="detail-title"></h2>
+    <div class="en-title" id="detail-en-title"></div>
+    <p class="desc" id="detail-desc"></p>
+    <div class="meta" id="detail-meta"></div>
+    <button class="btn-play" id="btn-play">开始游戏</button>
+    <button class="btn-back" id="btn-back">返回 (Esc)</button>
+  </div>
+</div>
+
+<!-- Game iframe container -->
+<div class="game-frame-container" id="game-frame-container">
+  <div class="game-frame-bar">
+    <span class="game-name" id="frame-game-name"></span>
+    <span class="hint">按 Esc 返回菜单</span>
+    <button class="btn-exit" id="btn-exit">退出游戏</button>
+  </div>
+  <iframe id="game-frame" sandbox="allow-scripts allow-same-origin allow-pointer-lock"></iframe>
+</div>
+
+<script src="js/registry.js"></script>
+<script src="js/launcher.js"></script>
+</body>
+</html>

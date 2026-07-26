@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>推箱子</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// ---- 关卡数据 ----
+// # 墙  (空格) 地板  . 目标  $ 箱子  * 箱在目标  @ 玩家  + 玩家在目标
+const LEVELS = [
+  [
+    "#######",
+    "#     #",
+    "# .$@ #",
+    "#     #",
+    "#######"
+  ],
+  [
+    "#######",
+    "#     #",
+    "#.$ $.#",
+    "#  @  #",
+    "#     #",
+    "#######"
+  ],
+  [
+    "#########",
+    "#  . .  #",
+    "#  $ $  #",
+    "#   @   #",
+    "#  $    #",
+    "#  .    #",
+    "#########"
+  ],
+  [
+    "#######",
+    "#  .  #",
+    "#  $  #",
+    "#.$@$.#",
+    "#  $  #",
+    "#  .  #",
+    "#######"
+  ],
+  [
+    "########",
+    "#.     #",
+    "#  $   #",
+    "#   @  #",
+    "#   $  #",
+    "#     .#",
+    "########"
+  ],
+  [
+    "#########",
+    "#  ..   #",
+    "#  $$   #",
+    "#   @   #",
+    "#  $$   #",
+    "#  ..   #",
+    "#########"
+  ],
+  [
+    "##########",
+    "#    #   #",
+    "# $  # . #",
+    "#  @     #",
+    "# $    . #",
+    "#    #   #",
+    "##########"
+  ],
+  [
+    "###########",
+    "#.       .#",
+    "#  $   $  #",
+    "#    @    #",
+    "#  $   $  #",
+    "#.       .#",
+    "###########"
+  ]
+];
+
+let score = 0;
+let state = 'title'; // title | select | playing | complete
+let levelIndex = 0;
+let unlocked = 1;
+
+// 关卡运行时
+let walls, targets, boxes, player, rows, cols;
+let moves, pushes, history;
+let completeT = 0;
+const CELL = 44;
+
+function parseLevel(li) {
+  const map = LEVELS[li];
+  rows = map.length;
+  cols = Math.max(...map.map(r => r.length));
+  walls = []; targets = []; boxes = [];
+  history = [];
+  moves = 0; pushes = 0;
+  player = { r: 0, c: 0 };
+  for (let r = 0; r < rows; r++) {
+    walls.push(new Array(cols).fill(false));
+    for (let c = 0; c < cols; c++) {
+      const ch = map[r][c] || ' ';
+      if (ch === '#') walls[r][c] = true;
+      if (ch === '.' || ch === '*' || ch === '+') targets.push({ r, c });
+      if (ch === '$' || ch === '*') boxes.push({ r, c });
+      if (ch === '@' || ch === '+') player = { r, c };
+    }
+  }
+}
+
+function startLevel(li) {
+  levelIndex = li;
+  parseLevel(li);
+  state = 'playing';
+}
+
+function boxAt(r, c) {
+  return boxes.findIndex(b => b.r === r && b.c === c);
+}
+function isTarget(r, c) {
+  return targets.some(t => t.r === r && t.c === c);
+}
+function isWall(r, c) {
+  return r < 0 || r >= rows || c < 0 || c >= cols || walls[r][c];
+}
+
+function snapshot() {
+  return {
+    pr: player.r, pc: player.c,
+    boxes: boxes.map(b => ({ r: b.r, c: b.c })),
+    moves, pushes
+  };
+}
+
+function tryMove(dr, dc) {
+  if (state !== 'playing') return;
+  const nr = player.r + dr, nc = player.c + dc;
+  if (isWall(nr, nc)) return;
+  const bi = boxAt(nr, nc);
+  const before = snapshot();
+  if (bi >= 0) {
+    const br = nr + dr, bc = nc + dc;
+    if (isWall(br, bc) || boxAt(br, bc) >= 0) return; // 推不动
+    boxes[bi].r = br; boxes[bi].c = bc;
+    pushes++;
+  }
+  player.r = nr; player.c = nc;
+  moves++;
+  history.push(before);
+  if (history.length > 500) history.shift();
+  // 判定胜利
+  if (boxes.every(b => isTarget(b.r, b.c))) {
+    state = 'complete';
+    completeT = 0;
+    score += Math.max(50, 500 - moves * 2 - pushes * 3) + levelIndex * 100;
+    if (levelIndex + 1 > unlocked - 1) unlocked = Math.min(LEVELS.length, levelIndex + 2);
+  }
+}
+
+function undo() {
+  if (history.length === 0 || state !== 'playing') return;
+  const s = history.pop();
+  player.r = s.pr; player.c = s.pc;
+  boxes = s.boxes.map(b => ({ r: b.r, c: b.c }));
+  moves = s.moves; pushes = s.pushes;
+}
+
+// ---- 输入 ----
+document.addEventListener('keydown', e => {
+  if (state === 'title') {
+    if (e.code === 'Enter' || e.code === 'Space') state = 'select';
+    return;
+  }
+  if (state === 'select') {
+    return;
+  }
+  if (state === 'complete') {
+    if (e.code === 'Enter' || e.code === 'Space') {
+      if (levelIndex + 1 < LEVELS.length) startLevel(levelIndex + 1);
+      else state = 'select';
+    }
+    return;
+  }
+  if (state !== 'playing') return;
+  switch (e.code) {
+    case 'ArrowUp': case 'KeyW': tryMove(-1, 0); e.preventDefault(); break;
+    case 'ArrowDown': case 'KeyS': tryMove(1, 0); e.preventDefault(); break;
+    case 'ArrowLeft': case 'KeyA': tryMove(0, -1); e.preventDefault(); break;
+    case 'ArrowRight': case 'KeyD': tryMove(0, 1); e.preventDefault(); break;
+    case 'KeyZ': undo(); break;
+    case 'KeyR': parseLevel(levelIndex); break;
+  }
+});
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+  if (state === 'title') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) state = 'select';
+    return;
+  }
+  if (state === 'select') {
+    // 关卡按钮 4 列 x 2 行
+    for (let i = 0; i < LEVELS.length; i++) {
+      const bx = 200 + (i % 4) * 105;
+      const by = 180 + Math.floor(i / 4) * 90;
+      if (mx > bx && mx < bx + 80 && my > by && my < by + 64) {
+        if (i < unlocked) startLevel(i);
+      }
+    }
+    if (mx > 320 && mx < 480 && my > 400 && my < 450) state = 'title';
+    return;
+  }
+  if (state === 'complete') {
+    if (mx > 250 && mx < 400 && my > 330 && my < 390) {
+      if (levelIndex + 1 < LEVELS.length) startLevel(levelIndex + 1);
+    }
+    if (mx > 420 && mx < 560 && my > 330 && my < 390) state = 'select';
+    return;
+  }
+  if (state === 'playing') {
+    // 按钮：撤销 / 重置 / 选关
+    if (my > 430 && my < 470) {
+      if (mx > 250 && mx < 350) undo();
+      else if (mx > 360 && mx < 460) parseLevel(levelIndex);
+      else if (mx > 470 && mx < 570) state = 'select';
+    }
+  }
+});
+
+// ---- 绘制 ----
+function boardOffset() {
+  const w = cols * CELL, h = rows * CELL;
+  return { x: Math.floor((800 - w) / 2), y: Math.floor((420 - h) / 2) + 20 };
+}
+
+function drawWall(x, y) {
+  ctx.fillStyle = '#6d4c41';
+  ctx.fillRect(x, y, CELL, CELL);
+  ctx.strokeStyle = '#4e342e';
+  ctx.lineWidth = 2;
+  // 砖纹
+  ctx.strokeRect(x + 1, y + 1, CELL - 2, CELL / 2 - 1);
+  ctx.strokeRect(x + 1, y + CELL / 2, CELL - 2, CELL / 2 - 1);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(x, y, CELL, 4);
+}
+
+function drawFloor(x, y) {
+  ctx.fillStyle = '#2b2b36';
+  ctx.fillRect(x, y, CELL, CELL);
+  ctx.strokeStyle = '#24242e';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+}
+
+function drawTarget(x, y) {
+  ctx.fillStyle = '#ffca28';
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  ctx.arc(x + CELL / 2, y + CELL / 2, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 0.4;
+  ctx.beginPath();
+  ctx.arc(x + CELL / 2, y + CELL / 2, 12, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawBox(x, y, onTarget) {
+  const pad = 5;
+  ctx.fillStyle = onTarget ? '#66bb6a' : '#c88a3c';
+  ctx.beginPath();
+  ctx.roundRect(x + pad, y + pad, CELL - pad * 2, CELL - pad * 2, 4);
+  ctx.fill();
+  ctx.strokeStyle = onTarget ? '#388e3c' : '#8d5a1e';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // 交叉木纹
+  ctx.beginPath();
+  ctx.moveTo(x + pad, y + pad);
+  ctx.lineTo(x + CELL - pad, y + CELL - pad);
+  ctx.moveTo(x + CELL - pad, y + pad);
+  ctx.lineTo(x + pad, y + CELL - pad);
+  ctx.stroke();
+}
+
+function drawPlayer(x, y) {
+  const cx = x + CELL / 2, cy = y + CELL / 2;
+  // 身体
+  ctx.fillStyle = '#42a5f5';
+  ctx.beginPath();
+  ctx.arc(cx, cy, CELL / 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#1565c0';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // 眼睛
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(cx - 5, cy - 3, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + 5, cy - 3, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(cx - 5, cy - 3, 1.6, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + 5, cy - 3, 1.6, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawBoard() {
+  const off = boardOffset();
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = off.x + c * CELL, y = off.y + r * CELL;
+      if (walls[r][c]) { drawWall(x, y); continue; }
+      // 仅绘制与关卡连通的地板（简单起见全画）
+      drawFloor(x, y);
+      if (isTarget(r, c)) drawTarget(x, y);
+    }
+  }
+  for (const b of boxes) {
+    drawBox(off.x + b.c * CELL, off.y + b.r * CELL, isTarget(b.r, b.c));
+  }
+  drawPlayer(off.x + player.c * CELL, off.y + player.r * CELL);
+}
+
+function drawHUD() {
+  ctx.fillStyle = '#ff8a65';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('推箱子  第 ' + (levelIndex + 1) + ' 关', 30, 38);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '18px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText('步数 ' + moves + '   推动 ' + pushes, 770, 38);
+
+  // 按钮
+  function btn(x, label) {
+    ctx.fillStyle = '#333';
+    ctx.beginPath(); ctx.roundRect(x, 432, 100, 36, 6); ctx.fill();
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#ddd';
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x + 50, 455);
+  }
+  btn(250, '撤销(Z)');
+  btn(360, '重置(R)');
+  btn(470, '选关');
+  ctx.textAlign = 'left';
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#c88a3c';
+  ctx.font = 'bold 56px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('推箱子', 400, 150);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('把所有箱子推到目标点上', 400, 200);
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('方向键移动  ·  Z 撤销  ·  R 重置  ·  共 ' + LEVELS.length + ' 关', 400, 240);
+  ctx.fillStyle = '#2e7d32';
+  ctx.beginPath(); ctx.roundRect(300, 320, 200, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('选择关卡', 400, 358);
+}
+
+function drawSelect() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ff8a65';
+  ctx.font = 'bold 36px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('选择关卡', 400, 100);
+  for (let i = 0; i < LEVELS.length; i++) {
+    const bx = 200 + (i % 4) * 105;
+    const by = 180 + Math.floor(i / 4) * 90;
+    const locked = i >= unlocked;
+    ctx.fillStyle = locked ? '#222' : '#2e7d32';
+    ctx.beginPath(); ctx.roundRect(bx, by, 80, 64, 8); ctx.fill();
+    ctx.strokeStyle = locked ? '#333' : '#43a047';
+    ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = locked ? '#555' : '#fff';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillText(locked ? '锁' : (i + 1).toString(), bx + 40, by + 42);
+  }
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.roundRect(320, 400, 160, 46, 8); ctx.fill();
+  ctx.fillStyle = '#ddd';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('返回标题', 400, 430);
+}
+
+function drawComplete() {
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, 800, 480);
+  // 彩带
+  for (let i = 0; i < 40; i++) {
+    const t = (completeT / 16 + i * 37) % 480;
+    ctx.fillStyle = `hsl(${(i * 47) % 360}, 70%, 60%)`;
+    ctx.fillRect((i * 97) % 800, t, 8, 14);
+  }
+  ctx.fillStyle = '#76ff03';
+  ctx.font = 'bold 50px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('第 ' + (levelIndex + 1) + ' 关完成！', 400, 170);
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px sans-serif';
+  ctx.fillText('步数 ' + moves + '  ·  推动 ' + pushes, 400, 225);
+  ctx.fillText('总分 ' + score, 400, 262);
+
+  const hasNext = levelIndex + 1 < LEVELS.length;
+  ctx.fillStyle = hasNext ? '#2e7d32' : '#444';
+  ctx.beginPath(); ctx.roundRect(250, 330, 150, 60, 8); ctx.fill();
+  ctx.fillStyle = '#1565c0';
+  ctx.beginPath(); ctx.roundRect(420, 330, 140, 60, 8); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(hasNext ? '下一关' : '已通关', 325, 368);
+  ctx.fillText('选关', 490, 368);
+}
+
+// ---- 主循环 ----
+function render() {
+  if (state === 'title') drawTitle();
+  else if (state === 'select') drawSelect();
+  else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, 800, 480);
+    drawBoard();
+    drawHUD();
+    if (state === 'complete') { completeT += 16; drawComplete(); }
+  }
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>

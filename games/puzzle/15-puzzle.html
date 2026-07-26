@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数字华容道</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; display: flex; justify-content: center; align-items: center; min-height: 100vh; overflow: hidden; }
+canvas { border: 2px solid #333; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="480"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let score = 0;
+let state = 'title'; // title, playing, win
+let tiles = [];
+let emptyIdx = 15;
+let moves = 0;
+
+const GRID = 4;
+const TILE_SIZE = 100;
+const OFFSET_X = 200;
+const OFFSET_Y = 40;
+
+function initTiles() {
+  tiles = [];
+  for (let i = 0; i < 16; i++) tiles[i] = i; // 0 = empty
+  shuffle();
+  moves = 0;
+  score = 0;
+}
+
+function shuffle() {
+  // Perform random valid moves to ensure solvability
+  let empty = 15;
+  for (let i = 0; i < 200; i++) {
+    const neighbors = getNeighbors(empty);
+    const pick = neighbors[Math.floor(Math.random() * neighbors.length)];
+    tiles[empty] = tiles[pick];
+    tiles[pick] = 0;
+    empty = pick;
+  }
+  emptyIdx = empty;
+}
+
+function getNeighbors(idx) {
+  const r = Math.floor(idx / GRID), c = idx % GRID;
+  const n = [];
+  if (r > 0) n.push(idx - GRID);
+  if (r < GRID - 1) n.push(idx + GRID);
+  if (c > 0) n.push(idx - 1);
+  if (c < GRID - 1) n.push(idx + 1);
+  return n;
+}
+
+function isWin() {
+  for (let i = 0; i < 15; i++) {
+    if (tiles[i] !== i + 1) return false;
+  }
+  return tiles[15] === 0;
+}
+
+function tryMove(idx) {
+  if (state !== 'playing') return;
+  const neighbors = getNeighbors(emptyIdx);
+  if (neighbors.includes(idx)) {
+    tiles[emptyIdx] = tiles[idx];
+    tiles[idx] = 0;
+    emptyIdx = idx;
+    moves++;
+    score = moves;
+    if (isWin()) state = 'win';
+  }
+}
+
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (800 / rect.width);
+  const my = (e.clientY - rect.top) * (480 / rect.height);
+
+  if (state === 'title') {
+    // Start button area
+    if (mx > 300 && mx < 500 && my > 300 && my < 360) {
+      initTiles();
+      state = 'playing';
+    }
+    return;
+  }
+  if (state === 'win') {
+    if (mx > 300 && mx < 500 && my > 320 && my < 380) {
+      state = 'title';
+    }
+    return;
+  }
+  // Playing - find clicked tile
+  const col = Math.floor((mx - OFFSET_X) / TILE_SIZE);
+  const row = Math.floor((my - OFFSET_Y) / TILE_SIZE);
+  if (col >= 0 && col < GRID && row >= 0 && row < GRID) {
+    tryMove(row * GRID + col);
+  }
+});
+
+function drawTile(idx) {
+  const val = tiles[idx];
+  if (val === 0) return;
+  const r = Math.floor(idx / GRID), c = idx % GRID;
+  const x = OFFSET_X + c * TILE_SIZE;
+  const y = OFFSET_Y + r * TILE_SIZE;
+  const pad = 4;
+
+  // Tile background
+  const hue = (val * 24) % 360;
+  ctx.fillStyle = `hsl(${hue}, 60%, 35%)`;
+  ctx.fillRect(x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2);
+  ctx.strokeStyle = `hsl(${hue}, 70%, 55%)`;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + pad, y + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2);
+
+  // Number
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 36px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(val, x + TILE_SIZE / 2, y + TILE_SIZE / 2);
+}
+
+function drawTitle() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('数字华容道', 400, 150);
+  ctx.fillStyle = '#aaa';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('将 1-15 按顺序排列，空格在右下角', 400, 220);
+  ctx.fillText('点击相邻方块滑动到空位', 400, 255);
+
+  // Start button
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(300, 300, 200, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText('开始游戏', 400, 330);
+}
+
+function drawWin() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, 800, 480);
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('恭喜通关！', 400, 180);
+  ctx.fillStyle = '#fff';
+  ctx.font = '28px sans-serif';
+  ctx.fillText(`用了 ${moves} 步完成`, 400, 250);
+  ctx.fillStyle = '#1565c0';
+  ctx.fillRect(300, 320, 200, 60);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('返回菜单', 400, 350);
+}
+
+function drawPlaying() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 800, 480);
+
+  // Board background
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(OFFSET_X - 8, OFFSET_Y - 8, GRID * TILE_SIZE + 16, GRID * TILE_SIZE + 16);
+
+  for (let i = 0; i < 16; i++) drawTile(i);
+
+  // HUD
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = '22px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`步数: ${moves}`, 20, 40);
+  ctx.fillStyle = '#888';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('按 ESC 退出', 20, 460);
+}
+
+function render() {
+  if (state === 'title') drawTitle();
+  else if (state === 'playing') drawPlaying();
+  else if (state === 'win') { drawPlaying(); drawWin(); }
+  requestAnimationFrame(render);
+}
+
+render();
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
+});
+</script>
+</body>
+</html>
