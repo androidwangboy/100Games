@@ -12,9 +12,6 @@ canvas { border: 2px solid #333; }
 <body>
 <canvas id="game" width="800" height="480"></canvas>
 <script>
-document.addEventListener('keydown', e => {
-  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
-});
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const COLS = 20, ROWS = 14, CELL = 32;
@@ -633,6 +630,7 @@ function gameLoop(time) {
 }
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   keys[e.code] = true;
   if (e.code === 'Enter') {
     if (state === 'title') { state = 'play'; score = 0; lives = 3; level = 1; initLevel(); }

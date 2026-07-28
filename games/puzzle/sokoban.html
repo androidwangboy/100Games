@@ -178,9 +178,6 @@ function undo() {
 }
 
 // ---- 输入 ----
-document.addEventListener('keydown', e => {
-  if (state === 'title') {
-    if (e.code === 'Enter' || e.code === 'Space') state = 'select';
     return;
   }
   if (state === 'select') {
@@ -453,6 +450,7 @@ function render() {
 requestAnimationFrame(render);
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
 });
 </script>

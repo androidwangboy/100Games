@@ -17,9 +17,6 @@ const ctx = canvas.getContext('2d');
 const W = 800, H = 480;
 
 let score = 0;
-document.addEventListener('keydown', e => {
-  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
-});
 
 const STATE = { TITLE: 0, PLAYING: 1, GAMEOVER: 2, LEVELUP: 3 };
 let state = STATE.TITLE;
@@ -63,6 +60,7 @@ let keys = {};
 let mouseDown = false;
 let mouseX = W/2, mouseY = H - 24;
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
   keys[e.code] = true;
   if (e.code === 'Space') {

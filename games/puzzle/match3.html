@@ -314,9 +314,6 @@ canvas.addEventListener('mouseup', e => {
   dragStart = null;
 });
 
-document.addEventListener('keydown', e => {
-  if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) initGame();
-  else if ((state === 'win' || state === 'lose') && (e.code === 'Enter' || e.code === 'Space')) state = 'title';
   else if (state === 'playing' && e.code === 'KeyH') { hint = findHint(); hintTimer = 0; }
 });
 
@@ -550,6 +547,7 @@ lastTick = performance.now();
 requestAnimationFrame(render);
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
 });
 </script>

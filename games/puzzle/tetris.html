@@ -223,9 +223,6 @@ function ghostY() {
 let dasTimer = 0, dasDir = 0, dasDelay = 170, dasRepeat = 50, dasActive = false;
 const keys = {};
 
-document.addEventListener('keydown', e => {
-  if (state === 'title') {
-    if (e.code === 'Enter' || e.code === 'Space') initGame();
     return;
   }
   if (state === 'over') {
@@ -490,6 +487,7 @@ lastTime = performance.now();
 requestAnimationFrame(render);
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
 });
 </script>

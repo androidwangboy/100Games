@@ -251,9 +251,6 @@ canvas.addEventListener('mousedown', e => {
 canvas.addEventListener('mouseup', () => { paintMode = 0; });
 canvas.addEventListener('mouseleave', () => { paintMode = 0; hoverR = hoverC = -1; });
 
-document.addEventListener('keydown', e => {
-  if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) state = 'select';
-  else if (state === 'playing' && e.code === 'KeyR') loadPuzzle(puzzleIndex);
 });
 
 // ---- 绘制 ----
@@ -551,6 +548,7 @@ function render() {
 requestAnimationFrame(render);
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
 });
 </script>

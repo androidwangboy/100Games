@@ -17,9 +17,6 @@ const ctx = canvas.getContext('2d');
 const W = 800, H = 480;
 
 let score = 0;
-document.addEventListener('keydown', e => {
-  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
-});
 
 const STATE = { TITLE: 0, PLAYING: 1, GAMEOVER: 2, WAVE: 3 };
 let state = STATE.TITLE;
@@ -53,6 +50,7 @@ let ufoTimer = 0;
 // Input
 let keys = {};
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   keys[e.code] = true;
   if (e.code === 'Space') {
     e.preventDefault();

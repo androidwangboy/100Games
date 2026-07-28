@@ -222,9 +222,6 @@ canvas.addEventListener('mousedown', e => {
   }
 });
 
-document.addEventListener('keydown', e => {
-  if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) initGame();
-  else if ((state === 'won' || state === 'lost') && (e.code === 'Enter' || e.code === 'Space')) state = 'title';
   else if (state === 'playing' && e.code === 'KeyR') initGame();
 });
 
@@ -406,6 +403,7 @@ function render(now) {
 requestAnimationFrame(render);
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
 });
 </script>

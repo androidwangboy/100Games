@@ -12,9 +12,6 @@ canvas { border: 2px solid #333; }
 <body>
 <canvas id="game" width="800" height="480"></canvas>
 <script>
-document.addEventListener('keydown', e => {
-  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
-});
 'use strict';
 
 // ============================================================
@@ -470,6 +467,7 @@ let plungerCharging = false;
 // ---------- 输入 ----------
 const keys = {};
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (keys[e.code]) return;
   keys[e.code] = true;
   if (e.code === 'KeyZ') flippers[0].active = true;

@@ -12,9 +12,6 @@ canvas { border: 2px solid #333; }
 <body>
 <canvas id="game" width="800" height="480"></canvas>
 <script>
-document.addEventListener('keydown', e => {
-  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
-});
 'use strict';
 
 // ============================================================
@@ -872,6 +869,7 @@ function onUp(e) {
 
 // 键盘技能触发
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape') { parent.postMessage({type:'EXIT_GAME', score: score}, '*'); }
   if (e.code === 'Space' && gameState === 'flying' && activeBird && activeBird.launched) {
     activeBird.useAbility();
   }
